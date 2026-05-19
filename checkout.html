@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Command Ledger - Secure Checkout</title>
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+    <script src="https://js.paystack.co/v1/inline.js"></script>
+    <script src="https://www.paypal.com/sdk/js?client-id=ARbIQHfvYd9TG05eEdCKLw9Z1yzBXT0A2Hr3LQBRiPnFwe88tKBiaRd0zgleIA3A1g-iE-tb1oyjcg1o&currency=USD"></script>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen flex items-center justify-center font-sans p-4">
+
+    <div class="max-w-md w-full bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-2xl relative overflow-hidden">
+        
+        <div class="text-center mb-8">
+            <div class="inline-flex items-center justify-center w-12 h-12 bg-indigo-600/10 text-indigo-400 rounded-xl mb-3 border border-indigo-500/20">
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="w-6 h-6">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M2.25 18 9 11.25l4.306 4.306a11.95 11.95 0 0 1 5.814-5.518l2.74-1.22m0 0-5.94-2.281m5.94 2.28-2.28 5.941" />
+                </svg>
+            </div>
+            <h1 class="text-2xl font-bold tracking-tight bg-gradient-to-r from-white to-slate-400 bg-clip-text text-transparent">Command Ledger</h1>
+            <p class="text-sm text-slate-400 mt-1">DigiBlueprint Financial Operating System</p>
+        </div>
+
+        <div class="bg-slate-950/50 border border-slate-800/80 rounded-xl p-4 mb-6">
+            <div class="flex justify-between items-center mb-2">
+                <span class="text-sm text-slate-400">Selected Plan</span>
+                <span class="text-sm font-medium text-indigo-400">Premium Access</span>
+            </div>
+            <div class="h-px bg-slate-800 my-2"></div>
+            <div class="flex justify-between items-end">
+                <span class="text-sm text-slate-400">Total Amount</span>
+                <div class="text-right">
+                    <span class="text-2xl font-bold text-white font-mono">$49.00</span>
+                    <span class="text-xs text-slate-500 block">~ R900.00 ZAR</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="mb-6">
+            <label class="text-xs font-semibold uppercase tracking-wider text-slate-500 block mb-3">Select Payment Method</label>
+            <div class="grid grid-cols-2 gap-3">
+                <button id="paystackTabBtn" onclick="switchMethod('paystack')" class="flex items-center justify-center gap-2 py-3 px-4 rounded-xl border font-medium text-sm transition-all duration-200 cursor-pointer bg-slate-950 border-indigo-500 text-white shadow-lg shadow-indigo-500/10">
+                    Debit/Credit Card
+                </button>
+                <button id="paypalTabBtn" onclick="switchMethod('paypal')" class="flex items-center justify-center gap-2 py-3 px-4 rounded-xl border font-medium text-sm transition-all duration-200 cursor-pointer bg-transparent border-slate-800 text-slate-400 hover:text-slate-200 hover:border-slate-700">
+                    PayPal / Int'l
+                </button>
+            </div>
+        </div>
+
+        <div id="paystackGateway" class="block space-y-4">
+            <div class="space-y-3 mb-4">
+                <div>
+                    <label class="block text-xs font-medium text-slate-400 mb-1">Email Address</label>
+                    <input type="email" id="customerEmail" placeholder="founder@yourcompany.com" class="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-indigo-500 transition-colors">
+                </div>
+            </div>
+            <button onclick="payWithPaystack()" class="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-semibold py-3.5 px-4 rounded-xl shadow-lg shadow-indigo-600/20 transition-all duration-200 cursor-pointer flex items-center justify-center gap-2">
+                <span>Secure Checkout with Paystack</span>
+            </button>
+        </div>
+
+        <div id="paypalGateway" class="hidden">
+            <div id="paypal-button-container" class="w-full"></div>
+        </div>
+
+        <div id="successOverlay" class="absolute inset-0 bg-slate-950/95 backdrop-blur-sm flex flex-col items-center justify-center p-6 text-center hidden transition-all duration-300">
+            <div class="w-16 h-16 bg-emerald-500/10 text-emerald-400 rounded-full border border-emerald-500/20 flex items-center justify-center mb-4 animate-bounce">
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.5" stroke="currentColor" class="w-8 h-8">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="m4.5 12.75 6 6 9-13.5" />
+                </svg>
+            </div>
+            <h2 class="text-xl font-bold text-white">Payment Confirmed!</h2>
+            <p class="text-sm text-slate-400 mt-2 max-w-xs">Your system access has been activated. Welcome to Command Ledger.</p>
+            <button onclick="window.location.reload()" class="mt-6 text-xs text-indigo-400 hover:text-indigo-300 underline font-medium cursor-pointer">Return to Dashboard</button>
+        </div>
+
+    </div>
+
+    <script>
+        // Switch between Paystack and PayPal view states
+        function switchMethod(method) {
+            const paystackGate = document.getElementById('paystackGateway');
+            const paypalGate = document.getElementById('paypalGateway');
+            const paystackBtn = document.getElementById('paystackTabBtn');
+            const paypalBtn = document.getElementById('paypalTabBtn');
+
+            if (method === 'paystack') {
+                paystackGate.classList.remove('hidden');
+                paypalGate.classList.add('hidden');
+                paystackBtn.className = "flex items-center justify-center gap-2 py-3 px-4 rounded-xl border font-medium text-sm transition-all duration-200 cursor-pointer bg-slate-950 border-indigo-500 text-white shadow-lg shadow-indigo-500/10";
+                paypalBtn.className = "flex items-center justify-center gap-2 py-3 px-4 rounded-xl border font-medium text-sm transition-all duration-200 cursor-pointer bg-transparent border-slate-800 text-slate-400 hover:text-slate-200 hover:border-slate-700";
+            } else {
+                paystackGate.classList.add('hidden');
+                paypalGate.classList.remove('hidden');
+                paypalBtn.className = "flex items-center justify-center gap-2 py-3 px-4 rounded-xl border font-medium text-sm transition-all duration-200 cursor-pointer bg-slate-950 border-indigo-500 text-white shadow-lg shadow-indigo-500/10";
+                paystackBtn.className = "flex items-center justify-center gap-2 py-3 px-4 rounded-xl border font-medium text-sm transition-all duration-200 cursor-pointer bg-transparent border-slate-800 text-slate-400 hover:text-slate-200 hover:border-slate-700";
+            }
+        }
+
+        // Show Success overlay screen
+        function triggerSuccessScreen(referenceId) {
+            console.log("Transaction Complete. Ref ID:", referenceId);
+            document.getElementById('successOverlay').classList.remove('hidden');
+        }
+
+        // --- 1. PAYSTACK INTEGRATION CONFIG ---
+        function payWithPaystack() {
+            const emailInput = document.getElementById('customerEmail').value;
+            if (!emailInput || !emailInput.includes('@')) {
+                alert('Please enter a valid email address to continue.');
+                return;
+            }
+
+            let handler = PaystackPop.setup({
+                key: 'pk_test_f211ded6b5924a3d7d6d030c5e3e0a9b611cd217', // Your Real Paystack Test Public Key
+                email: emailInput,
+                amount: 90000, // Amount is calculated in cents (R900.00 ZAR)
+                currency: 'ZAR',
+                ref: 'CL-' + Math.floor((Math.random() * 1000000000) + 1), // Generate distinct internal order ID
+                callback: function(response){
+                    // This triggers automatically upon successful card capture
+                    triggerSuccessScreen(response.reference);
+                },
+                onClose: function(){
+                    alert('Transaction canceled. Your cart is preserved.');
+                }
+            });
+            handler.openIframe();
+        }
+
+        // --- 2. PAYPAL INTEGRATION CONFIG ---
+        paypal.Buttons({
+            createOrder: function(data, actions) {
+                return actions.order.create({
+                    purchase_units: [{
+                        amount: {
+                            value: '49.00' // $49.00 USD for global transactions
+                        },
+                        description: 'Command Ledger Premium System Subscription'
+                    }]
+                });
+            },
+            onApprove: function(data, actions) {
+                return actions.order.capture().then(function(details) {
+                    triggerSuccessScreen(details.id);
+                });
+            },
+            onError: function(err) {
+                console.error("PayPal Error context:", err);
+                alert("Something went wrong with processing the PayPal gateway pipeline.");
+            }
+        }).render('#paypal-button-container');
+    </script>
+</body>
+</html>
