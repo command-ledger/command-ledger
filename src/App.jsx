@@ -676,7 +676,7 @@ window.paypal.Buttons({
       createSubscription: (_d, actions) =>
         actions.subscription.create({ 
           plan_id: PAYPAL_PLANS[planKey],
-          custom_id: user?.id
+          custom_id: userID,
         }),
       onApprove: async (data) => {
         // Securely handled by your backend webhook now. 
