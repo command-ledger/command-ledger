@@ -1334,7 +1334,7 @@ function MarketingSite({ onLogin, onPlanSelect, onTerms, onPrivacy }) {
                 {p.soon ? (
                   <button
                     className="btn btn-full btn-outline"
-                    onClick={() => window.open("https://wa.me/27810068255?text=I'm+interested+in+Command+Elite+VIP+--+please+notify+me+when+it+launches","_blank")}
+                    onClick={() => window.open("https://wa.me/27?text=I'm+interested+in+Command+Elite+VIP+--+please+notify+me+when+it+launches","_blank")}
                   >
                     Join VIP Waitlist
                   </button>
