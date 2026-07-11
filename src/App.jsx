@@ -8,9 +8,6 @@ const supabase = createClient(
 );
 
 const PAYPAL_CLIENT_ID = import.meta.env.VITE_PAYPAL_CLIENT_ID;
-// PRICES CHANGED -> these must be replaced with NEW PayPal Plan IDs
-// matching the new $1,250/mo and $2,475/mo subscription prices.
-// Elite has no checkout (VIP / Coming Soon - waitlist only), so no ID needed.
 const PAYPAL_PLANS = {
   essentials: "P-1NE00583S5561651HNITP2ZI",
   pro:        "P-7M170334YK027974RNITP7NY",
@@ -315,84 +312,268 @@ body{background:#050709;color:#F4F7FF;font-family:'Syne',sans-serif;-webkit-font
 `;
 
 // ─── SMART COLUMN MAPPER ─────────────────────────────────────
-const COL_PATTERNS = {
-  revenue:  ["revenue","income","sales","total sales","gross sales","total income","turnover","receipts","invoiced","earnings"],
-  expenses: ["expenses","expense","costs","total costs","total expenses","outgoings","expenditure","spend","overheads","payments","disbursements"],
-  cogs:     ["cogs","cost of goods","cost of sales","direct costs","product cost","cost of revenue"],
-  payroll:  ["payroll","salaries","wages","staff costs","personnel","labor","labour"],
-  marketing:["marketing","advertising","ad spend","ads","promotion","marketing spend","paid media"],
-  cash:     ["cash","cash balance","bank balance","liquid","cash on hand","balance","closing balance"],
-  cac:      ["cac","customer acquisition cost","acquisition cost","cost per customer","cost per acquisition"],
-  ltv:      ["ltv","lifetime value","customer lifetime value","clv","customer value"],
-  leads:    ["leads","prospects","enquiries","inquiries","new leads","pipeline entries","opportunities"],
-  closures: ["closures","closed","deals closed","won","conversions","new customers","new clients","signed"],
-  refunds:  ["refunds","returns","chargebacks","reversals","credit notes"],
-  month:    ["month","period","date","time period","week","quarter","month/year"],
+// ─── EXPENSE CATEGORY DETECTOR ───────────────────────────────
+const EXPENSE_CATEGORIES = {
+  payroll:   ["salary","salaries","payroll","wages","staff","employee","remuner","hr payment","paye"],
+  rent:      ["rent","lease","property","office","premises","landlord"],
+  marketing: ["facebook","google ads","instagram","advertising","marketing","ads","tiktok","media buy","promotion","campaign"],
+  utilities: ["electricity","water","internet","vodacom","mtn","telkom","cell","airtime","wifi"],
+  software:  ["subscription","saas","software","app","license","adobe","microsoft","slack","zoom","aws","hosting"],
+  banking:   ["bank fee","service fee","transaction fee","monthly fee","admin fee","charge"],
+  cogs:      ["supplier","stock","inventory","cost of goods","materials","printing","shipping","courier","delivery"],
+  tax:       ["sars","vat","tax","paye","uif","sdl"],
 };
 
-const matchColumn = (header) => {
-  const h = header.toLowerCase().trim().replace(/[_-]/g," ");
-  for (const [field, patterns] of Object.entries(COL_PATTERNS)) {
-    if (patterns.some(p => h.includes(p) || p.includes(h))) return field;
+const detectExpenseCategory = (description) => {
+  if (!description) return "other";
+  const d = description.toLowerCase();
+  for (const [cat, keywords] of Object.entries(EXPENSE_CATEGORIES)) {
+    if (keywords.some(k => d.includes(k))) return cat;
   }
-  return null;
+  return "other";
 };
+
+const detectIncomeFromDescription = (description) => {
+  if (!description) return false;
+  const d = description.toLowerCase();
+  const incomeSignals = ["invoice","payment received","deposit","transfer in","client","customer","sale","revenue","income","receipt","credit"];
+  return incomeSignals.some(k => d.includes(k));
+};
+
+// ─── SMART PARSER — reads any real bank or accounting export ──
+// Handles:
+//   - Bank CSVs: Date, Description, Amount (positive=in, negative=out)
+//   - Debit/Credit split columns (FNB, Nedbank, Standard Bank formats)
+//   - QuickBooks, Xero, Wave exports
+//   - Named column exports (Revenue/Expenses/etc)
+//   - Tab-separated files
+//   - Semicolon-separated files
 
 const parseAnyCSV = (text) => {
-  const rows = text.trim().split(/\r?\n/).map(r => {
+  // ── Detect delimiter ─────────────────────────────────────────
+  const firstLine = text.trim().split(/\r?\n/)[0] || "";
+  const delimiter = firstLine.includes("\t") ? "\t" : firstLine.includes(";") ? ";" : ",";
+
+  // ── Parse rows ───────────────────────────────────────────────
+  const parseRow = (line) => {
     const cols = []; let cur = ""; let inQ = false;
-    for (const ch of r) {
+    for (const ch of line) {
       if (ch === '"') { inQ = !inQ; }
-      else if (ch === "," && !inQ) { cols.push(cur.trim()); cur = ""; }
+      else if (ch === delimiter && !inQ) { cols.push(cur.trim()); cur = ""; }
       else cur += ch;
     }
     cols.push(cur.trim());
-    return cols;
-  }).filter(r => r.some(c => c.length > 0));
+    return cols.map(c => c.replace(/^"|"$/g, "").trim());
+  };
 
-  if (rows.length < 2) return null;
-  const headers = rows[0];
-  const mapping = {};
-  headers.forEach((h, i) => {
-    const f = matchColumn(h);
-    if (f && !(f in mapping)) mapping[f] = i;
+  const allRows = text.trim().split(/\r?\n/)
+    .map(parseRow)
+    .filter(r => r.some(c => c.length > 0));
+
+  if (allRows.length < 2) return null;
+
+  // ── Find header row (may not always be row 0 in bank exports) ─
+  let headerRowIdx = 0;
+  for (let i = 0; i < Math.min(5, allRows.length); i++) {
+    const row = allRows[i];
+    const rowStr = row.join(" ").toLowerCase();
+    if (rowStr.includes("date") || rowStr.includes("amount") || rowStr.includes("description")
+      || rowStr.includes("revenue") || rowStr.includes("debit") || rowStr.includes("credit")) {
+      headerRowIdx = i;
+      break;
+    }
+  }
+
+  const headers = allRows[headerRowIdx].map(h => h.toLowerCase().replace(/[_\-\s]+/g, " ").trim());
+  const dataRows = allRows.slice(headerRowIdx + 1);
+
+  // ── Find columns by name ──────────────────────────────────────
+  const findCol = (patterns) => {
+    for (const p of patterns) {
+      const idx = headers.findIndex(h => h.includes(p) || p.includes(h));
+      if (idx !== -1) return idx;
+    }
+    return -1;
+  };
+
+  const dateCol    = findCol(["date","period","month","transaction date","posting date","value date","trans date"]);
+  const descCol    = findCol(["description","narrative","details","reference","memo","particulars","transaction","name","payee"]);
+  const amountCol  = findCol(["amount","value","net amount","total"]);
+  const debitCol   = findCol(["debit","debit amount","payment","out","withdrawals","charges"]);
+  const creditCol  = findCol(["credit","credit amount","deposit","in","receipts","money in"]);
+  const balanceCol = findCol(["balance","running balance","closing balance","available"]);
+  const revenueCol = findCol(["revenue","income","sales","turnover","gross sales","total income","receipts earned"]);
+  const expenseCol = findCol(["expenses","expense","costs","total expenses","expenditure","overheads","total costs"]);
+
+  // ── Parse a number cleanly from any format ────────────────────
+  const toNum = (val) => {
+    if (val === undefined || val === null || val === "" || val === "-" || val === "—") return 0;
+    const cleaned = String(val)
+      .replace(/[R$£€\s,]/g, "")      // Remove currency symbols and commas
+      .replace(/\(([^)]+)\)/, "-$1"); // (1234) = -1234
+    const n = Number(cleaned);
+    return isNaN(n) ? 0 : n;
+  };
+
+  // ── Parse a date and return YYYY-MM ──────────────────────────
+  const toMonthKey = (val) => {
+    if (!val) return null;
+    const s = String(val).trim();
+
+    // Already a month name or period
+    if (/^(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/i.test(s)) {
+      return s.substring(0, 3).toLowerCase();
+    }
+
+    // Try various date formats
+    const patterns = [
+      /(\d{4})[\/\-](\d{1,2})/,        // 2024-01, 2024/01
+      /(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/, // 01/05/2024
+      /(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2})$/, // 01/05/24
+      /(\d{1,2})\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\s+(\d{4})/i, // 5 Jan 2024
+    ];
+
+    const monthNames = ["jan","feb","mar","apr","may","jun","jul","aug","sep","oct","nov","dec"];
+
+    for (const pat of patterns) {
+      const m = s.match(pat);
+      if (m) {
+        // 2024-01 format
+        if (m[0].match(/^\d{4}/)) {
+          const yr = m[1]; const mo = m[2].padStart(2,"0");
+          return `${yr}-${mo}`;
+        }
+        // DD/MM/YYYY or similar
+        if (m[3] && m[3].length === 4) {
+          const yr = m[3]; const mo = m[2].padStart(2,"0");
+          return `${yr}-${mo}`;
+        }
+        if (m[3] && m[3].length === 2) {
+          const yr = `20${m[3]}`; const mo = m[2].padStart(2,"0");
+          return `${yr}-${mo}`;
+        }
+        // 5 Jan 2024
+        if (isNaN(m[2])) {
+          const moIdx = monthNames.indexOf(m[2].toLowerCase());
+          if (moIdx !== -1) return `${m[3]}-${String(moIdx+1).padStart(2,"0")}`;
+        }
+      }
+    }
+
+    // Fallback: just use the raw value trimmed
+    return s.substring(0, 7);
+  };
+
+  // ── Determine parsing mode ───────────────────────────────────
+  // Mode A: Named columns (Revenue / Expenses) — structured export
+  // Mode B: Amount column (positive = in, negative = out) — bank statement
+  // Mode C: Debit + Credit split columns — some bank formats
+
+  const isNamedMode  = revenueCol !== -1 && expenseCol !== -1;
+  const isSplitMode  = debitCol !== -1 && creditCol !== -1 && amountCol === -1;
+  const isBankMode   = amountCol !== -1 && !isNamedMode;
+
+  // ── Process each row ─────────────────────────────────────────
+  const monthBuckets = {}; // { "2024-01": { revenue, expenses, cash, categories } }
+
+  dataRows.forEach((row) => {
+    if (row.every(c => c === "")) return; // skip blank rows
+
+    let revenue = 0;
+    let expenses = 0;
+    let cash = 0;
+    const desc = descCol !== -1 ? row[descCol] || "" : "";
+    const monthKey = toMonthKey(dateCol !== -1 ? row[dateCol] : null) || "Unknown";
+    const category = detectExpenseCategory(desc);
+
+    if (isNamedMode) {
+      // Structured export — named columns
+      revenue  = Math.abs(toNum(row[revenueCol]));
+      expenses = Math.abs(toNum(row[expenseCol]));
+      if (balanceCol !== -1) cash = toNum(row[balanceCol]);
+
+    } else if (isSplitMode) {
+      // Debit/Credit columns
+      const debit  = Math.abs(toNum(row[debitCol]));
+      const credit = Math.abs(toNum(row[creditCol]));
+      expenses = debit;
+      revenue  = credit;
+      if (balanceCol !== -1) cash = toNum(row[balanceCol]);
+
+    } else if (isBankMode) {
+      // Single amount column — positive = in, negative = out
+      const amt = toNum(row[amountCol]);
+      if (amt > 0) {
+        // Money in — classify as revenue unless description says otherwise
+        revenue = amt;
+      } else if (amt < 0) {
+        // Money out — classify as expense
+        expenses = Math.abs(amt);
+      }
+      if (balanceCol !== -1) cash = toNum(row[balanceCol]);
+    }
+
+    // Skip rows with no financial data
+    if (revenue === 0 && expenses === 0) return;
+
+    // Bucket by month
+    if (!monthBuckets[monthKey]) {
+      monthBuckets[monthKey] = {
+        revenue: 0, expenses: 0, cash: 0,
+        categories: {},
+        transactions: 0,
+      };
+    }
+    monthBuckets[monthKey].revenue    += revenue;
+    monthBuckets[monthKey].expenses   += expenses;
+    monthBuckets[monthKey].cash        = cash || monthBuckets[monthKey].cash;
+    monthBuckets[monthKey].transactions++;
+
+    // Track expense categories
+    if (expenses > 0 && category !== "other") {
+      monthBuckets[monthKey].categories[category] =
+        (monthBuckets[monthKey].categories[category] || 0) + expenses;
+    }
   });
 
-  const getNum = (row, field) => {
-    if (!(field in mapping)) return 0;
-    const v = row[mapping[field]];
-    const n = Number(String(v || "0").replace(/[$,\s%R]/g, "").replace(/\((.+)\)/, "-$1"));
-    return isNaN(n) ? 0 : Math.abs(n);
-  };
-  const getStr = (row, field, fb) => {
-    if (!(field in mapping)) return fb;
-    return String(row[mapping[field]] || fb).trim().substring(0, 20);
-  };
+  // ── Convert buckets to rows ───────────────────────────────────
+  const sortedKeys = Object.keys(monthBuckets).sort();
+  if (sortedKeys.length === 0) return null;
 
-  const data = rows.slice(1).map((row, i) => {
-    let rev = getNum(row, "revenue");
-    let exp = getNum(row, "expenses");
-    const cogs = getNum(row, "cogs");
-    const pay  = getNum(row, "payroll");
-    const mkt  = getNum(row, "marketing");
-    if (exp === 0 && (cogs + pay + mkt) > 0) exp = cogs + pay + mkt;
+  const rows = sortedKeys.map((key) => {
+    const b = monthBuckets[key];
+    // Format month key for display
+    const display = key.match(/^\d{4}-(\d{2})$/)
+      ? new Date(key + "-01").toLocaleDateString("en-US", { month:"short", year:"2-digit" })
+      : key;
     return {
-      month:    getStr(row, "month", `Period ${i + 1}`),
-      revenue:  rev,
-      expenses: exp,
-      cogs,
-      payroll:  pay,
-      marketing:mkt,
-      cash:     getNum(row, "cash"),
-      leads:    getNum(row, "leads"),
-      closures: getNum(row, "closures"),
-      refunds:  getNum(row, "refunds"),
-      cac:      getNum(row, "cac"),
-      ltv:      getNum(row, "ltv"),
+      month:      display,
+      revenue:    Math.round(b.revenue),
+      expenses:   Math.round(b.expenses),
+      cash:       Math.round(b.cash),
+      payroll:    Math.round(b.categories.payroll   || 0),
+      marketing:  Math.round(b.categories.marketing || 0),
+      cogs:       Math.round(b.categories.cogs      || 0),
+      rent:       Math.round(b.categories.rent      || 0),
+      software:   Math.round(b.categories.software  || 0),
+      leads:      0,
+      closures:   0,
+      cac:        0,
+      ltv:        0,
     };
   }).filter(r => r.revenue > 0 || r.expenses > 0);
 
-  return { rows: data, detectedFields: Object.keys(mapping) };
+  if (rows.length === 0) return null;
+
+  const detectedFields = [];
+  if (isNamedMode)  detectedFields.push("Revenue", "Expenses");
+  if (isBankMode)   detectedFields.push("Transactions", "Income", "Outflows");
+  if (isSplitMode)  detectedFields.push("Debits", "Credits");
+  if (dateCol !== -1)  detectedFields.push("Dates");
+  if (descCol !== -1)  detectedFields.push("Categories");
+  if (balanceCol !== -1) detectedFields.push("Balance");
+
+  return { rows, detectedFields, mode: isNamedMode?"named":isSplitMode?"split":"bank" };
 };
 
 // ─── RING CHART ───────────────────────────────────────────────
@@ -641,7 +822,7 @@ function DataUpload({ onDataLoaded, hasData }) {
 }
 
 // ─── PAY MODAL ────────────────────────────────────────────────
-function PayModal({ planKey, userEmail, userID, onClose, onSuccess }) {
+function PayModal({ planKey, userEmail, userId, onClose, onSuccess }) {
   const plan = PLANS[planKey];
   const btnRef   = useRef(null);
   const rendered = useRef(false);
@@ -651,7 +832,6 @@ function PayModal({ planKey, userEmail, userID, onClose, onSuccess }) {
 
   useEffect(() => {
     rendered.current = false;
-    // Remove previous SDK to force fresh load
     const old = document.getElementById("pp-sdk");
     if (old) old.remove();
     window.paypal = undefined;
@@ -671,16 +851,16 @@ function PayModal({ planKey, userEmail, userID, onClose, onSuccess }) {
     rendered.current = true;
     btnRef.current.innerHTML = "";
 
-window.paypal.Buttons({
+    window.paypal.Buttons({
       style: { color:"gold", shape:"rect", label:"subscribe", layout:"vertical" },
       createSubscription: (_d, actions) =>
-        actions.subscription.create({ 
-          plan_id: PAYPAL_PLANS[planKey],
-          custom_id: userID,
+        actions.subscription.create({
+          plan_id:   PAYPAL_PLANS[planKey],
+          custom_id: userId,
         }),
-      onApprove: async (data) => {
-        // Securely handled by your backend webhook now. 
-        // The browser no longer writes directly to the database.
+      onApprove: async () => {
+        // Plan upgrade is handled server-side by the paypal-webhook Edge Function.
+        // The browser only updates the UI — it no longer writes to the database.
         setDone(true);
         onSuccess(planKey);
       },
@@ -689,7 +869,7 @@ window.paypal.Buttons({
         setSdkErr("Payment failed. Please try again.");
       },
     }).render(btnRef.current).catch(e => {
-      setSdkErr(`PayPal could not render. Ensure your Plan IDs match your PayPal environment (sandbox vs live). Error: ${e.message}`);
+      setSdkErr(`PayPal could not render. Ensure your Plan IDs match your PayPal environment. Error: ${e.message}`);
     });
   }, [sdkReady]);
 
@@ -807,6 +987,11 @@ function Dashboard({ user, profile, onLogout, onUpgrade }) {
 
   const runAI = async () => {
     setAiLoad(true); setAiText("");
+    // Aggregate expense categories from uploaded bank data if available
+    const totPayroll  = rows ? rows.reduce((s,d) => s + (d.payroll   || 0), 0) : 0;
+    const totRent     = rows ? rows.reduce((s,d) => s + (d.rent      || 0), 0) : 0;
+    const totMktCat   = rows ? rows.reduce((s,d) => s + (d.marketing || 0), 0) : 0;
+    const totSoftware = rows ? rows.reduce((s,d) => s + (d.software  || 0), 0) : 0;
     try {
       const { data: result, error } = await supabase.functions.invoke("analyze-finances", {
         body: {
@@ -830,6 +1015,12 @@ function Dashboard({ user, profile, onLogout, onUpgrade }) {
           plan,
           mode,
           dataMonths:     n,
+          // Expense breakdown from bank statement parser
+          payroll:   totPayroll  || null,
+          rent:      totRent     || null,
+          marketing: totMktCat   || null,
+          software:  totSoftware || null,
+          cogs:      totCogs     || null,
         },
       });
       if (error) throw error;
@@ -1117,7 +1308,7 @@ function Dashboard({ user, profile, onLogout, onUpgrade }) {
                     <div style={{ fontSize:13, color:C.ink, fontFamily:"'Cormorant Garamond',serif", lineHeight:1.6, marginBottom:12 }}>
                       Direct access for capital decisions and growth strategy. Response within 4 hours.
                     </div>
-                    <button className="wa-btn" onClick={() => window.open("https://wa.me/27810068255?text=Hi%2C+I+need+advisory+support+for+my+Command+Ledger+account","_blank")}>
+                    <button className="wa-btn" onClick={() => window.open("https://wa.me/27YOURNUMBER?text=Hi%2C+I+need+advisory+support+for+my+Command+Ledger+account","_blank")}>
                       Open WhatsApp
                     </button>
                   </div>
@@ -1126,7 +1317,7 @@ function Dashboard({ user, profile, onLogout, onUpgrade }) {
                     <div style={{ fontSize:13, color:C.ink, fontFamily:"'Cormorant Garamond',serif", lineHeight:1.6, marginBottom:12 }}>
                       60-minute session. Bring your numbers. Leave with a written 30-day capital plan.
                     </div>
-                    <button className="cal-btn" onClick={() => window.open("https://calendly.com/commandledger/new-meeting","_blank")}>Book a Session</button>
+                    <button className="cal-btn" onClick={() => window.open("https://calendly.com/commandledger","_blank")}>Book a Session</button>
                   </div>
                 </div>
               </div>
@@ -1334,7 +1525,7 @@ function MarketingSite({ onLogin, onPlanSelect, onTerms, onPrivacy }) {
                 {p.soon ? (
                   <button
                     className="btn btn-full btn-outline"
-                    onClick={() => window.open("https://wa.me/27?text=I'm+interested+in+Command+Elite+VIP+--+please+notify+me+when+it+launches","_blank")}
+                    onClick={() => window.open("https://wa.me/27YOURNUMBER?text=I'm+interested+in+Command+Elite+VIP+--+please+notify+me+when+it+launches","_blank")}
                   >
                     Join VIP Waitlist
                   </button>
@@ -1436,6 +1627,61 @@ function PrivacyPage({ onBack }) {
   );
 }
 
+// ─── PAYWALL GATE ─────────────────────────────────────────────
+// Shown instead of the Dashboard when profile.plan is empty.
+// No data, no features, no bypass — user must subscribe to proceed.
+function PaywallGate({ user, onSelectPlan, onLogout }) {
+  const userName = user?.user_metadata?.full_name || user?.email?.split("@")[0] || "Founder";
+  return (
+    <div className="auth-page">
+      <div className="auth-card" style={{ maxWidth:680 }}>
+        <div className="auth-logo-row">
+          <div className="logomark">C</div>
+          <div><div className="wordmark" style={{ fontSize:17 }}>Command Ledger</div><div className="wordmark-sub">Financial Intelligence</div></div>
+        </div>
+        <div className="auth-h">
+          <h2 className="auth-title">Welcome, {userName}</h2>
+          <p className="auth-sub">Your account is created. Choose a plan to activate your command center --- no dashboard access until a subscription is active.</p>
+        </div>
+        <div className="auth-form">
+          <div style={{ display:"flex", flexDirection:"column", gap:14 }}>
+            {[
+              { key:"essentials", hot:false },
+              { key:"pro",        hot:true  },
+            ].map(p => {
+              const pl = PLANS[p.key];
+              return (
+                <div key={p.key} style={{
+                  background:C.surfaceHigh,
+                  border:`1px solid ${p.hot ? C.gold : C.border}`,
+                  padding:"18px 20px",
+                  display:"flex",
+                  justifyContent:"space-between",
+                  alignItems:"center",
+                  gap:16,
+                }}>
+                  <div>
+                    <div style={{ fontSize:10, letterSpacing:"0.16em", textTransform:"uppercase", color:C.gold, fontWeight:600, marginBottom:4 }}>{pl.name}</div>
+                    <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:22, color:C.cream }}>
+                      ${pl.usd.toLocaleString()} <span style={{ fontSize:12, color:C.inkDim }}>{pl.period}</span>
+                    </div>
+                  </div>
+                  <button className={`btn ${p.hot ? "btn-primary" : "btn-outline"}`} style={{ padding:"10px 22px", fontSize:11, whiteSpace:"nowrap" }} onClick={() => onSelectPlan(p.key)}>
+                    Subscribe
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+          <div className="a-link" onClick={onLogout} style={{ marginTop:24 }}>
+            <span>Sign out</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── ROOT ─────────────────────────────────────────────────────
 export default function App() {
   const [appState, setAppState] = useState("loading");
@@ -1451,7 +1697,7 @@ export default function App() {
           id:    u.id,
           email: u.email,
           name:  u.user_metadata?.full_name || u.email?.split("@")[0] || "Founder",
-          plan:  "essentials",
+          plan:  null,
           updated_at: new Date().toISOString(),
         };
         const { data: created } = await supabase.from("profiles").upsert(np).select().single();
@@ -1465,9 +1711,9 @@ export default function App() {
       setAppState("dashboard");
     } catch (err) {
       console.error("Profile error:", err);
-      // Fallback: show dashboard with essentials so auth never breaks
+      // Fallback: still show the gate, never grant free access on error
       setUser(u);
-      setProfile({ id:u.id, email:u.email, name:u.user_metadata?.full_name||u.email?.split("@")[0]||"Founder", plan:"essentials" });
+      setProfile({ id:u.id, email:u.email, name:u.user_metadata?.full_name||u.email?.split("@")[0]||"Founder", plan:null });
       setAppState("dashboard");
     }
   }, []);
@@ -1524,12 +1770,20 @@ export default function App() {
         <LoginPage onBack={() => setAppState("marketing")}/>
       )}
       {appState==="dashboard" && user && profile && (
-        <Dashboard
-          user={user}
-          profile={profile}
-          onLogout={async () => { await supabase.auth.signOut(); }}
-          onUpgrade={() => { if (profile.plan === "essentials") setPayModal("pro"); }}
-        />
+        profile.plan ? (
+          <Dashboard
+            user={user}
+            profile={profile}
+            onLogout={async () => { await supabase.auth.signOut(); }}
+            onUpgrade={() => { if (profile.plan === "essentials") setPayModal("pro"); }}
+          />
+        ) : (
+          <PaywallGate
+            user={user}
+            onSelectPlan={(planKey) => setPayModal(planKey)}
+            onLogout={async () => { await supabase.auth.signOut(); }}
+          />
+        )
       )}
       {appState==="terms"   && <TermsPage   onBack={() => setAppState("marketing")}/>}
       {appState==="privacy" && <PrivacyPage onBack={() => setAppState("marketing")}/>}
