@@ -1582,51 +1582,6 @@ function MarketingSite({ onLogin, onPlanSelect, onTerms, onPrivacy }) {
   );
 }
 
-// ─── LEGAL PAGES ─────────────────────────────────────────────
-function TermsPage({ onBack }) {
-  return (
-    <div style={{ minHeight:"100vh" }}>
-      <div className="page-wrap">
-        <div className="page-back" onClick={onBack}>Back</div>
-        <h1 className="page-title">Terms of Service</h1>
-        <div className="page-date">Last updated: June 2026</div>
-        <h2 className="page-h2">1. Acceptance</h2>
-        <p className="page-p">By using Command Ledger you agree to these Terms of Service.</p>
-        <h2 className="page-h2">2. Service</h2>
-        <p className="page-p">Command Ledger provides AI-powered financial intelligence for founders and business owners, including analytics, capital allocation tools, and AI-generated strategic recommendations.</p>
-        <h2 className="page-h2">3. Payment</h2>
-        <p className="page-p">Subscriptions are billed monthly via PayPal. Subscriptions auto-renew unless cancelled at least 7 days before the renewal date.</p>
-        <h2 className="page-h2">4. Refunds</h2>
-        <p className="page-p">7-day refund on monthly subscriptions for first-time subscribers. Elite setup fees are non-refundable once configuration has begun.</p>
-        <h2 className="page-h2">5. Disclaimer</h2>
-        <p className="page-p">Command Ledger is for informational purposes only. This is not financial advice. Consult a qualified professional before major business decisions.</p>
-        <h2 className="page-h2">6. Contact</h2>
-        <p className="page-p">hello@commandledger.co</p>
-      </div>
-    </div>
-  );
-}
-
-function PrivacyPage({ onBack }) {
-  return (
-    <div style={{ minHeight:"100vh" }}>
-      <div className="page-wrap">
-        <div className="page-back" onClick={onBack}>Back</div>
-        <h1 className="page-title">Privacy Policy</h1>
-        <div className="page-date">Last updated: June 2026</div>
-        <h2 className="page-h2">1. What We Collect</h2>
-        <p className="page-p">Name, email, and authentication details on sign-in. Financial data you upload or connect. Usage data such as features accessed and session duration.</p>
-        <h2 className="page-h2">2. How We Use It</h2>
-        <p className="page-p">To provide the Service, process payments, deliver AI analysis, and send account updates. We do not sell your data.</p>
-        <h2 className="page-h2">3. Security</h2>
-        <p className="page-p">All data encrypted via SSL. Financial data processed in real time and not permanently stored. User accounts stored securely via Supabase.</p>
-        <h2 className="page-h2">4. Contact</h2>
-        <p className="page-p">privacy@commandledger.co</p>
-      </div>
-    </div>
-  );
-}
-
 // ─── PAYWALL GATE ─────────────────────────────────────────────
 // Shown instead of the Dashboard when profile.plan is empty.
 // No data, no features, no bypass — user must subscribe to proceed.
@@ -1788,5 +1743,113 @@ export default function App() {
       {appState==="terms"   && <TermsPage   onBack={() => setAppState("marketing")}/>}
       {appState==="privacy" && <PrivacyPage onBack={() => setAppState("marketing")}/>}
     </>
+  );
+}
+// ─── LEGAL PAGES ─────────────────────────────────────────────
+
+function TermsPage({ onBack }) {
+  return (
+    <div style={{ minHeight: "100vh", width: "100%" }}>
+      <div className="page-wrap">
+        <button 
+          className="page-back" 
+          onClick={onBack}
+          style={{ background: 'none', border: 'none', cursor: 'pointer', textAlign: 'left' }}
+        >
+          Back
+        </button>
+        <h1 className="page-title">Terms of Service</h1>
+        <div className="page-date">Last updated: June 2026</div>
+        
+        <section>
+          <h2 className="page-h2">1. Acceptance</h2>
+          <p className="page-p">By using Command Ledger you agree to these Terms of Service.</p>
+        </section>
+
+        <section>
+          <h2 className="page-h2">2. Service</h2>
+          <p className="page-p">
+            Command Ledger provides AI-powered financial intelligence for founders and business owners, 
+            including analytics, capital allocation tools, and AI-generated strategic recommendations.
+          </p>
+        </section>
+
+        <section>
+          <h2 className="page-h2">3. Payment</h2>
+          <p className="page-p">
+            Subscriptions are billed monthly via PayPal. Subscriptions auto-renew unless cancelled 
+            at least 7 days before the renewal date.
+          </p>
+        </section>
+
+        <section>
+          <h2 className="page-h2">4. Refunds</h2>
+          <p className="page-p">
+            7-day refund on monthly subscriptions for first-time subscribers. Elite setup fees 
+            are non-refundable once configuration has begun.
+          </p>
+        </section>
+
+        <section>
+          <h2 className="page-h2">5. Disclaimer</h2>
+          <p className="page-p">
+            Command Ledger is for informational purposes only. This is not financial advice. 
+            Consult a qualified professional before major business decisions.
+          </p>
+        </section>
+
+        <section>
+          <h2 className="page-h2">6. Contact</h2>
+          <p className="page-p">hello@commandledger.co</p>
+        </section>
+      </div>
+    </div>
+  );
+}
+
+function PrivacyPage({ onBack }) {
+  return (
+    <div style={{ minHeight: "100vh", width: "100%" }}>
+      <div className="page-wrap">
+        <button 
+          className="page-back" 
+          onClick={onBack}
+          style={{ background: 'none', border: 'none', cursor: 'pointer', textAlign: 'left' }}
+        >
+          Back
+        </button>
+        <h1 className="page-title">Privacy Policy</h1>
+        <div className="page-date">Last updated: June 2026</div>
+        
+        <section>
+          <h2 className="page-h2">1. What We Collect</h2>
+          <p className="page-p">
+            Name, email, and authentication details on sign-in. Financial data you upload or connect. 
+            Usage data such as features accessed and session duration.
+          </p>
+        </section>
+
+        <section>
+          <h2 className="page-h2">2. How We Use It</h2>
+          <p className="page-p">
+            To provide the Service, process payments, deliver AI analysis, and send account updates. 
+            We do not sell your data.
+          </p>
+        </section>
+
+        <section>
+          <h2 className="page-h2">3. Security</h2>
+          <p className="page-p">
+            All data encrypted via SSL. Financial data processed in real time and not permanently stored. 
+            User accounts stored securely via Supabase.
+          </p>
+        </section>
+
+        <section>
+          <h2 className="page-h2">4. Contact</h2>
+          <p className="page-p">privacy@commandledger.co</p>
+        </section>
+      </div>
+    </div>
   );
 }
