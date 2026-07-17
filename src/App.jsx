@@ -1411,6 +1411,54 @@ function LoginPage({ onBack }) {
   );
 }
 
+// ─── FAQ ACCORDION ────────────────────────────────────────────
+function FaqItem({ q, a }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div style={{
+      borderBottom: `1px solid ${C.border}`,
+      padding: "20px 0",
+      cursor: "pointer",
+    }} onClick={() => setOpen(!open)}>
+      <div style={{
+        display: "flex",
+        justifyContent: "space-between",
+        alignItems: "center",
+        gap: 16,
+      }}>
+        <div style={{
+          fontFamily: "'Syne', sans-serif",
+          fontSize: 14,
+          fontWeight: 600,
+          color: open ? C.gold : C.cream,
+          transition: "color 0.2s",
+          lineHeight: 1.4,
+        }}>{q}</div>
+        <div style={{
+          fontSize: 20,
+          color: C.gold,
+          flexShrink: 0,
+          transition: "transform 0.2s",
+          transform: open ? "rotate(45deg)" : "rotate(0deg)",
+          fontFamily: "'JetBrains Mono', monospace",
+          lineHeight: 1,
+        }}>+</div>
+      </div>
+      {open && (
+        <div style={{
+          fontFamily: "'Cormorant Garamond', serif",
+          fontSize: 15,
+          color: C.ink,
+          lineHeight: 1.85,
+          marginTop: 14,
+          paddingRight: 32,
+          animation: "fadeUp 0.2s ease",
+        }}>{a}</div>
+      )}
+    </div>
+  );
+}
+
 // ─── MARKETING SITE ───────────────────────────────────────────
 function MarketingSite({ onLogin, onPlanSelect, onTerms, onPrivacy }) {
   const [scrolled, setScrolled] = useState(false);
@@ -1488,6 +1536,56 @@ function MarketingSite({ onLogin, onPlanSelect, onTerms, onPrivacy }) {
               <p className="feat-desc">{f.desc}</p>
             </div>
           ))}
+        </div>
+      </section>
+
+      <section className="sec sec-center" id="proof-quote" style={{ borderTop:`1px solid ${C.border}` }}>
+        <div style={{ maxWidth:720, margin:"0 auto" }}>
+          <div style={{
+            background:C.surfaceHigh,
+            border:`1px solid ${C.goldDim}`,
+            padding:"32px 40px",
+            position:"relative",
+            marginBottom:64,
+          }}>
+            <div style={{ position:"absolute", top:0, left:0, right:0, height:2, background:`linear-gradient(to right,transparent,${C.gold},transparent)` }}/>
+            <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:22, color:C.cream, lineHeight:1.7, fontStyle:"italic", marginBottom:20 }}>
+              "I thought I had 8 months of runway. Command Ledger showed me I had 3.1. That changed every decision I was about to make."
+            </div>
+            <div style={{ fontSize:11, color:C.gold, letterSpacing:"0.14em", textTransform:"uppercase", fontWeight:600 }}>
+              Founder, Agency — South Africa
+            </div>
+          </div>
+
+          <div className="sec-eye">How It Works</div>
+          <h2 className="sec-title">Questions founders<br/><em>always ask</em></h2>
+
+          <div style={{ display:"flex", flexDirection:"column", gap:2, marginTop:40, textAlign:"left" }}>
+            {[
+              {
+                q: "How does the AI advisor work?",
+                a: "You upload your financial file. Command Ledger reads every transaction, calculates your real margin, burn runway, true free cash, and unit economics. That data is sent to Claude — built by Anthropic — which analyzes your specific numbers and writes a directive telling you exactly what to do this week. Not generic advice. Your numbers. Your directive.",
+              },
+              {
+                q: "What file formats does it accept?",
+                a: "Bank statements, QuickBooks exports, Xero exports, Wave exports, and any CSV or Excel file. The system automatically detects your column structure — whether you have named columns like Revenue and Expenses, or a raw bank statement with positive and negative amounts. It reads all of them.",
+              },
+              {
+                q: "Is my financial data safe?",
+                a: "Your uploaded files are processed in your browser and never permanently stored on our servers. Your account data is encrypted and stored in Supabase with row-level security — meaning only you can access your own data. We do not sell your data. We do not share it. We do not use it to train AI models.",
+              },
+              {
+                q: "When should I still use a human accountant?",
+                a: "Always. Command Ledger gives you real-time decision intelligence between your accountant visits. Your accountant handles tax compliance, SARS submissions, and historical reporting. Command Ledger handles the decisions you need to make today — hiring, spending, scaling, and cash management.",
+              },
+              {
+                q: "What if my numbers are a mess?",
+                a: "That is exactly when you need this most. Upload whatever you have — even one month of bank transactions. The system will find patterns in your numbers regardless of how clean or messy the source file is. Most founders are surprised by what it finds in data they thought was unremarkable.",
+              },
+            ].map((item, i) => (
+              <FaqItem key={i} q={item.q} a={item.a}/>
+            ))}
+          </div>
         </div>
       </section>
 
@@ -1579,6 +1677,51 @@ function MarketingSite({ onLogin, onPlanSelect, onTerms, onPrivacy }) {
         </ul>
       </footer>
     </>
+  );
+}
+
+// ─── LEGAL PAGES ─────────────────────────────────────────────
+function TermsPage({ onBack }) {
+  return (
+    <div style={{ minHeight:"100vh" }}>
+      <div className="page-wrap">
+        <div className="page-back" onClick={onBack}>Back</div>
+        <h1 className="page-title">Terms of Service</h1>
+        <div className="page-date">Last updated: June 2026</div>
+        <h2 className="page-h2">1. Acceptance</h2>
+        <p className="page-p">By using Command Ledger you agree to these Terms of Service.</p>
+        <h2 className="page-h2">2. Service</h2>
+        <p className="page-p">Command Ledger provides AI-powered financial intelligence for founders and business owners, including analytics, capital allocation tools, and AI-generated strategic recommendations.</p>
+        <h2 className="page-h2">3. Payment</h2>
+        <p className="page-p">Subscriptions are billed monthly via PayPal. Subscriptions auto-renew unless cancelled at least 7 days before the renewal date.</p>
+        <h2 className="page-h2">4. Refunds</h2>
+        <p className="page-p">7-day refund on monthly subscriptions for first-time subscribers. Elite setup fees are non-refundable once configuration has begun.</p>
+        <h2 className="page-h2">5. Disclaimer</h2>
+        <p className="page-p">Command Ledger is for informational purposes only. This is not financial advice. Consult a qualified professional before major business decisions.</p>
+        <h2 className="page-h2">6. Contact</h2>
+        <p className="page-p">hello@commandledger.co</p>
+      </div>
+    </div>
+  );
+}
+
+function PrivacyPage({ onBack }) {
+  return (
+    <div style={{ minHeight:"100vh" }}>
+      <div className="page-wrap">
+        <div className="page-back" onClick={onBack}>Back</div>
+        <h1 className="page-title">Privacy Policy</h1>
+        <div className="page-date">Last updated: June 2026</div>
+        <h2 className="page-h2">1. What We Collect</h2>
+        <p className="page-p">Name, email, and authentication details on sign-in. Financial data you upload or connect. Usage data such as features accessed and session duration.</p>
+        <h2 className="page-h2">2. How We Use It</h2>
+        <p className="page-p">To provide the Service, process payments, deliver AI analysis, and send account updates. We do not sell your data.</p>
+        <h2 className="page-h2">3. Security</h2>
+        <p className="page-p">All data encrypted via SSL. Financial data processed in real time and not permanently stored. User accounts stored securely via Supabase.</p>
+        <h2 className="page-h2">4. Contact</h2>
+        <p className="page-p">privacy@commandledger.co</p>
+      </div>
+    </div>
   );
 }
 
@@ -1743,113 +1886,5 @@ export default function App() {
       {appState==="terms"   && <TermsPage   onBack={() => setAppState("marketing")}/>}
       {appState==="privacy" && <PrivacyPage onBack={() => setAppState("marketing")}/>}
     </>
-  );
-}
-// ─── LEGAL PAGES ─────────────────────────────────────────────
-
-function TermsPage({ onBack }) {
-  return (
-    <div style={{ minHeight: "100vh", width: "100%" }}>
-      <div className="page-wrap">
-        <button 
-          className="page-back" 
-          onClick={onBack}
-          style={{ background: 'none', border: 'none', cursor: 'pointer', textAlign: 'left' }}
-        >
-          Back
-        </button>
-        <h1 className="page-title">Terms of Service</h1>
-        <div className="page-date">Last updated: June 2026</div>
-        
-        <section>
-          <h2 className="page-h2">1. Acceptance</h2>
-          <p className="page-p">By using Command Ledger you agree to these Terms of Service.</p>
-        </section>
-
-        <section>
-          <h2 className="page-h2">2. Service</h2>
-          <p className="page-p">
-            Command Ledger provides AI-powered financial intelligence for founders and business owners, 
-            including analytics, capital allocation tools, and AI-generated strategic recommendations.
-          </p>
-        </section>
-
-        <section>
-          <h2 className="page-h2">3. Payment</h2>
-          <p className="page-p">
-            Subscriptions are billed monthly via PayPal. Subscriptions auto-renew unless cancelled 
-            at least 7 days before the renewal date.
-          </p>
-        </section>
-
-        <section>
-          <h2 className="page-h2">4. Refunds</h2>
-          <p className="page-p">
-            7-day refund on monthly subscriptions for first-time subscribers. Elite setup fees 
-            are non-refundable once configuration has begun.
-          </p>
-        </section>
-
-        <section>
-          <h2 className="page-h2">5. Disclaimer</h2>
-          <p className="page-p">
-            Command Ledger is for informational purposes only. This is not financial advice. 
-            Consult a qualified professional before major business decisions.
-          </p>
-        </section>
-
-        <section>
-          <h2 className="page-h2">6. Contact</h2>
-          <p className="page-p">hello@commandledger.co</p>
-        </section>
-      </div>
-    </div>
-  );
-}
-
-function PrivacyPage({ onBack }) {
-  return (
-    <div style={{ minHeight: "100vh", width: "100%" }}>
-      <div className="page-wrap">
-        <button 
-          className="page-back" 
-          onClick={onBack}
-          style={{ background: 'none', border: 'none', cursor: 'pointer', textAlign: 'left' }}
-        >
-          Back
-        </button>
-        <h1 className="page-title">Privacy Policy</h1>
-        <div className="page-date">Last updated: June 2026</div>
-        
-        <section>
-          <h2 className="page-h2">1. What We Collect</h2>
-          <p className="page-p">
-            Name, email, and authentication details on sign-in. Financial data you upload or connect. 
-            Usage data such as features accessed and session duration.
-          </p>
-        </section>
-
-        <section>
-          <h2 className="page-h2">2. How We Use It</h2>
-          <p className="page-p">
-            To provide the Service, process payments, deliver AI analysis, and send account updates. 
-            We do not sell your data.
-          </p>
-        </section>
-
-        <section>
-          <h2 className="page-h2">3. Security</h2>
-          <p className="page-p">
-            All data encrypted via SSL. Financial data processed in real time and not permanently stored. 
-            User accounts stored securely via Supabase.
-          </p>
-        </section>
-
-        <section>
-          <h2 className="page-h2">4. Contact</h2>
-          <p className="page-p">privacy@commandledger.co</p>
-        </section>
-      </div>
-    </div>
   );
 }
