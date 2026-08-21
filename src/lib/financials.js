@@ -269,6 +269,24 @@ export const parseAnyCSV = (text) => {
   return { rows, detectedFields, mode: isNamedMode?"named":isSplitMode?"split":"bank" };
 };
 
+// Average month-over-month growth rate across up to the last 3 transitions
+// between uploaded months, rather than a single period — one anomalous
+// month (a one-off deal, a delayed invoice) shouldn't solely determine a
+// 90-day forecast. Falls back to the single-period rate when there isn't
+// enough history to average (manual entry, or only one uploaded month).
+export function trailingGrowthRate(rows, singlePeriodVel) {
+  if (!rows || rows.length < 2) return singlePeriodVel;
+  const transitions = [];
+  for (let i = 1; i < rows.length; i++) {
+    if (rows[i - 1].revenue > 0) {
+      transitions.push(((rows[i].revenue - rows[i - 1].revenue) / rows[i - 1].revenue) * 100);
+    }
+  }
+  if (transitions.length === 0) return singlePeriodVel;
+  const lastFew = transitions.slice(-3);
+  return lastFew.reduce((s, v) => s + v, 0) / lastFew.length;
+}
+
 // ─── FINANCIAL METRICS ENGINE ──────────────────────────────────
 // Pure derivation of every ratio/indicator shown on the Dashboard, from
 // either parsed CSV rows (monthly buckets) or manually entered numbers.
@@ -293,31 +311,70 @@ export function computeMetrics(rows, manual, mode) {
   const activeLtv  = rows ? (latest.ltv  || mLtv)  : mLtv;
 
   const n = rows?.length || 1;
+  const hasData  = rows !== null || mRev > 0;
   const totPro   = totRev - totExp;
   const margin   = totRev > 0 ? (totPro / totRev) * 100 : 0;
   const vel      = prev.revenue > 0 ? ((latest.revenue - prev.revenue) / prev.revenue) * 100 : 0;
   const conv     = totL > 0 ? (totC / totL) * 100 : 0;
+  const hasConversionData = totL > 0;
   const ltvcac   = activeCac > 0 ? activeLtv / activeCac : 0;
   const cogsRatio = totRev > 0 ? (totCogs / totRev) * 100 : 0;
   const mktRatio  = totRev > 0 ? (totMkt  / totRev) * 100 : 0;
-  const sov       = Math.min(100, Math.max(0, (margin * 0.6) + (Math.min(conv, 100) * 0.4)));
+  // When there's no lead/conversion data (true for every CSV/bank-statement
+  // upload, since parseAnyCSV always sets leads/closures to 0), conversion's
+  // 40% weight can never be filled — scoring margin*0.6 against that would
+  // cap every such user at 60/100 regardless of actual performance. Give
+  // margin the full weight instead so the score still uses the 0-100 range.
+  const sov       = hasConversionData
+    ? Math.min(100, Math.max(0, (margin * 0.6) + (Math.min(conv, 100) * 0.4)))
+    : Math.min(100, Math.max(0, margin));
   const sovLbl    = sov >= 75 ? "Sovereign" : sov >= 50 ? "Stabilizing" : sov >= 30 ? "Defensive" : "Critical";
   const taxV      = totPro * tr;
   const safV      = totPro * sr;
   const free      = totPro - taxV - safV;
   const avgExp     = totExp / Math.max(n, 1);
-  const burnMonths = avgExp > 0 ? (activeCash + safV) / avgExp : 0;
+  const avgRev     = totRev / Math.max(n, 1);
+  // Runway must reflect net burn (expenses less revenue), not gross
+  // expenses — dividing cash by gross expenses tells a profitable,
+  // cash-flow-positive company it's about to run out of money. When
+  // revenue already covers expenses there's no burn to measure against.
+  const netBurn        = avgExp - avgRev;
+  const cashFlowPositive = hasData && netBurn <= 0;
+  const burnMonths = netBurn > 0 ? (activeCash + safV) / netBurn : 0;
   const hireReady  = free > 25000 * 6;
   const maxRev     = rows ? Math.max(...rows.map(d => d.revenue), 1) : latest.revenue;
   const concentration = totRev > 0 ? (maxRev / totRev) * 100 : 0;
-  const breakEven  = avgExp > 0 && margin > 0 ? avgExp / (margin / 100) : 0;
-  const proj90     = latest.revenue * Math.pow(1 + vel / 100, 3);
-  const hasData    = rows !== null || mRev > 0;
+  // With only 1-2 months of history, the highest month is mechanically a
+  // large share of the total (100% with a single month) regardless of any
+  // real business risk — that's arithmetic, not a signal. Don't treat the
+  // "high concentration" reading as reliable until there's enough months
+  // to actually show a distribution.
+  const concentrationReliable = n >= 3;
+  // Without a fixed/variable cost split, average monthly expenses is the
+  // honest break-even bar: revenue needs to at least cover total costs.
+  // The previous avgExp/(margin/100) formula is not a valid break-even
+  // model — it can place break-even revenue above a company's current
+  // revenue even while that company is already profitable.
+  const breakEven  = avgExp;
+  // Use a trailing average growth rate for the 90-day compounding forecast
+  // instead of raw single-period `vel`, and clamp it — an unclamped single
+  // outlier month compounded three times can produce a forecast off by
+  // orders of magnitude. ±50%/month is a heuristic guard, not a precise
+  // model: no realistic sustained growth rate for an established revenue
+  // base exceeds that for three consecutive months.
+  const proj90GrowthRate = Math.max(-50, Math.min(50, trailingGrowthRate(rows, vel)));
+  const proj90     = latest.revenue * Math.pow(1 + proj90GrowthRate / 100, 3);
+  // "low"    — a single manually-typed snapshot, no transaction history.
+  // "medium" — real uploaded data, but under 3 months of it.
+  // "high"   — real uploaded data with 3+ months of history.
+  const dataConfidence = !rows ? "low" : n >= 3 ? "high" : "medium";
 
   return {
     tr, sr, latest, prev, totRev, totExp, totCogs, totMkt, totL, totC,
+    hasConversionData, avgRev, netBurn, cashFlowPositive, dataConfidence,
     activeCash, activeCac, activeLtv, n, totPro, margin, vel, conv, ltvcac,
     cogsRatio, mktRatio, sov, sovLbl, taxV, safV, free, avgExp, burnMonths,
-    hireReady, maxRev, concentration, breakEven, proj90, hasData,
+    hireReady, maxRev, concentration, concentrationReliable,
+    breakEven, proj90, proj90GrowthRate, hasData,
   };
 }

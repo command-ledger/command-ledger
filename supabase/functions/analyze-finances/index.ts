@@ -99,9 +99,9 @@ serve(async (req: Request) => {
     const {
       monthlyRevenue, totalRevenue, totalExpenses, netProfit,
       profitMargin, velocity, conversionRate, sovereigntyScore,
-      trueFreeCash, burnRunway, ltvCacRatio, cogsRatio, marketingRatio,
-      hireReady, concentration, breakEven, proj90,
-      plan, mode, dataMonths,
+      trueFreeCash, burnRunway, cashFlowPositive, ltvCacRatio, cogsRatio, marketingRatio,
+      hireReady, concentration, concentrationReliable, breakEven, proj90,
+      plan, mode, dataMonths, dataConfidence,
       // Expense breakdown if available
       payroll, rent, marketing, software, cogs,
     } = body
@@ -127,11 +127,13 @@ Your rules:
 - Your final directive must be a single, specific, non-negotiable instruction
 - Maximum 4 paragraphs. No bullet points. No headers. Plain prose.
 - If the numbers are bad, say they are bad. If the numbers are good, say exactly what to do with that advantage right now.
-- Write like the founder's financial future depends on reading this. Because it does.`
+- Write like the founder's financial future depends on reading this. Because it does.
+- DATA CONFIDENCE governs how much weight to put on the numbers, not how directive you are. If it is "low", open by stating plainly that this is a preliminary read from a single manually-entered snapshot — then give your directive anyway. If it is "medium", note briefly that the read will sharpen with more months of data. If it is "high", say nothing about confidence and proceed with full authority. Never let low confidence become hedging on the conclusion itself — be upfront about the data, then be exactly as direct as always about what it means.`
 
     const userPrompt = `Here is the complete financial position of this business. Analyze it and tell the founder exactly what is happening and what to do:
 
 REPORTING PERIOD: ${dataMonths} month(s) of data
+DATA CONFIDENCE: ${dataConfidence === "low" ? "Low — a single manually-entered snapshot, no transaction history" : dataConfidence === "medium" ? "Medium — real uploaded data, but under 3 months of history" : "High — real uploaded data with 3+ months of history"}
 ALLOCATION MODE: ${mode === "growth" ? "Aggressive (Growth)" : "Conservative (Safe)"}
 PLAN TIER: ${plan}
 
@@ -147,7 +149,7 @@ CORE METRICS:
 
 CASH POSITION:
 - True Free Cash (after tax vault + safety buffer): ${fmt(trueFreeCash)}
-- Burn Runway: ${burnRunway} months
+- Burn Runway: ${cashFlowPositive ? "Cash flow positive — revenue currently exceeds expenses, so there is no cash burn to report" : `${burnRunway} months`}
 - Break-Even Revenue Required: ${fmt(breakEven)}
 - 90-Day Revenue Projection: ${fmt(proj90)}
 
@@ -158,7 +160,7 @@ UNIT ECONOMICS:
 
 OPERATIONAL FLAGS:
 - Hire Readiness: ${hireReady ? "Yes — free cash supports new headcount" : "No — insufficient free cash"}
-- Revenue Concentration Risk: ${pct(concentration)}
+- Revenue Distribution: ${concentrationReliable ? `${pct(concentration)} of total revenue came from the single highest month — treat this as a real concentration signal only if it stays high as more months come in` : `${pct(concentration)} of total revenue came from the single highest month, but there's under 3 months of history — this is too little data to call it a concentration risk yet, don't treat it as one`}
 
 ${expenseBreakdown ? `EXPENSE BREAKDOWN:\n${expenseBreakdown}` : ""}
 

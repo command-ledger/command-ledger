@@ -383,7 +383,7 @@ function BChart({ data }) {
 
 // ─── DECISION DIRECTIVE ───────────────────────────────────────
 function Directive({ metrics }) {
-  const { margin, burnMonths, free, concentration, vel, conv, hireReady, ltvcac } = metrics;
+  const { margin, burnMonths, free, concentration, concentrationReliable, vel, conv, hireReady, ltvcac } = metrics;
 
   const getDirective = () => {
     if (safe(free) < 0) return {
@@ -396,9 +396,9 @@ function Directive({ metrics }) {
       reason: `At current burn rate you have ${safe(burnMonths).toFixed(1)} months before the business runs dry. Suspend all non-revenue-generating spend immediately.`,
       severity: "critical",
     };
-    if (safe(concentration) > 60) return {
+    if (concentrationReliable && safe(concentration) > 60) return {
       text: "Diversify your revenue before growing it.",
-      reason: `${pc(concentration)} of revenue is over-concentrated. One client exit or contract loss exposes the entire business. This is not visible until it is catastrophic.`,
+      reason: `${pc(concentration)} of revenue is concentrated in a single month. One client exit or contract loss exposes the entire business. This is not visible until it is catastrophic.`,
       severity: "warn",
     };
     if (safe(ltvcac) > 0 && safe(ltvcac) < 3) return {
@@ -684,15 +684,16 @@ function Dashboard({ user, profile, onLogout, onUpgrade }) {
     tr, sr, latest, prev, totRev, totExp, totCogs, totMkt, totL, totC,
     activeCash, activeCac, activeLtv, n, totPro, margin, vel, conv, ltvcac,
     cogsRatio, mktRatio, sov, sovLbl, taxV, safV, free, avgExp, burnMonths,
-    hireReady, maxRev, concentration, breakEven, proj90, hasData,
+    hireReady, maxRev, concentration, concentrationReliable, breakEven, proj90, hasData,
+    hasConversionData, cashFlowPositive, dataConfidence,
   } = computeMetrics(rows, { mRev, mExp, mCash, mCac, mLtv, mLeads, mClose }, mode);
-  const metrics = { margin, vel, conv, sov, free, burnMonths, hireReady, concentration, ltvcac };
+  const metrics = { margin, vel, conv, sov, free, burnMonths, hireReady, concentration, concentrationReliable, ltvcac, cashFlowPositive };
 
   const alert = (() => {
     if (!hasData) return { t:"info", msg:"Connect your financial data in the Data tab to activate your command center." };
     if (safe(free) < 0) return { t:"crit", msg:"True Free Cash is negative. Overhead exceeds liquidity after obligations. Cut costs before next cycle." };
     if (safe(burnMonths) > 0 && safe(burnMonths) < 3) return { t:"crit", msg:`Runway is ${safe(burnMonths).toFixed(1)} months. Below the 3-month danger threshold. Protect cash immediately.` };
-    if (safe(concentration) > 60) return { t:"warn", msg:`Revenue concentration at ${pc(concentration)} is high. One client loss could collapse cash flow.` };
+    if (concentrationReliable && safe(concentration) > 60) return { t:"warn", msg:`Revenue is concentrated in a single month at ${pc(concentration)} of your total. One weak month could collapse the average.` };
     if (safe(ltvcac) > 0 && safe(ltvcac) < 3) return { t:"warn", msg:`LTV:CAC at ${safe(ltvcac).toFixed(1)}x. Below the 3x minimum. Fix unit economics before scaling acquisition spend.` };
     if (safe(margin) > 40 && safe(conv) > 20) return { t:"ok", msg:"Margin and conversion both strong. You are in a deployment window. Increase lead volume now." };
     return { t:"info", msg:"Foundation stable. Maintain velocity and watch your runway." };
@@ -718,16 +719,19 @@ function Dashboard({ user, profile, onLogout, onUpgrade }) {
           sovereigntyScore: sov.toFixed(0),
           trueFreeCash:   free,
           burnRunway:     burnMonths.toFixed(1),
+          cashFlowPositive,
           ltvCacRatio:    ltvcac.toFixed(2),
           cogsRatio:      cogsRatio.toFixed(1),
           marketingRatio: mktRatio.toFixed(1),
           hireReady,
           concentration:  concentration.toFixed(1),
+          concentrationReliable,
           breakEven:      breakEven.toFixed(0),
           proj90:         proj90.toFixed(0),
           plan,
           mode,
           dataMonths:     n,
+          dataConfidence,
           // Expense breakdown from bank statement parser
           payroll:   totPayroll  || null,
           rent:      totRent     || null,
@@ -800,9 +804,9 @@ function Dashboard({ user, profile, onLogout, onUpgrade }) {
       <header className="topbar">
         <div className="breadcrumb">Command Ledger / <span>{tab==="data"?"Connect Data":tab==="advisor"?"AI Advisor":PLANS[plan].name}</span></div>
         <div className="tb-right">
-          <div className="live-badge">
+          <div className="live-badge" title={hasData ? `Data confidence: ${dataConfidence} (${dataConfidence==="low"?"single manual entry, no history":dataConfidence==="medium"?"uploaded data, under 3 months":"uploaded data, 3+ months"})` : ""}>
             <div className="live-dot" style={{ background:hasData?C.green:C.amber, boxShadow:`0 0 8px ${hasData?C.green:C.amber}` }}/>
-            <span style={{ color:hasData?C.green:C.amber }}>{hasData ? `Live - ${dataSource||"Manual Input"}` : "No data"}</span>
+            <span style={{ color:hasData?C.green:C.amber }}>{hasData ? `Live - ${dataSource||"Manual Input"} - ${dataConfidence[0].toUpperCase()}${dataConfidence.slice(1)} confidence` : "No data"}</span>
           </div>
           <div className="mode-pills">
             <button className={`mpill${mode==="safe"?" on":""}`} onClick={() => setMode("safe")}>Safe</button>
@@ -892,10 +896,10 @@ function Dashboard({ user, profile, onLogout, onUpgrade }) {
                   { lbl:"Monthly Revenue",  val:fmt(latest.revenue), col:"g",  d:`${pc(vel)} velocity`,     dt:vel>=0?"up":"dn" },
                   { lbl:"Profit Margin",    val:pc(margin),          col:"gr", d:`${fmt(totPro)} net profit`, dt:margin>0?"up":"dn" },
                   { lbl:"True Free Cash",   val:fmt(free),           col:free>=0?"g":"r", d:"After tax + safety", dt:free>=0?"up":"dn" },
-                  { lbl:"Burn Runway",      val:burnMonths>0?`${safe(burnMonths).toFixed(1)}mo`:"---",
-                    col:burnMonths>=6?"gr":burnMonths>=3?"a":"r",
-                    d:burnMonths>=6?"Safe":"Needs attention",
-                    dt:burnMonths>=6?"up":"dn" },
+                  { lbl:"Burn Runway",      val:cashFlowPositive?"No burn":burnMonths>0?`${safe(burnMonths).toFixed(1)}mo`:"---",
+                    col:cashFlowPositive?"gr":burnMonths>=6?"gr":burnMonths>=3?"a":"r",
+                    d:cashFlowPositive?"Cash flow positive":burnMonths>=6?"Safe":"Needs attention",
+                    dt:cashFlowPositive||burnMonths>=6?"up":"dn" },
                 ].map((m, i) => (
                   <div key={i} className="card"
                     onMouseEnter={e => e.currentTarget.style.transform = "translateY(-2px)"}
@@ -918,7 +922,9 @@ function Dashboard({ user, profile, onLogout, onUpgrade }) {
                   <div>
                     <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:22, color:sov>=75?C.gold:sov>=50?C.amber:C.red, marginBottom:6 }}>{sovLbl}</div>
                     <div style={{ fontSize:12, color:C.ink, lineHeight:1.7, fontFamily:"'Cormorant Garamond',serif" }}>
-                      Margin ({pc(margin*0.6)}) + Conversion ({pc(conv*0.4)}). Above 75 triggers aggressive scale posture.
+                      {hasConversionData
+                        ? <>Margin ({pc(margin*0.6)}) + Conversion ({pc(conv*0.4)}). Above 75 triggers aggressive scale posture.</>
+                        : <>Based on margin alone ({pc(margin)}) — no lead/conversion data connected yet. Add it in Connect Data for the full score.</>}
                     </div>
                   </div>
                 </div>
@@ -931,10 +937,10 @@ function Dashboard({ user, profile, onLogout, onUpgrade }) {
                 {[
                   {
                     lbl:"Burn Runway",
-                    val: burnMonths > 0 ? `${safe(burnMonths).toFixed(1)} months` : "---",
-                    sub: burnMonths>=6?"Safe - above 6-month threshold":burnMonths>=3?"Caution - build to 6 months":burnMonths>0?"Danger - act immediately":"Enter cash balance to calculate",
-                    cls: burnMonths>=6?"green":burnMonths>=3?"amber":burnMonths>0?"red":"gold",
-                    col: burnMonths>=6?C.green:burnMonths>=3?C.amber:burnMonths>0?C.red:C.gold,
+                    val: cashFlowPositive ? "No burn" : burnMonths > 0 ? `${safe(burnMonths).toFixed(1)} months` : "---",
+                    sub: cashFlowPositive?"Revenue covers expenses - no cash burn":burnMonths>=6?"Safe - above 6-month threshold":burnMonths>=3?"Caution - build to 6 months":burnMonths>0?"Danger - act immediately":"Enter cash balance to calculate",
+                    cls: cashFlowPositive?"green":burnMonths>=6?"green":burnMonths>=3?"amber":burnMonths>0?"red":"gold",
+                    col: cashFlowPositive?C.green:burnMonths>=6?C.green:burnMonths>=3?C.amber:burnMonths>0?C.red:C.gold,
                   },
                   {
                     lbl:"Hire Readiness",
