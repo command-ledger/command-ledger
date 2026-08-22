@@ -287,6 +287,122 @@ export function trailingGrowthRate(rows, singlePeriodVel) {
   return lastFew.reduce((s, v) => s + v, 0) / lastFew.length;
 }
 
+// Growth Score (0-100): rewards a sustained, consistent growth rate over a
+// noisy single-month spike. 70% of the score is the trailing growth rate
+// (same smoothing used for the 90-day projection), rescaled so 0% growth
+// sits at the midpoint of the "Flat" band rather than reading as "good";
+// 30% is how many of the recent month-over-month changes were positive, so
+// three steadily-growing months outscore one great month sandwiched
+// between two down months at the same average rate.
+export function computeGrowthScore(rows, singlePeriodVel) {
+  const rate = Math.max(-50, Math.min(50, trailingGrowthRate(rows, singlePeriodVel)));
+  const rateScore = Math.min(100, Math.max(0, 50 + rate * 3));
+
+  let consistency = 0.5; // not enough history to judge — neutral, not penalized
+  if (rows && rows.length >= 3) {
+    const deltas = [];
+    for (let i = 1; i < rows.length; i++) {
+      if (rows[i - 1].revenue > 0) deltas.push(rows[i].revenue - rows[i - 1].revenue);
+    }
+    const lastFew = deltas.slice(-3);
+    if (lastFew.length > 0) consistency = lastFew.filter(d => d > 0).length / lastFew.length;
+  }
+
+  const score = Math.min(100, Math.max(0, rateScore * 0.7 + consistency * 100 * 0.3));
+  const label = score >= 80 ? "Accelerating" : score >= 60 ? "Growing" : score >= 40 ? "Flat" : "Declining";
+  return { score, label, rate, consistency };
+}
+
+// Risk Score (0-100, higher = riskier): a composite of four already-verified
+// signals, each contributing only when there's real data behind it — no
+// signal is penalized for being absent (consistent with how Sovereignty
+// Score and concentration reliability already treat missing data in this
+// engine). Weighted toward runway (0.4) since it's the most survival-
+// critical signal, then margin (0.3), then concentration and unit
+// economics (0.15 each).
+export function computeRiskScore({ cashFlowPositive, burnMonths, concentration, concentrationReliable, ltvcac, margin }) {
+  const runwayRisk = cashFlowPositive ? 0
+    : burnMonths >= 8 ? 0
+    : burnMonths <= 0 ? 100
+    : Math.min(100, Math.max(0, ((8 - burnMonths) / 8) * 100));
+
+  const concentrationRisk = concentrationReliable
+    ? Math.min(100, Math.max(0, (concentration - 40) / 0.6))
+    : 0;
+
+  const unitEconRisk = ltvcac > 0
+    ? Math.min(100, Math.max(0, ((3 - ltvcac) / 3) * 100))
+    : 0;
+
+  const marginRisk = margin < 0 ? 100
+    : Math.min(100, Math.max(0, ((15 - margin) / 15) * 100));
+
+  const score = Math.min(100, Math.max(0,
+    runwayRisk * 0.4 + concentrationRisk * 0.15 + unitEconRisk * 0.15 + marginRisk * 0.3
+  ));
+  const label = score >= 70 ? "Critical" : score >= 45 ? "Elevated" : score >= 20 ? "Watch" : "Low";
+  return { score, label, breakdown: { runwayRisk, concentrationRisk, unitEconRisk, marginRisk } };
+}
+
+// Trend detection: compares the latest uploaded month against the average
+// of the prior months. Requires at least 3 months of real rows — the same
+// floor used for concentrationReliable — because a "trend" from one or two
+// data points isn't a trend, it's a single data point.
+export function detectTrends(rows) {
+  if (!rows || rows.length < 3) return [];
+  const trends = [];
+
+  const margins = rows.map(r => r.revenue > 0 ? ((r.revenue - r.expenses) / r.revenue) * 100 : null).filter(m => m !== null);
+  if (margins.length >= 3) {
+    const latest = margins[margins.length - 1];
+    const prior = margins.slice(0, -1);
+    const avgPrior = prior.reduce((s, v) => s + v, 0) / prior.length;
+    const delta = latest - avgPrior;
+    if (Math.abs(delta) >= 3) {
+      trends.push({
+        type: "margin",
+        direction: delta > 0 ? "improving" : "declining",
+        message: `Margin ${delta > 0 ? "improved" : "fell"} to ${latest.toFixed(1)}% this month, vs a ${avgPrior.toFixed(1)}% average over the prior ${prior.length} month(s).`,
+      });
+    }
+  }
+
+  ["payroll", "marketing", "cogs", "rent", "software"].forEach(cat => {
+    const shares = rows.map(r => r.expenses > 0 ? ((r[cat] || 0) / r.expenses) * 100 : null).filter(s => s !== null);
+    if (shares.length >= 3) {
+      const latest = shares[shares.length - 1];
+      const prior = shares.slice(0, -1);
+      const avgPrior = prior.reduce((s, v) => s + v, 0) / prior.length;
+      const delta = latest - avgPrior;
+      if (delta >= 10) {
+        trends.push({
+          type: "expense_creep",
+          category: cat,
+          direction: "worsening",
+          message: `${cat.charAt(0).toUpperCase()}${cat.slice(1)} grew to ${latest.toFixed(0)}% of expenses this month, up from a ${avgPrior.toFixed(0)}% average.`,
+        });
+      }
+    }
+  });
+
+  const burns = rows.map(r => r.expenses - r.revenue);
+  if (burns.length >= 3) {
+    const latest = burns[burns.length - 1];
+    const prior = burns.slice(0, -1);
+    const avgPrior = prior.reduce((s, v) => s + v, 0) / prior.length;
+    const delta = latest - avgPrior;
+    if (Math.abs(delta) >= Math.max(500, Math.abs(avgPrior) * 0.15)) {
+      trends.push({
+        type: "burn",
+        direction: delta < 0 ? "improving" : "worsening",
+        message: `Net burn ${delta < 0 ? "improved" : "worsened"} to ${fmt(latest)}/mo this month, vs a ${fmt(avgPrior)}/mo average.`,
+      });
+    }
+  }
+
+  return trends;
+}
+
 // ─── FINANCIAL METRICS ENGINE ──────────────────────────────────
 // Pure derivation of every ratio/indicator shown on the Dashboard, from
 // either parsed CSV rows (monthly buckets) or manually entered numbers.
@@ -369,6 +485,10 @@ export function computeMetrics(rows, manual, mode) {
   // "high"   — real uploaded data with 3+ months of history.
   const dataConfidence = !rows ? "low" : n >= 3 ? "high" : "medium";
 
+  const growth = computeGrowthScore(rows, vel);
+  const risk = computeRiskScore({ cashFlowPositive, burnMonths, concentration, concentrationReliable, ltvcac, margin });
+  const trends = detectTrends(rows);
+
   return {
     tr, sr, latest, prev, totRev, totExp, totCogs, totMkt, totL, totC,
     hasConversionData, avgRev, netBurn, cashFlowPositive, dataConfidence,
@@ -376,5 +496,6 @@ export function computeMetrics(rows, manual, mode) {
     cogsRatio, mktRatio, sov, sovLbl, taxV, safV, free, avgExp, burnMonths,
     hireReady, maxRev, concentration, concentrationReliable,
     breakEven, proj90, proj90GrowthRate, hasData,
+    growth, risk, trends,
   };
 }

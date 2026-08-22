@@ -22,7 +22,8 @@ const PLANS = {
     features:["Weekly AI strategic brief","Burn runway monitor","Capital allocator","Break-even calculator","Hire readiness indicator","90-day cash projection","LTV:CAC ratio analysis","Revenue concentration risk","CSV, Excel and live sheet sync"],
   },
   pro: {
-    name:"Command Pro", usd:2475, zar:44550, period:"per month",
+    name:"Command Pro"
+    , usd:2475, zar:44550, period:"per month",
     tagline:"Command. Everything in Essentials, plus a CFO beside you.",
     features:["Everything in Essentials","Done-for-you data configuration","Monthly 1:1 advisory call","PDF board report delivered monthly","Direct WhatsApp advisory line","Priority 4-hour response SLA"],
   },
@@ -261,6 +262,13 @@ body{background:#050709;color:#F4F7FF;font-family:'Syne',sans-serif;-webkit-font
 .ai-dots span{width:6px;height:6px;border-radius:50%;background:#5A5D64;animation:dotPulse 1.4s ease-in-out infinite;}
 .ai-dots span:nth-child(2){animation-delay:0.2s;}.ai-dots span:nth-child(3){animation-delay:0.4s;}
 .ai-btn{background:transparent;border:1px solid #161C2E;color:#3A4A68;font-size:10px;letter-spacing:0.1em;text-transform:uppercase;padding:5px 14px;cursor:pointer;font-family:'Syne',sans-serif;transition:all 0.2s;}
+.ai-rec-field{padding:16px 20px;border-bottom:1px solid #161C2E;}
+.ai-rec-field:last-child{border-bottom:none;}
+.ai-rec-lbl{font-family:'JetBrains Mono',monospace;font-size:9.5px;letter-spacing:0.1em;text-transform:uppercase;margin-bottom:6px;}
+.ai-rec-body{font-size:14px;line-height:1.75;color:#8898B8;font-family:'Cormorant Garamond',serif;}
+.ai-rec-footer{display:flex;justify-content:space-between;align-items:center;gap:16px;padding:14px 20px;background:#0F1320;flex-wrap:wrap;}
+.ai-rec-chip{font-family:'JetBrains Mono',monospace;font-size:10px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;padding:4px 10px;border-radius:2px;}
+.ai-rec-conf{font-size:11px;color:#8898B8;font-family:'JetBrains Mono',monospace;}
 .ai-btn:hover{border-color:#D8DADE;color:#D8DADE;}
 .ai-btn:disabled{opacity:0.4;cursor:default;}
 .di-lbl{font-size:9px;letter-spacing:0.14em;text-transform:uppercase;color:#8898B8;margin-bottom:5px;display:block;}
@@ -308,21 +316,37 @@ body{background:#050709;color:#F4F7FF;font-family:'Syne',sans-serif;-webkit-font
 }
 `;
 
-// ─── AI ADVISOR TEXT ────────────────────────────────────────────
-// Renders the model's response as real React text/elements — never as raw
-// HTML. The model's output is untrusted content; injecting it via
-// dangerouslySetInnerHTML would execute anything it contained.
-function AiText({ text }) {
-  const paragraphs = text.split("\n\n").filter(Boolean);
-  return paragraphs.map((p, i) => (
-    <p key={i}>
-      {p.split(/(\*\*.*?\*\*)/g).map((chunk, j) =>
-        chunk.startsWith("**") && chunk.endsWith("**")
-          ? <strong key={j}>{chunk.slice(2, -2)}</strong>
-          : chunk
-      )}
-    </p>
-  ));
+// ─── AI ADVISOR RECOMMENDATION ──────────────────────────────────
+// Renders the model's response as a structured executive recommendation —
+// What Happened / Why / Business Impact / Risk / Action / Expected Outcome
+// / Confidence — as real React text, never raw HTML. The model's output is
+// untrusted content; dangerouslySetInnerHTML would execute anything it
+// contained.
+const RISK_CHIP_COLOR = { Critical: C.red, Elevated: C.amber, Watch: C.gold, Low: C.green };
+
+function AIRecommendation({ rec }) {
+  const riskColor = RISK_CHIP_COLOR[rec.riskLevel] || C.inkDim;
+  const fields = [
+    { key:"whatHappened",     lbl:"What Happened",      col:C.inkDim },
+    { key:"whyItHappened",    lbl:"Why It Happened",    col:C.blue },
+    { key:"businessImpact",   lbl:"Business Impact",    col:C.amber },
+    { key:"recommendedAction",lbl:"Recommended Action", col:C.gold },
+    { key:"expectedOutcome",  lbl:"Expected Outcome",   col:C.green },
+  ];
+  return (
+    <div>
+      {fields.map(f => rec[f.key] && (
+        <div className="ai-rec-field" key={f.key}>
+          <div className="ai-rec-lbl" style={{ color:f.col }}>{f.lbl}</div>
+          <div className="ai-rec-body">{rec[f.key]}</div>
+        </div>
+      ))}
+      <div className="ai-rec-footer">
+        <span className="ai-rec-chip" style={{ color:riskColor, background:`${riskColor}1F` }}>{rec.riskLevel || "Unknown"} Risk</span>
+        <span className="ai-rec-conf">Confidence {rec.confidenceScore ?? "—"}/100{rec.confidenceReason ? ` — ${rec.confidenceReason}` : ""}</span>
+      </div>
+    </div>
+  );
 }
 
 // ─── RING CHART ───────────────────────────────────────────────
@@ -664,7 +688,8 @@ function Dashboard({ user, profile, onLogout, onUpgrade }) {
   const [data, setData] = useState(null);
   const [dataSource, setDataSource]   = useState("");
   const [detectedCols, setDetectedCols] = useState([]);
-  const [aiText,   setAiText]   = useState("");
+  const [aiRec,    setAiRec]    = useState(null);
+  const [aiError,  setAiError]  = useState("");
   const [aiLoad,   setAiLoad]   = useState(false);
   // Manual input state
   const [mRev,  setMRev]  = useState(0);
@@ -685,7 +710,7 @@ function Dashboard({ user, profile, onLogout, onUpgrade }) {
     activeCash, activeCac, activeLtv, n, totPro, margin, vel, conv, ltvcac,
     cogsRatio, mktRatio, sov, sovLbl, taxV, safV, free, avgExp, burnMonths,
     hireReady, maxRev, concentration, concentrationReliable, breakEven, proj90, hasData,
-    hasConversionData, cashFlowPositive, dataConfidence,
+    hasConversionData, cashFlowPositive, dataConfidence, growth, risk, trends,
   } = computeMetrics(rows, { mRev, mExp, mCash, mCac, mLtv, mLeads, mClose }, mode);
   const metrics = { margin, vel, conv, sov, free, burnMonths, hireReady, concentration, concentrationReliable, ltvcac, cashFlowPositive };
 
@@ -700,7 +725,7 @@ function Dashboard({ user, profile, onLogout, onUpgrade }) {
   })();
 
   const runAI = async () => {
-    setAiLoad(true); setAiText("");
+    setAiLoad(true); setAiRec(null); setAiError("");
     // Aggregate expense categories from uploaded bank data if available
     const totPayroll  = rows ? rows.reduce((s,d) => s + (d.payroll   || 0), 0) : 0;
     const totRent     = rows ? rows.reduce((s,d) => s + (d.rent      || 0), 0) : 0;
@@ -732,6 +757,11 @@ function Dashboard({ user, profile, onLogout, onUpgrade }) {
           mode,
           dataMonths:     n,
           dataConfidence,
+          growthScore:  growth.score.toFixed(0),
+          growthLabel:  growth.label,
+          riskScore:    risk.score.toFixed(0),
+          riskLabel:    risk.label,
+          trends,
           // Expense breakdown from bank statement parser
           payroll:   totPayroll  || null,
           rent:      totRent     || null,
@@ -741,10 +771,11 @@ function Dashboard({ user, profile, onLogout, onUpgrade }) {
         },
       });
       if (error) throw error;
-      setAiText(result?.analysis || result?.text || "Analysis complete but no response returned.");
+      if (result?.recommendation) setAiRec(result.recommendation);
+      else setAiError(result?.error || "Analysis complete but no response returned.");
     } catch (e) {
       console.error("AI error:", e);
-      setAiText("Advisory engine offline. Ensure your Supabase Edge Function is deployed and ANTHROPIC_API_KEY is set in Supabase project secrets.");
+      setAiError("Advisory engine offline. Ensure your Supabase Edge Function is deployed and ANTHROPIC_API_KEY is set in Supabase project secrets.");
     }
     setAiLoad(false);
   };
@@ -865,15 +896,17 @@ function Dashboard({ user, profile, onLogout, onUpgrade }) {
                 <div className="ai-lbl"><div className="ai-glow"/>Command Ledger Intelligence - Powered by Claude</div>
                 <button className="ai-btn" onClick={runAI} disabled={aiLoad}>{aiLoad ? "Analyzing..." : "Generate Brief"}</button>
               </div>
-              <div className="ai-body">
+              <div className="ai-body" style={{ padding: aiRec ? 0 : undefined }}>
                 {aiLoad ? (
-                  <div style={{ display:"flex", alignItems:"center", gap:12, color:C.inkDim, fontSize:12, fontFamily:"'JetBrains Mono',monospace" }}>
+                  <div style={{ display:"flex", alignItems:"center", gap:12, color:C.inkDim, fontSize:12, fontFamily:"'JetBrains Mono',monospace", padding:"20px" }}>
                     <div className="ai-dots"><span/><span/><span/></div>Analyzing your financial position...
                   </div>
+                ) : aiRec ? (
+                  <AIRecommendation rec={aiRec}/>
+                ) : aiError ? (
+                  <div className="ai-txt" style={{ padding:"20px" }}>{aiError}</div>
                 ) : (
-                  <div className="ai-txt">
-                    <AiText text={aiText || "Click Generate Brief to receive your personalised weekly strategic directive."}/>
-                  </div>
+                  <div className="ai-txt" style={{ padding:"20px" }}>Click Generate Brief to receive your personalised weekly strategic directive.</div>
                 )}
               </div>
             </div>
@@ -930,6 +963,47 @@ function Dashboard({ user, profile, onLogout, onUpgrade }) {
                 </div>
               </div>
             </div>
+
+            <div className="g2">
+              <div className="card">
+                <div className="card-sec">Growth Score</div>
+                <div style={{ display:"flex", gap:20, alignItems:"center" }}>
+                  <Ring score={growth.score}/>
+                  <div>
+                    <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:22, color:growth.score>=60?C.green:growth.score>=40?C.amber:C.red, marginBottom:6 }}>{growth.label}</div>
+                    <div style={{ fontSize:12, color:C.ink, lineHeight:1.7, fontFamily:"'Cormorant Garamond',serif" }}>
+                      {rows && rows.length>=3
+                        ? <>Trailing growth rate ({pc(growth.rate)}/mo), weighted with how consistently recent months grew ({Math.round(growth.consistency*100)}% of the last few were up).</>
+                        : <>Based on a single growth reading — connect 3+ months of data for a consistency-weighted score.</>}
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div className="card">
+                <div className="card-sec">Risk Score</div>
+                <div style={{ display:"flex", gap:20, alignItems:"center" }}>
+                  {/* Ring fills as things get safer, not as risk rises — risk.score itself is 0=safe/100=risky */}
+                  <Ring score={100-risk.score}/>
+                  <div>
+                    <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:22, color:risk.label==="Low"?C.green:risk.label==="Watch"?C.amber:C.red, marginBottom:6 }}>{risk.label}</div>
+                    <div style={{ fontSize:12, color:C.ink, lineHeight:1.7, fontFamily:"'Cormorant Garamond',serif" }}>
+                      Weighted from runway, margin, revenue concentration, and LTV:CAC — each only counts when there's real data behind it.
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {trends.length > 0 && (
+              <div>
+                <div className="card-sec">Trends Detected</div>
+                <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+                  {trends.map((t, i) => (
+                    <div key={i} className={`d-alert ${t.direction==="improving"?"ok":"warn"}`}>{t.message}</div>
+                  ))}
+                </div>
+              </div>
+            )}
 
             <div>
               <div className="card-sec">Business Intelligence</div>

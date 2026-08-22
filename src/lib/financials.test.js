@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { fmt, pc, safe, detectExpenseCategory, parseAnyCSV, computeMetrics, trailingGrowthRate } from "./financials.js";
+import { fmt, pc, safe, detectExpenseCategory, parseAnyCSV, computeMetrics, trailingGrowthRate, computeGrowthScore, computeRiskScore, detectTrends } from "./financials.js";
 
 describe("fmt / pc / safe", () => {
   it("formats currency and percentages", () => {
@@ -197,5 +197,109 @@ describe("trailingGrowthRate", () => {
   it("falls back to the single-period rate when there's no row history to average", () => {
     expect(trailingGrowthRate(null, 12.5)).toBe(12.5);
     expect(trailingGrowthRate([{ revenue: 100 }], 12.5)).toBe(12.5);
+  });
+});
+
+describe("computeGrowthScore", () => {
+  it("rates flat/unknown growth as neutral, not good or bad", () => {
+    const g = computeGrowthScore(null, 0);
+    expect(g.score).toBeCloseTo(50, 5);
+    expect(g.label).toBe("Flat");
+  });
+
+  it("rates consistent, strong growth across three months as Accelerating", () => {
+    const rows = [
+      { revenue: 10000 }, { revenue: 10500 }, { revenue: 11000 }, { revenue: 16500 },
+    ];
+    const g = computeGrowthScore(rows, 50);
+    expect(g.consistency).toBe(1); // all three transitions were positive
+    expect(g.score).toBe(100);
+    expect(g.label).toBe("Accelerating");
+  });
+
+  it("rates a steady month-over-month decline as Declining", () => {
+    const rows = [{ revenue: 20000 }, { revenue: 18000 }, { revenue: 16000 }];
+    const g = computeGrowthScore(rows, -11.111111);
+    expect(g.consistency).toBe(0); // both transitions were negative
+    expect(g.rate).toBeCloseTo(-10.5556, 3);
+    expect(g.label).toBe("Declining");
+  });
+});
+
+describe("computeRiskScore", () => {
+  it("scores a profitable, cash-flow-positive company as Low risk", () => {
+    const r = computeRiskScore({ cashFlowPositive: true, burnMonths: 0, concentration: 100, concentrationReliable: false, ltvcac: 4, margin: 40 });
+    expect(r.score).toBe(0);
+    expect(r.label).toBe("Low");
+  });
+
+  it("scores a burning-but-well-funded, unprofitable company as Watch, not Critical", () => {
+    // 9.8 months of runway (above the 8-month safe threshold) but a -33% margin.
+    const r = computeRiskScore({ cashFlowPositive: false, burnMonths: 9.8, concentration: 100, concentrationReliable: false, ltvcac: 0, margin: -33.33 });
+    expect(r.breakdown.runwayRisk).toBe(0); // runway itself isn't the problem here
+    expect(r.breakdown.marginRisk).toBe(100);
+    expect(r.score).toBeCloseTo(30, 1); // 100 * 0.3 (margin weight)
+    expect(r.label).toBe("Watch");
+  });
+
+  it("scores a company with under a month of effective runway and negative margin as Critical", () => {
+    const r = computeRiskScore({ cashFlowPositive: false, burnMonths: -0.159, concentration: 0, concentrationReliable: false, ltvcac: 0, margin: -4900 });
+    expect(r.breakdown.runwayRisk).toBe(100); // burnMonths <= 0
+    expect(r.score).toBeCloseTo(70, 1); // 100*0.4 + 100*0.3
+    expect(r.label).toBe("Critical");
+  });
+
+  it("never penalizes a signal for missing data", () => {
+    const r = computeRiskScore({ cashFlowPositive: true, burnMonths: 0, concentration: 0, concentrationReliable: false, ltvcac: 0, margin: 40 });
+    expect(r.breakdown.concentrationRisk).toBe(0);
+    expect(r.breakdown.unitEconRisk).toBe(0);
+  });
+});
+
+describe("detectTrends", () => {
+  const rows = [
+    { revenue: 20000, expenses: 12000, payroll: 6000,  marketing:0, cogs:0, rent:0, software:0 },
+    { revenue: 20000, expenses: 12500, payroll: 6200,  marketing:0, cogs:0, rent:0, software:0 },
+    { revenue: 20000, expenses: 13000, payroll: 6300,  marketing:0, cogs:0, rent:0, software:0 },
+    { revenue: 20000, expenses: 17000, payroll: 11000, marketing:0, cogs:0, rent:0, software:0 },
+  ];
+
+  it("requires at least 3 months of real rows before claiming any trend", () => {
+    expect(detectTrends(null)).toEqual([]);
+    expect(detectTrends([{ revenue: 100, expenses: 50 }])).toEqual([]);
+  });
+
+  it("flags a declining margin trend against the prior months' average", () => {
+    const trends = detectTrends(rows);
+    const marginTrend = trends.find(t => t.type === "margin");
+    expect(marginTrend.direction).toBe("declining");
+    expect(marginTrend.message).toContain("15.0%");
+    expect(marginTrend.message).toContain("37.5%");
+  });
+
+  it("flags a category creeping up as a share of total expenses", () => {
+    const trends = detectTrends(rows);
+    const creep = trends.find(t => t.type === "expense_creep");
+    expect(creep.category).toBe("payroll");
+    expect(creep.direction).toBe("worsening");
+  });
+
+  it("flags a shrinking profit cushion as a worsening burn trend", () => {
+    // expenses-minus-revenue went from -$7,500/mo (profitable) to -$3,000/mo —
+    // still profitable, but the cushion shrank by $4,500, which is exactly
+    // the kind of early warning a founder should see before it flips to a
+    // real burn.
+    const trends = detectTrends(rows);
+    const burnTrend = trends.find(t => t.type === "burn");
+    expect(burnTrend.direction).toBe("worsening");
+  });
+
+  it("stays quiet when nothing has moved meaningfully", () => {
+    const flat = [
+      { revenue: 20000, expenses: 12000, payroll: 6000, marketing:0, cogs:0, rent:0, software:0 },
+      { revenue: 20000, expenses: 12050, payroll: 6010, marketing:0, cogs:0, rent:0, software:0 },
+      { revenue: 20000, expenses: 12020, payroll: 6005, marketing:0, cogs:0, rent:0, software:0 },
+    ];
+    expect(detectTrends(flat)).toEqual([]);
   });
 });

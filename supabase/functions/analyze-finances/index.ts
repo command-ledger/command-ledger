@@ -102,6 +102,7 @@ serve(async (req: Request) => {
       trueFreeCash, burnRunway, cashFlowPositive, ltvCacRatio, cogsRatio, marketingRatio,
       hireReady, concentration, concentrationReliable, breakEven, proj90,
       plan, mode, dataMonths, dataConfidence,
+      growthScore, growthLabel, riskScore, riskLabel, trends,
       // Expense breakdown if available
       payroll, rent, marketing, software, cogs,
     } = body
@@ -120,15 +121,28 @@ serve(async (req: Request) => {
 
     const systemPrompt = `You are the fractional CFO of this business. You have full authority to speak directly. You are not a consultant. You are not an advisor giving options. You are the person responsible for this company's financial health and you will not soften your language or hedge your conclusions.
 
-Your rules:
-- Speak in first person as the CFO. "Your margin is." "You will run out." "Cut this."
+Return ONLY a valid JSON object — no markdown, no code fences, no text outside the JSON — with exactly these keys:
+{
+  "whatHappened": string,
+  "whyItHappened": string,
+  "businessImpact": string,
+  "riskLevel": "Critical" | "Elevated" | "Watch" | "Low",
+  "recommendedAction": string,
+  "expectedOutcome": string,
+  "confidenceScore": number,
+  "confidenceReason": string
+}
+
+Rules:
+- Speak in first person as the CFO in every field. "Your margin is." "You will run out." "Cut this."
 - Never use phrases like "consider", "you might want to", "it may be worth", "potentially", "perhaps"
-- Every paragraph must contain a number from the founder's actual data
-- Your final directive must be a single, specific, non-negotiable instruction
-- Maximum 4 paragraphs. No bullet points. No headers. Plain prose.
-- If the numbers are bad, say they are bad. If the numbers are good, say exactly what to do with that advantage right now.
-- Write like the founder's financial future depends on reading this. Because it does.
-- DATA CONFIDENCE governs how much weight to put on the numbers, not how directive you are. If it is "low", open by stating plainly that this is a preliminary read from a single manually-entered snapshot — then give your directive anyway. If it is "medium", note briefly that the read will sharpen with more months of data. If it is "high", say nothing about confidence and proceed with full authority. Never let low confidence become hedging on the conclusion itself — be upfront about the data, then be exactly as direct as always about what it means.`
+- Each field must reference a real number from the founder's actual data, not a generic statement
+- "riskLevel" MUST match the computed Risk Score band given below (Critical/Elevated/Watch/Low) — you are narrating that score, not independently inventing a risk assessment
+- "recommendedAction" is a single, specific, non-negotiable instruction — one sentence, one action
+- "confidenceScore" (0-100) must be calibrated to DATA CONFIDENCE below: low data confidence caps around 50, medium around 60-75, high can go above that. "confidenceReason" states why in one short clause (e.g. "based on 1 manually-entered month" or "based on 6 months of uploaded transaction history")
+- If TRENDS DETECTED are provided below, ground "whatHappened" and "whyItHappened" in those specific trends rather than restating raw current-period numbers
+- Each field is 1-3 sentences. No bullet points, no headers, inside any field.
+- If the numbers are bad, say they are bad. If they're good, say exactly what to do with that advantage right now.`
 
     const userPrompt = `Here is the complete financial position of this business. Analyze it and tell the founder exactly what is happening and what to do:
 
@@ -162,9 +176,15 @@ OPERATIONAL FLAGS:
 - Hire Readiness: ${hireReady ? "Yes — free cash supports new headcount" : "No — insufficient free cash"}
 - Revenue Distribution: ${concentrationReliable ? `${pct(concentration)} of total revenue came from the single highest month — treat this as a real concentration signal only if it stays high as more months come in` : `${pct(concentration)} of total revenue came from the single highest month, but there's under 3 months of history — this is too little data to call it a concentration risk yet, don't treat it as one`}
 
+COMPUTED SCORES (already calculated — narrate these, do not recompute or contradict them):
+- Growth Score: ${growthScore ?? "n/a"}/100 (${growthLabel ?? "n/a"})
+- Risk Score: ${riskScore ?? "n/a"}/100 (${riskLabel ?? "n/a"}) — this is the value "riskLevel" in your response must match
+
+${trends?.length ? `TRENDS DETECTED (comparing the latest month to the prior months' average):\n${trends.map((t) => `- ${t.message}`).join("\n")}` : "TRENDS DETECTED: none — under 3 months of history, or nothing moved meaningfully."}
+
 ${expenseBreakdown ? `EXPENSE BREAKDOWN:\n${expenseBreakdown}` : ""}
 
-Write the CFO analysis now. Reference specific numbers. End with one non-negotiable directive.`
+Return the JSON object now.`
 
     const response = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
@@ -175,7 +195,7 @@ Write the CFO analysis now. Reference specific numbers. End with one non-negotia
       },
       body: JSON.stringify({
         model: "claude-sonnet-4-5-20250929",
-        max_tokens: 800,
+        max_tokens: 1200,
         temperature: 0.2,
         system: systemPrompt,
         messages: [{ role: "user", content: userPrompt }],
@@ -191,9 +211,35 @@ Write the CFO analysis now. Reference specific numbers. End with one non-negotia
       )
     }
 
-    const text = data?.content?.[0]?.text || "Analysis unavailable."
+    const text = data?.content?.[0]?.text || ""
 
-    return new Response(JSON.stringify({ analysis: text }), {
+    // The model is asked to return only JSON, but strip any stray
+    // conversational wrapping defensively before parsing.
+    const jsonMatch = text.match(/\{[\s\S]*\}/)
+    let recommendation: Record<string, unknown> | null = null
+    try {
+      recommendation = jsonMatch ? JSON.parse(jsonMatch[0]) : JSON.parse(text)
+    } catch {
+      recommendation = null
+    }
+
+    const REQUIRED_FIELDS = [
+      "whatHappened", "whyItHappened", "businessImpact", "riskLevel",
+      "recommendedAction", "expectedOutcome", "confidenceScore", "confidenceReason",
+    ]
+    const isValid = recommendation !== null && REQUIRED_FIELDS.every(k => k in recommendation!)
+
+    if (!isValid) {
+      // Don't hand the client malformed data dressed up as a real
+      // recommendation — a missing field silently rendered as "undefined"
+      // in a financial advisory panel is worse than a clear error.
+      return new Response(
+        JSON.stringify({ error: "The advisor's response could not be parsed into a structured recommendation. Try again." }),
+        { headers: { ...corsHeaders, "Content-Type": "application/json" }, status: 502 }
+      )
+    }
+
+    return new Response(JSON.stringify({ recommendation }), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
       status: 200,
     })
