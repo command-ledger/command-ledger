@@ -499,3 +499,37 @@ export function computeMetrics(rows, manual, mode) {
     growth, risk, trends,
   };
 }
+
+// ─── SCENARIO PLANNING ──────────────────────────────────────────
+// Builds a hypothetical "what-if" snapshot from the business's current
+// latest-month figures plus a founder-supplied adjustment, then hands it to
+// the same computeMetrics() used for real data — no separate scenario math
+// to get wrong or drift out of sync with the real calculation engine.
+// `baseline` is { revenue, expenses, cash, cac, ltv, leads, closures } —
+// the current latest month's actuals. `adjustments` is
+// { revenuePct, expensePct, expenseDelta, cashDelta }, each optional and
+// defaulting to no change.
+export function applyScenario(baseline, adjustments = {}) {
+  const { revenuePct = 0, expensePct = 0, expenseDelta = 0, cashDelta = 0 } = adjustments;
+  const revenue  = Math.max(0, baseline.revenue * (1 + revenuePct / 100));
+  const expenses = Math.max(0, baseline.expenses * (1 + expensePct / 100) + expenseDelta);
+  const cash     = Math.max(0, (baseline.cash || 0) + cashDelta);
+
+  return {
+    mRev: revenue, mExp: expenses, mCash: cash,
+    mCac: baseline.cac || 0, mLtv: baseline.ltv || 0,
+    mLeads: baseline.leads || 0, mClose: baseline.closures || 0,
+  };
+}
+
+// Runs a scenario through computeMetrics and returns it alongside the
+// baseline (unadjusted) result, so the caller can show a before/after
+// comparison without computing the baseline twice.
+export function runScenario(baseline, adjustments, mode) {
+  const baselineManual = applyScenario(baseline, {});
+  const scenarioManual = applyScenario(baseline, adjustments);
+  return {
+    before: computeMetrics(null, baselineManual, mode),
+    after: computeMetrics(null, scenarioManual, mode),
+  };
+}
