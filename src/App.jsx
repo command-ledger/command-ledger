@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { createClient } from "@supabase/supabase-js";
-import { fmt, pc, safe, parseAnyCSV, computeMetrics } from "./lib/financials.js";
+import { fmt, pc, safe, parseAnyCSV, computeMetrics, runScenario } from "./lib/financials.js";
 
 const supabase = createClient(
   import.meta.env.VITE_SUPABASE_URL,
@@ -689,6 +689,12 @@ function Dashboard({ user, profile, onLogout, onUpgrade }) {
   const [mLtv,  setMLtv]  = useState(0);
   const [mLeads, setMLeads] = useState(0);
   const [mClose, setMClose] = useState(0);
+  // Scenario planning adjustments — percentages/deltas applied to the
+  // current latest-month figures, not saved anywhere; purely exploratory.
+  const [scRevPct, setScRevPct] = useState(0);
+  const [scExpPct, setScExpPct] = useState(0);
+  const [scHire,   setScHire]   = useState(0);
+  const [scCash,   setScCash]   = useState(0);
 
   const plan = profile?.plan || "essentials";
   const userName  = profile?.name || user?.user_metadata?.full_name || user?.email?.split("@")[0] || "Founder";
@@ -703,6 +709,12 @@ function Dashboard({ user, profile, onLogout, onUpgrade }) {
     hasConversionData, cashFlowPositive, dataConfidence, growth, risk, trends,
   } = computeMetrics(rows, { mRev, mExp, mCash, mCac, mLtv, mLeads, mClose }, mode);
   const metrics = { margin, vel, conv, sov, free, burnMonths, hireReady, concentration, concentrationReliable, ltvcac, cashFlowPositive };
+
+  const scenario = runScenario(
+    { revenue: latest.revenue, expenses: latest.expenses, cash: activeCash, cac: activeCac, ltv: activeLtv, leads: 0, closures: 0 },
+    { revenuePct: scRevPct, expensePct: scExpPct, expenseDelta: scHire, cashDelta: scCash },
+    mode
+  );
 
   const alert = (() => {
     if (!hasData) return { t:"info", msg:"Connect your financial data in the Data tab to activate your command center." };
@@ -771,9 +783,10 @@ function Dashboard({ user, profile, onLogout, onUpgrade }) {
   };
 
   const navItems = [
-    { id:"overview", label:"Overview",    locked:false },
-    { id:"advisor",  label:"AI Advisor",  locked:false },
-    { id:"data",     label:"Connect Data",locked:false },
+    { id:"overview",  label:"Overview",    locked:false },
+    { id:"advisor",   label:"AI Advisor",  locked:false },
+    { id:"scenarios", label:"Scenarios",   locked:false },
+    { id:"data",      label:"Connect Data",locked:false },
   ];
 
   return (
@@ -823,7 +836,7 @@ function Dashboard({ user, profile, onLogout, onUpgrade }) {
       </aside>
 
       <header className="topbar">
-        <div className="breadcrumb">Command Ledger / <span>{tab==="data"?"Connect Data":tab==="advisor"?"AI Advisor":PLANS[plan].name}</span></div>
+        <div className="breadcrumb">Command Ledger / <span>{tab==="data"?"Connect Data":tab==="advisor"?"AI Advisor":tab==="scenarios"?"Scenarios":PLANS[plan].name}</span></div>
         <div className="tb-right">
           <div className="live-badge" title={hasData ? `Data confidence: ${dataConfidence} (${dataConfidence==="low"?"single manual entry, no history":dataConfidence==="medium"?"uploaded data, under 3 months":"uploaded data, 3+ months"})` : ""}>
             <div className="live-dot" style={{ background:hasData?C.green:C.amber, boxShadow:`0 0 8px ${hasData?C.green:C.amber}` }}/>
@@ -902,6 +915,68 @@ function Dashboard({ user, profile, onLogout, onUpgrade }) {
             </div>
             {!hasData && (
               <div className="d-alert info">Connect your financial data first. The AI brief uses your real numbers, not generic advice.</div>
+            )}
+          </>
+        )}
+
+        {tab === "scenarios" && (
+          <>
+            <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:28, fontWeight:300, color:C.cream }}>Scenario Planning</div>
+            {!hasData ? (
+              <div className="d-alert info">Connect your financial data first. Scenarios are built from your real latest-month numbers.</div>
+            ) : (
+              <>
+                <div className="card">
+                  <div className="card-sec">Adjust the Assumptions</div>
+                  <div className="input-grid">
+                    <div className="input-group">
+                      <label className="di-lbl">Revenue Change (%)</label>
+                      <input className="di" type="number" value={scRevPct} onChange={e => setScRevPct(Number(e.target.value))}/>
+                    </div>
+                    <div className="input-group">
+                      <label className="di-lbl">Expense Change (%)</label>
+                      <input className="di" type="number" value={scExpPct} onChange={e => setScExpPct(Number(e.target.value))}/>
+                    </div>
+                    <div className="input-group">
+                      <label className="di-lbl">New Hire, Monthly Cost ($)</label>
+                      <input className="di" type="number" min="0" value={scHire} onChange={e => setScHire(Number(e.target.value))}/>
+                    </div>
+                    <div className="input-group">
+                      <label className="di-lbl">One-Time Cash Change ($)</label>
+                      <input className="di" type="number" value={scCash} onChange={e => setScCash(Number(e.target.value))}/>
+                    </div>
+                  </div>
+                  {(scRevPct !== 0 || scExpPct !== 0 || scHire !== 0 || scCash !== 0) && (
+                    <button className="btn btn-outline" style={{ padding:"8px 18px", fontSize:11, marginTop:16 }}
+                      onClick={() => { setScRevPct(0); setScExpPct(0); setScHire(0); setScCash(0); }}>
+                      Reset to Current
+                    </button>
+                  )}
+                  <div style={{ fontSize:11, color:C.inkDim, marginTop:14, fontFamily:"'Cormorant Garamond',serif" }}>
+                    Nothing here is saved — this recomputes your real calculation engine against a hypothetical month, purely to explore before you decide.
+                  </div>
+                </div>
+
+                <div className="card">
+                  <div className="card-sec">Before vs. After</div>
+                  <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:16 }}>
+                    {[
+                      { lbl:"Margin", before:pc(scenario.before.margin), after:pc(scenario.after.margin), better: scenario.after.margin >= scenario.before.margin },
+                      { lbl:"True Free Cash", before:fmt(scenario.before.free), after:fmt(scenario.after.free), better: scenario.after.free >= scenario.before.free },
+                      { lbl:"Cash Position", before: scenario.before.cashFlowPositive ? "No burn" : `${safe(scenario.before.burnMonths).toFixed(1)}mo runway`,
+                        after: scenario.after.cashFlowPositive ? "No burn" : `${safe(scenario.after.burnMonths).toFixed(1)}mo runway`,
+                        better: scenario.after.cashFlowPositive || scenario.after.burnMonths >= scenario.before.burnMonths },
+                      { lbl:"Risk Score", before:`${scenario.before.risk.score.toFixed(0)} - ${scenario.before.risk.label}`, after:`${scenario.after.risk.score.toFixed(0)} - ${scenario.after.risk.label}`, better: scenario.after.risk.score <= scenario.before.risk.score },
+                    ].map((row, i) => (
+                      <div key={i} style={{ background:C.surfaceHigh, border:`1px solid ${C.border}`, padding:"14px 16px" }}>
+                        <div className="card-lbl">{row.lbl}</div>
+                        <div style={{ fontSize:12, color:C.inkDim, fontFamily:"'JetBrains Mono',monospace", marginTop:6 }}>{row.before}</div>
+                        <div style={{ fontSize:18, color: row.better ? C.green : C.red, fontFamily:"'JetBrains Mono',monospace", marginTop:2 }}>→ {row.after}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </>
             )}
           </>
         )}

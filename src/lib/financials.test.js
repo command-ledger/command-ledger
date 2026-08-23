@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { fmt, pc, safe, detectExpenseCategory, parseAnyCSV, computeMetrics, trailingGrowthRate, computeGrowthScore, computeRiskScore, detectTrends } from "./financials.js";
+import { fmt, pc, safe, detectExpenseCategory, parseAnyCSV, computeMetrics, trailingGrowthRate, computeGrowthScore, computeRiskScore, detectTrends, applyScenario, runScenario } from "./financials.js";
 
 describe("fmt / pc / safe", () => {
   it("formats currency and percentages", () => {
@@ -301,5 +301,59 @@ describe("detectTrends", () => {
       { revenue: 20000, expenses: 12020, payroll: 6005, marketing:0, cogs:0, rent:0, software:0 },
     ];
     expect(detectTrends(flat)).toEqual([]);
+  });
+});
+
+describe("applyScenario", () => {
+  const baseline = { revenue: 50000, expenses: 40000, cash: 100000, cac: 200, ltv: 800, leads: 0, closures: 0 };
+
+  it("returns the baseline unchanged when there are no adjustments", () => {
+    const m = applyScenario(baseline, {});
+    expect(m).toEqual({ mRev: 50000, mExp: 40000, mCash: 100000, mCac: 200, mLtv: 800, mLeads: 0, mClose: 0 });
+  });
+
+  it("applies a revenue drop as a percentage of the baseline", () => {
+    const m = applyScenario(baseline, { revenuePct: -20 });
+    expect(m.mRev).toBeCloseTo(40000, 5); // 50000 * 0.8
+    expect(m.mExp).toBe(40000);
+  });
+
+  it("applies a cost cut as a percentage of expenses", () => {
+    const m = applyScenario(baseline, { expensePct: -15 });
+    expect(m.mExp).toBeCloseTo(34000, 5); // 40000 * 0.85
+  });
+
+  it("applies a flat expense addition, e.g. a new hire's monthly cost", () => {
+    const m = applyScenario(baseline, { expenseDelta: 8000 });
+    expect(m.mExp).toBe(48000); // 40000 + 8000
+  });
+
+  it("applies a one-time cash adjustment", () => {
+    const m = applyScenario(baseline, { cashDelta: -25000 });
+    expect(m.mCash).toBe(75000);
+  });
+
+  it("never lets an adjustment push revenue, expenses, or cash negative", () => {
+    const m = applyScenario(baseline, { revenuePct: -150, expensePct: -150, cashDelta: -999999 });
+    expect(m.mRev).toBe(0);
+    expect(m.mExp).toBe(0);
+    expect(m.mCash).toBe(0);
+  });
+});
+
+describe("runScenario", () => {
+  it("compares a cost-cut scenario against the unadjusted baseline using the real calculation engine", () => {
+    const baseline = { revenue: 50000, expenses: 40000, cash: 100000, cac: 0, ltv: 0, leads: 0, closures: 0 };
+    const { before, after } = runScenario(baseline, { expensePct: -15 }, "safe");
+    expect(before.margin).toBeCloseTo(20, 5);   // (50000-40000)/50000*100
+    expect(after.margin).toBeCloseTo(32, 5);    // (50000-34000)/50000*100
+    expect(after.risk.score).toBeLessThanOrEqual(before.risk.score); // cutting costs should never look riskier
+  });
+
+  it("shows a new hire's cost pulling margin down and risk up", () => {
+    const baseline = { revenue: 50000, expenses: 40000, cash: 100000, cac: 0, ltv: 0, leads: 0, closures: 0 };
+    const { before, after } = runScenario(baseline, { expenseDelta: 8000 }, "safe");
+    expect(after.margin).toBeLessThan(before.margin);
+    expect(after.free).toBeLessThan(before.free);
   });
 });
