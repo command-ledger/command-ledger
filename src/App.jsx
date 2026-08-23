@@ -83,18 +83,37 @@ body{background:#050709;color:#F4F7FF;font-family:'Syne',sans-serif;-webkit-font
 .btn-outline:hover{border-color:#D8DADE!important;color:#D8DADE;}
 .btn:disabled{opacity:0.45;cursor:default;transform:none!important;}
 .spinner{width:16px;height:16px;border:2px solid #161C2E;border-top-color:#D8DADE;border-radius:50%;animation:spin 0.7s linear infinite;display:inline-block;flex-shrink:0;}
-.hero{min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:120px 48px 80px;position:relative;overflow:hidden;}
+.hero{min-height:100vh;display:grid;grid-template-columns:1.05fr 1fr;gap:56px;align-items:center;text-align:left;padding:150px 48px 80px;position:relative;overflow:hidden;}
 .hero-bg{position:absolute;inset:0;pointer-events:none;background:radial-gradient(ellipse 70% 60% at 50% 0%,rgba(216,218,222,0.07) 0%,transparent 60%);}
 .hero-grid{position:absolute;inset:0;pointer-events:none;background-image:linear-gradient(#161C2E 1px,transparent 1px),linear-gradient(90deg,#161C2E 1px,transparent 1px);background-size:80px 80px;mask-image:radial-gradient(ellipse 80% 80% at 50% 50%,black 0%,transparent 70%);opacity:0.4;}
+.hero-copy{position:relative;z-index:1;}
 .eyebrow{display:inline-flex;align-items:center;gap:10px;font-size:10px;letter-spacing:0.2em;text-transform:uppercase;color:#D8DADE;font-weight:600;border:1px solid #5A5D64;padding:6px 16px;margin-bottom:40px;animation:fadeUp 0.8s ease both;}
 .eyebrow-dot{width:5px;height:5px;border-radius:50%;background:#D8DADE;box-shadow:0 0 8px #D8DADE;animation:pulse 2s infinite;}
-.hero-title{font-family:'Cormorant Garamond',serif;font-size:clamp(52px,8vw,100px);font-weight:300;line-height:0.98;color:#F0E8D8;letter-spacing:-0.02em;margin-bottom:28px;animation:fadeUp 0.8s 0.1s ease both;}
+.hero-title{font-family:'Cormorant Garamond',serif;font-size:clamp(38px,4.6vw,64px);font-weight:300;line-height:1.04;color:#F0E8D8;letter-spacing:-0.02em;margin-bottom:24px;animation:fadeUp 0.8s 0.1s ease both;}
 .hero-title em{font-style:italic;color:#D8DADE;}
-.hero-sub{font-size:17px;line-height:1.75;color:#8898B8;max-width:540px;margin:0 auto 48px;font-family:'Cormorant Garamond',serif;font-weight:300;animation:fadeUp 0.8s 0.2s ease both;}
-.hero-cta{display:flex;gap:16px;justify-content:center;flex-wrap:wrap;animation:fadeUp 0.8s 0.3s ease both;}
+.hero-sub{font-size:16px;line-height:1.75;color:#8898B8;max-width:480px;margin:0 0 40px;font-family:'Cormorant Garamond',serif;font-weight:300;animation:fadeUp 0.8s 0.2s ease both;}
+.hero-cta{display:flex;gap:16px;justify-content:flex-start;flex-wrap:wrap;animation:fadeUp 0.8s 0.3s ease both;}
+.hero-preview{position:relative;z-index:1;background:#0A0D14;border:1px solid #243050;box-shadow:0 24px 64px -24px rgba(0,0,0,0.6);animation:fadeUp 0.8s 0.4s ease both;}
+.hero-preview-bar{display:flex;align-items:center;gap:8px;padding:12px 16px;border-bottom:1px solid #161C2E;background:#0F1320;}
+.hero-preview-bar span{width:8px;height:8px;border-radius:50%;background:#243050;}
+.hero-preview-title{margin-left:8px;font-family:'JetBrains Mono',monospace;font-size:10px;color:#7A7E88;letter-spacing:0.04em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.hero-preview-body{padding:24px;min-height:280px;}
+.hero-preview-empty{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;min-height:232px;border:2px dashed #161C2E;text-align:center;padding:24px;cursor:pointer;transition:border-color 0.2s;}
+.hero-preview-empty:hover{border-color:#5A5D64;}
+.hero-preview-cta{font-family:'Syne',sans-serif;font-size:12.5px;font-weight:600;color:#8898B8;line-height:1.6;max-width:260px;cursor:pointer;}
+.hero-preview-cta b{color:#D8DADE;}
+.hero-preview-or{font-size:10px;letter-spacing:0.12em;text-transform:uppercase;color:#5A5D64;}
+.hero-preview-try{font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:0.06em;text-transform:uppercase;color:#D8DADE;border:1px solid #5A5D64;padding:7px 14px;cursor:pointer;background:transparent;}
+.hero-preview-err{font-size:11px;color:#E84855;}
+.hero-preview-kpis{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:#161C2E;border:1px solid #161C2E;margin-bottom:1px;}
+.hpk{background:#0A0D14;padding:16px 18px;}
+.hpk-lbl{font-size:9px;letter-spacing:0.14em;text-transform:uppercase;color:#7A7E88;font-weight:600;margin-bottom:6px;}
+.hpk-val{font-family:'JetBrains Mono',monospace;font-size:20px;color:#F0E8D8;}
+.hero-preview-note{font-size:10.5px;color:#7A7E88;padding:12px 16px;border-top:1px solid #161C2E;font-family:'JetBrains Mono',monospace;}
+.hero-preview-reset{color:#D8DADE;cursor:pointer;text-decoration:underline;}
 .hero-scroll{position:absolute;bottom:40px;left:50%;transform:translateX(-50%);display:flex;flex-direction:column;align-items:center;gap:8px;font-size:9px;letter-spacing:0.2em;text-transform:uppercase;color:#7A7E88;}
 .scroll-line{width:1px;height:40px;background:linear-gradient(to bottom,#D8DADE,transparent);animation:scrollLine 2s ease-in-out infinite;}
-.stats-bar{display:grid;grid-template-columns:repeat(4,1fr);border-top:1px solid #161C2E;border-bottom:1px solid #161C2E;background:#0A0D14;}
+.stats-bar{display:grid;grid-template-columns:repeat(3,1fr);border-top:1px solid #161C2E;border-bottom:1px solid #161C2E;background:#0A0D14;}
 .stat{padding:32px 40px;border-right:1px solid #161C2E;}
 .stat:last-child{border-right:none;}
 .stat-n{font-family:'Cormorant Garamond',serif;font-size:42px;font-weight:300;color:#D8DADE;line-height:1;margin-bottom:8px;}
@@ -291,7 +310,7 @@ body{background:#050709;color:#F4F7FF;font-family:'Syne',sans-serif;-webkit-font
 .page-back:hover{color:#D8DADE;}
 @media(max-width:960px){
   .feat-grid,.price-grid,.kpi4,.kpi3,.g3{grid-template-columns:1fr 1fr;}
-  .stats-bar{grid-template-columns:repeat(2,1fr);}
+  .stats-bar{grid-template-columns:1fr;}
   .g2,.g21,.input-grid{grid-template-columns:1fr;}
   .dash{grid-template-columns:1fr;grid-template-rows:64px auto 1fr;}
   .sidebar{display:none;}
@@ -299,10 +318,15 @@ body{background:#050709;color:#F4F7FF;font-family:'Syne',sans-serif;-webkit-font
   .nav-links{display:none;}
   .nav,.hero,.sec,.cta-sec{padding-left:24px;padding-right:24px;}
   .footer{padding:32px 24px;}
+  .hero{grid-template-columns:1fr;text-align:center;padding-top:120px;}
+  .hero-copy{max-width:none;}
+  .hero-sub{margin:0 auto 40px;}
+  .hero-cta{justify-content:center;}
+  .hero-preview{max-width:480px;margin:0 auto;width:100%;}
 }
 @media(max-width:600px){
   .feat-grid,.price-grid,.kpi4,.kpi3,.g3{grid-template-columns:1fr;}
-  .stats-bar{grid-template-columns:1fr 1fr;}
+  .hero-preview-kpis{grid-template-columns:1fr;}
 }
 `;
 
@@ -1322,6 +1346,85 @@ function FaqItem({ q, a }) {
   );
 }
 
+// ─── HERO LIVE PREVIEW ──────────────────────────────────────────
+// A real, working instance of the actual parsing and calculation engine —
+// not a mockup. A visitor can drop their own bank/QuickBooks CSV here,
+// unauthenticated, and see figures computed from it before ever signing up.
+// Nothing here is hardcoded: every number comes from computeMetrics() run
+// against real rows, the same pure function the logged-in dashboard uses.
+// "Try an example" loads a clearly-labeled synthetic CSV through that same
+// pipeline — the numbers shown are still genuinely computed, never typed in.
+const EXAMPLE_CSV = `Date,Description,Amount
+2026-04-03,Client invoice - Acme Retainer,18500
+2026-04-08,AWS hosting,-1240
+2026-04-12,Payroll run,-14200
+2026-04-18,Client invoice - Bolt Project,9600
+2026-04-22,Facebook Ads,-4100
+2026-05-02,Client invoice - Acme Retainer,18500
+2026-05-09,AWS hosting,-1310
+2026-05-12,Payroll run,-14200
+2026-05-20,Client invoice - Bolt Project,7200
+2026-05-24,Facebook Ads,-5400
+2026-06-01,Client invoice - Acme Retainer,18500
+2026-06-10,AWS hosting,-1290
+2026-06-12,Payroll run,-15600
+2026-06-19,Client invoice - Bolt Project,6100
+2026-06-25,Facebook Ads,-6800`;
+
+function HeroPreview() {
+  const [rows, setRows] = useState(null);
+  const [label, setLabel] = useState("");
+  const [err, setErr] = useState("");
+
+  const load = (text, name) => {
+    const result = parseAnyCSV(text);
+    if (!result || result.rows.length === 0) { setErr("Couldn't find revenue or expense data in that file."); return; }
+    setErr(""); setRows(result.rows); setLabel(name);
+  };
+
+  const handleFile = async (file) => {
+    if (!file) return;
+    if (!file.name.toLowerCase().endsWith(".csv")) { setErr("Drop a .csv file — try a bank or QuickBooks export."); return; }
+    try { load(await file.text(), file.name); }
+    catch { setErr("Couldn't read that file."); }
+  };
+
+  const m = rows ? computeMetrics(rows, { mRev:0, mExp:0, mCash:0, mCac:0, mLtv:0, mLeads:0, mClose:0 }, "safe") : null;
+
+  return (
+    <div className="hero-preview">
+      <div className="hero-preview-bar">
+        <span/><span/><span/>
+        <div className="hero-preview-title">{rows ? label : "command-ledger.co — Command Center"}</div>
+      </div>
+      <div className="hero-preview-body">
+        {!rows ? (
+          <div className="hero-preview-empty" onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); handleFile(e.dataTransfer.files[0]); }}>
+            <input type="file" id="hero-file" accept=".csv" style={{ display:"none" }} onChange={e => handleFile(e.target.files[0])}/>
+            <label htmlFor="hero-file" className="hero-preview-cta"><b>Drop your own bank CSV here</b><br/>See your real numbers, live — nothing is uploaded, this runs entirely in your browser.</label>
+            <div className="hero-preview-or">or</div>
+            <button className="hero-preview-try" onClick={() => load(EXAMPLE_CSV, "Example — Acme Consulting (illustrative)")}>Try an Example</button>
+            {err && <div className="hero-preview-err">{err}</div>}
+          </div>
+        ) : (
+          <>
+            <div className="hero-preview-kpis">
+              <div className="hpk"><div className="hpk-lbl">Monthly Revenue</div><div className="hpk-val">{fmt(m.latest.revenue)}</div></div>
+              <div className="hpk"><div className="hpk-lbl">Profit Margin</div><div className="hpk-val">{pc(m.margin)}</div></div>
+              <div className="hpk"><div className="hpk-lbl">Runway</div><div className="hpk-val">{m.cashFlowPositive ? "No burn" : `${safe(m.burnMonths).toFixed(1)}mo`}</div></div>
+              <div className="hpk"><div className="hpk-lbl">Risk Score</div><div className="hpk-val" style={{ color: m.risk.label==="Low"?C.green:m.risk.label==="Watch"?C.amber:C.red }}>{m.risk.score.toFixed(0)} · {m.risk.label}</div></div>
+            </div>
+            <div className="hero-preview-note">
+              {label.startsWith("Example") ? "Illustrative example data — not a real customer." : "Computed from your file, in this browser tab only."}
+              {" "}<span className="hero-preview-reset" onClick={() => { setRows(null); setLabel(""); }}>Try another file</span>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ─── MARKETING SITE ───────────────────────────────────────────
 function MarketingSite({ onLogin, onPlanSelect, onTerms, onPrivacy }) {
   const [scrolled, setScrolled] = useState(false);
@@ -1348,8 +1451,8 @@ function MarketingSite({ onLogin, onPlanSelect, onTerms, onPrivacy }) {
           <div><div className="wordmark">Command Ledger</div><div className="wordmark-sub">Financial Intelligence</div></div>
         </div>
         <ul className="nav-links">
-          <li><a href="#features">System</a></li>
-          <li><a href="#trust">Trust</a></li>
+          <li><a href="#features">Product</a></li>
+          <li><a href="#trust">Why Command Ledger</a></li>
           <li><a href="#pricing">Pricing</a></li>
         </ul>
         <div className="nav-cta">
@@ -1360,24 +1463,44 @@ function MarketingSite({ onLogin, onPlanSelect, onTerms, onPrivacy }) {
 
       <section className="hero">
         <div className="hero-bg"/><div className="hero-grid"/>
-        <div className="eyebrow"><span className="eyebrow-dot"/>For Founders Past $50K/Month Who've Outgrown a Spreadsheet</div>
-        <h1 className="hero-title">You are making money.<br/>You still don't know if you're safe.<br/><em>Here's exactly why.</em></h1>
-        <p className="hero-sub">Upload one bank or QuickBooks export. In minutes, see your real runway, your true margin, and the one financial move to make this week — computed from your actual transactions, processed in your browser, never stored on our servers.</p>
-        <div className="hero-cta">
-          <button className="btn btn-lg btn-primary" onClick={() => onPlanSelect("pro")}>Get Started</button>
-          <button className="btn btn-lg btn-outline" onClick={onLogin}>Sign In</button>
+        <div className="hero-copy">
+          <div className="eyebrow"><span className="eyebrow-dot"/>For Founders Past $50K/Month Who've Outgrown a Spreadsheet</div>
+          <h1 className="hero-title">You are making money.<br/>You still don't know if you're safe.<br/><em>Here's exactly why.</em></h1>
+          <p className="hero-sub">Real-time financial intelligence: upload one bank or QuickBooks export and see your real runway, your true margin, your Risk Score, and the one move to make this week — computed from your actual transactions, processed in your browser, never stored on our servers.</p>
+          <div className="hero-cta">
+            <button className="btn btn-lg btn-primary" onClick={() => onPlanSelect("pro")}>Get Started</button>
+            <button className="btn btn-lg btn-outline" onClick={onLogin}>Sign In</button>
+          </div>
         </div>
+        <HeroPreview/>
         <div className="hero-scroll"><div className="scroll-line"/>Scroll</div>
       </section>
 
-      <div className="stats-bar" id="trust">
-        {[
-          { n:"Browser-Only",    l:"Files are parsed locally and never permanently stored on our servers" },
-          { n:"RLS-Protected",   l:"Database access rules verified — only your own login can read your account" },
-          { n:"Formula Shown",   l:"Every metric traces to a published calculation, not a black box" },
-        ].map((s, i) => (
-          <div className="stat" key={i}><div className="stat-n" style={{ fontSize:26 }}>{s.n}</div><div className="stat-l">{s.l}</div></div>
-        ))}
+      <section className="sec" id="trust" style={{ paddingTop:64, paddingBottom:64 }}>
+        <div className="sec-eye">Trust</div>
+        <h2 className="sec-title" style={{ fontSize:"clamp(28px,3.6vw,40px)" }}>Only claims we can<br/><em>actually stand behind</em></h2>
+        <div className="feat-grid" style={{ marginTop:48 }}>
+          {[
+            { title:"Data Processing", desc:"Your uploaded file is parsed in your browser using the same code shown above — it is never uploaded to our servers or permanently stored. Computed metrics are sent to Claude (Anthropic) only when you request an AI brief, and only as numbers, never as raw transaction data." },
+            { title:"Access Control", desc:"Your account is protected by Postgres row-level security, scoped to your own login — verified directly against the live database, not asserted in a policy document. Only the payment webhook, using a separate privileged key, can change your subscription status." },
+            { title:"Financial Transparency", desc:"Every metric — margin, runway, Risk Score, Growth Score — is derived from a published, testable formula, not a black-box model. Runway uses net burn, not gross expenses; scores only count a signal when there's real data behind it." },
+          ].map((t, i) => (
+            <div className="feat-card" key={i}>
+              <h3 className="feat-title">{t.title}</h3>
+              <p className="feat-desc">{t.desc}</p>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <div className="sec sec-center" style={{ padding:"48px 48px", borderTop:`1px solid ${C.border}`, borderBottom:`1px solid ${C.border}` }}>
+        <div className="sec-eye" style={{ marginBottom:8 }}>Who It's For</div>
+        <h2 className="sec-title" style={{ fontSize:"clamp(24px,3vw,32px)", marginBottom:24 }}>Built for founders who need<br/><em>financial clarity</em></h2>
+        <div style={{ display:"flex", gap:12, flexWrap:"wrap", justifyContent:"center" }}>
+          {["Agencies","SaaS","Consulting","Professional Services","E-commerce"].map((tag, i) => (
+            <div key={i} style={{ border:`1px solid ${C.border}`, padding:"10px 20px", fontSize:12, letterSpacing:"0.08em", textTransform:"uppercase", color:C.ink, fontFamily:"'JetBrains Mono',monospace" }}>{tag}</div>
+          ))}
+        </div>
       </div>
 
       <section className="sec" id="features">
@@ -1396,20 +1519,27 @@ function MarketingSite({ onLogin, onPlanSelect, onTerms, onPrivacy }) {
       </section>
 
       <section className="sec sec-center" id="mechanism" style={{ borderTop:`1px solid ${C.border}` }}>
-        <div style={{ maxWidth:720, margin:"0 auto" }}>
-          <div style={{
-            background:C.surfaceHigh,
-            border:`1px solid ${C.goldDim}`,
-            padding:"32px 40px",
-            position:"relative",
-            marginBottom:64,
-          }}>
-            <div style={{ position:"absolute", top:0, left:0, right:0, height:2, background:`linear-gradient(to right,transparent,${C.gold},transparent)` }}/>
-            <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:22, color:C.cream, lineHeight:1.7, fontStyle:"italic", marginBottom:12 }}>
-              A spreadsheet shows you numbers. An accountant shows you last quarter. Command Ledger recalculates your runway and tells you the one thing to cut the moment a number moves.
+        <div style={{ maxWidth:820, margin:"0 auto" }}>
+          <div className="sec-eye">The Excel Test</div>
+          <h2 className="sec-title">A spreadsheet shows numbers.<br/><em>This is what it means.</em></h2>
+          <p className="sec-body" style={{ marginBottom:48 }}>Excel and QuickBooks store your data. Your accountant makes sure you're compliant. Neither tells you what changed and what to do about it. Here's the same numbers, both ways:</p>
+
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:1, background:C.border, border:`1px solid ${C.border}`, textAlign:"left", marginBottom:64 }}>
+            <div style={{ background:C.surface, padding:"28px 32px" }}>
+              <div style={{ fontSize:10, letterSpacing:"0.14em", textTransform:"uppercase", color:C.inkDim, fontWeight:600, marginBottom:16 }}>Raw Financial Data</div>
+              <div style={{ fontFamily:"'JetBrains Mono',monospace", fontSize:13, color:C.ink, lineHeight:2.1 }}>
+                Revenue: R480,000<br/>Expenses: R390,000<br/>Profit: R90,000
+              </div>
             </div>
-            <div style={{ fontSize:11, color:C.gold, letterSpacing:"0.14em", textTransform:"uppercase", fontWeight:600 }}>
-              The Excel Test
+            <div style={{ background:C.surfaceHigh, padding:"28px 32px", borderLeft:`1px solid ${C.gold}` }}>
+              <div style={{ fontSize:10, letterSpacing:"0.14em", textTransform:"uppercase", color:C.gold, fontWeight:600, marginBottom:16 }}>Command Ledger Interpretation</div>
+              <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:14.5, color:C.ink, lineHeight:1.8 }}>
+                Revenue increased 14%. But marketing spend increased 31%, and net margin fell from 22% to 18.8%. Cash conversion weakened.
+                <br/><br/>
+                <b style={{ color:C.cream }}>Recommended action:</b> reduce underperforming acquisition spend before increasing budget further.
+                <br/><br/>
+                <span style={{ color:C.inkDim, fontSize:13 }}>Why: the company is growing, but growth efficiency is deteriorating.</span>
+              </div>
             </div>
           </div>
 
@@ -1427,8 +1557,36 @@ function MarketingSite({ onLogin, onPlanSelect, onTerms, onPrivacy }) {
                 a: "Bank statements, QuickBooks exports, Xero exports, Wave exports, and any CSV or Excel file. The system automatically detects your column structure — whether you have named columns like Revenue and Expenses, or a raw bank statement with positive and negative amounts. It reads all of them.",
               },
               {
-                q: "When should I still use a human accountant?",
-                a: "Always. Command Ledger gives you real-time decision intelligence between your accountant visits. Your accountant handles tax compliance, SARS submissions, and historical reporting. Command Ledger handles the decisions you need to make today — hiring, spending, scaling, and cash management.",
+                q: "How much runway do I actually have?",
+                a: "Cash on hand, adjusted for your safety buffer, divided by your net burn — expenses minus revenue, not expenses alone. A profitable month never gets counted as burn just because costs are high; only actually spending more than you bring in counts against your runway.",
+              },
+              {
+                q: "Why did my profit increase but my cash decrease?",
+                a: "Profit and cash are not the same thing. Profit is revenue minus expenses on paper. Cash is what's actually sitting in your account — delayed client payments, prepaid expenses, and loan repayments all move cash without touching profit. This is exactly the gap True Free Cash is built to close: what you actually own and can deploy, after tax obligations and your safety buffer, not what your P&L says you made.",
+              },
+              {
+                q: "Can I afford to hire another employee?",
+                a: "Use Scenario Planning: add the role's real fully-loaded monthly cost as an expense adjustment and see your margin, runway, and Risk Score recompute against that hire before you make it — not a rule of thumb, the same calculation engine your live numbers run through.",
+              },
+              {
+                q: "Why is my Risk Score increasing?",
+                a: "The score is a weighted composite of four things: your runway, your margin, how concentrated your revenue is in a single period, and your LTV:CAC ratio — each one only counts when there's real data behind it. If it moved, one of those four moved; the dashboard shows which.",
+              },
+              {
+                q: "Is my growth actually healthy?",
+                a: "Growth Score weights a steady, consistent trend over one lucky month — three good months in a row score higher than one great month sandwiched between two down months, at the same average growth rate. A rising revenue line and a rising Growth Score are not always the same thing.",
+              },
+              {
+                q: "What happens if revenue drops 20%?",
+                a: "Open Scenario Planning and set the revenue adjustment to -20% — margin, runway, and Risk Score recompute instantly against that hypothetical, using your real current numbers as the baseline. Nothing is saved; it's there to let you stress-test a decision before it happens.",
+              },
+              {
+                q: "Can I trust the AI recommendation?",
+                a: "Trust the parts you can verify: the recommendation is required to reference your real numbers, its stated Risk Level is required to match the Risk Score already computed from your data (not an independent guess), and its confidence score is capped by how much real history backs it — a single manually-entered month never gets the same confidence as six months of uploaded transactions.",
+              },
+              {
+                q: "Should I still have an accountant?",
+                a: "Yes. Command Ledger is a decision-support system, not a replacement for professional accounting, tax, legal, or audit services. Your accountant handles compliance and historical reporting. Command Ledger handles the decisions you need to make today.",
               },
               {
                 q: "What if my numbers are a mess?",
@@ -1496,7 +1654,7 @@ function MarketingSite({ onLogin, onPlanSelect, onTerms, onPrivacy }) {
       <section className="cta-sec">
         <div style={{ position:"relative", zIndex:1 }}>
           <div className="sec-eye">The Decision</div>
-          <h2 className="cta-title">One bad capital decision<br/>costs more than<br/><em>this system.</em></h2>
+          <h2 className="cta-title">Know your numbers.<br/>Understand your risks.<br/><em>Make the next decision with evidence.</em></h2>
           <p className="sec-body" style={{ marginTop:20, marginBottom:48 }}>
             The hire you could not afford. The ad spend with no data behind it. The month you ran without knowing your runway. Command Ledger exists so those decisions never happen again.
           </p>
@@ -1505,10 +1663,26 @@ function MarketingSite({ onLogin, onPlanSelect, onTerms, onPrivacy }) {
       </section>
 
       <footer className="footer">
+        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:32, marginBottom:32, textAlign:"left", maxWidth:480, margin:"0 auto 32px" }}>
+          <div>
+            <div style={{ fontSize:10, letterSpacing:"0.14em", textTransform:"uppercase", color:C.gold, fontWeight:600, marginBottom:12 }}>Product</div>
+            <ul className="footer-links" style={{ flexDirection:"column", alignItems:"flex-start", gap:10 }}>
+              <li><a href="#features">AI Advisor</a></li>
+              <li><a href="#features">Risk &amp; Growth Score</a></li>
+              <li><a href="#pricing">Pricing</a></li>
+            </ul>
+          </div>
+          <div>
+            <div style={{ fontSize:10, letterSpacing:"0.14em", textTransform:"uppercase", color:C.gold, fontWeight:600, marginBottom:12 }}>Trust</div>
+            <ul className="footer-links" style={{ flexDirection:"column", alignItems:"flex-start", gap:10 }}>
+              <li><a href="#trust">Data Processing &amp; Security</a></li>
+              <li><a onClick={onPrivacy}>Privacy Policy</a></li>
+              <li><a onClick={onTerms}>Terms of Service</a></li>
+            </ul>
+          </div>
+        </div>
         <div className="footer-copy">2026 Command Ledger - DigiBlueprint Financial Intelligence</div>
         <ul className="footer-links">
-          <li><a onClick={onPrivacy}>Privacy Policy</a></li>
-          <li><a onClick={onTerms}>Terms of Service</a></li>
           <li><a href="mailto:hello@commandledger.co">Contact</a></li>
         </ul>
       </footer>
