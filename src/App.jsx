@@ -22,10 +22,9 @@ const PLANS = {
     features:["Weekly AI strategic brief","Burn runway monitor","Capital allocator","Break-even calculator","Hire readiness indicator","90-day cash projection","LTV:CAC ratio analysis","Revenue concentration risk","CSV, Excel and live sheet sync"],
   },
   pro: {
-    name:"Command Pro"
-    , usd:2475, zar:44550, period:"per month",
+    name:"Command Pro", usd:2475, zar:44550, period:"per month",
     tagline:"Command. Everything in Essentials, plus a CFO beside you.",
-    features:["Everything in Essentials","Done-for-you data configuration","Monthly 1:1 advisory call","PDF board report delivered monthly","Direct WhatsApp advisory line","Priority 4-hour response SLA"],
+    features:["Everything in Essentials","Done-for-you data configuration","Monthly 1:1 advisory call","Monthly written board report","Direct advisory line (email)","Priority 4-hour response SLA"],
   },
   elite: {
     name:"Command Elite", usd:3000, zar:54000, setup:7000, period:"setup + $3,000/mo",
@@ -131,15 +130,6 @@ body{background:#050709;color:#F4F7FF;font-family:'Syne',sans-serif;-webkit-font
 .price-list{list-style:none;margin-bottom:28px;}
 .price-list li{display:flex;align-items:flex-start;gap:10px;font-size:13px;color:#8898B8;margin-bottom:10px;font-family:'Cormorant Garamond',serif;line-height:1.5;}
 .price-list li::before{content:'---';color:#D8DADE;flex-shrink:0;font-family:'JetBrains Mono',monospace;font-size:11px;margin-top:2px;}
-.testi-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:24px;margin-top:64px;}
-.testi-card{background:#0A0D14;border:1px solid #161C2E;padding:32px;transition:border-color 0.3s;}
-.testi-card:hover{border-color:#5A5D64;}
-.testi-q{font-family:'Cormorant Garamond',serif;font-size:15px;line-height:1.85;color:#8898B8;margin-bottom:24px;font-style:italic;}
-.testi-q strong{color:#F0E8D8;font-style:normal;}
-.testi-author{display:flex;align-items:center;gap:12px;}
-.testi-av{width:36px;height:36px;border-radius:50%;border:1px solid #5A5D64;display:flex;align-items:center;justify-content:center;font-family:'Cormorant Garamond',serif;font-size:14px;color:#D8DADE;background:#0F1320;flex-shrink:0;}
-.testi-name{font-size:12px;font-weight:600;color:#F0E8D8;margin-bottom:2px;}
-.testi-role{font-size:11px;color:#3A4A68;}
 .cta-sec{padding:120px 48px;text-align:center;position:relative;overflow:hidden;border-top:1px solid #161C2E;}
 .cta-sec::before{content:'';position:absolute;inset:0;background:radial-gradient(ellipse 60% 60% at 50% 50%,rgba(216,218,222,0.07) 0%,transparent 70%);}
 .cta-title{font-family:'Cormorant Garamond',serif;font-size:clamp(40px,6vw,72px);font-weight:300;color:#F0E8D8;line-height:1.08;margin-bottom:20px;}
@@ -300,7 +290,7 @@ body{background:#050709;color:#F4F7FF;font-family:'Syne',sans-serif;-webkit-font
 .page-back{display:inline-flex;align-items:center;gap:8px;font-size:11px;letter-spacing:0.1em;text-transform:uppercase;color:#8898B8;cursor:pointer;margin-bottom:40px;transition:color 0.2s;}
 .page-back:hover{color:#D8DADE;}
 @media(max-width:960px){
-  .feat-grid,.price-grid,.testi-grid,.kpi4,.kpi3,.g3{grid-template-columns:1fr 1fr;}
+  .feat-grid,.price-grid,.kpi4,.kpi3,.g3{grid-template-columns:1fr 1fr;}
   .stats-bar{grid-template-columns:repeat(2,1fr);}
   .g2,.g21,.input-grid{grid-template-columns:1fr;}
   .dash{grid-template-columns:1fr;grid-template-rows:64px auto 1fr;}
@@ -311,7 +301,7 @@ body{background:#050709;color:#F4F7FF;font-family:'Syne',sans-serif;-webkit-font
   .footer{padding:32px 24px;}
 }
 @media(max-width:600px){
-  .feat-grid,.price-grid,.testi-grid,.kpi4,.kpi3,.g3{grid-template-columns:1fr;}
+  .feat-grid,.price-grid,.kpi4,.kpi3,.g3{grid-template-columns:1fr;}
   .stats-bar{grid-template-columns:1fr 1fr;}
 }
 `;
@@ -1085,7 +1075,7 @@ function Dashboard({ user, profile, onLogout, onUpgrade }) {
             {plan === "essentials" && (
               <div className="nudge">
                 <div className="nudge-title">You have the intelligence. Command Pro adds the team behind it.</div>
-                <div className="nudge-sub">Command Pro adds done-for-you data configuration, a monthly 1:1 advisory call, a PDF board report delivered every month, and a direct WhatsApp line with priority response.</div>
+                <div className="nudge-sub">Command Pro adds done-for-you data configuration, a monthly 1:1 advisory call, a written board report every month, and a direct advisory line with priority response.</div>
                 <button className="btn btn-lg btn-primary" onClick={onUpgrade}>Upgrade to Command Pro</button>
               </div>
             )}
@@ -1095,12 +1085,12 @@ function Dashboard({ user, profile, onLogout, onUpgrade }) {
                 <div className="card-sec">Direct Access</div>
                 <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:16 }}>
                   <div className="elite-box">
-                    <div className="elite-title">WhatsApp Advisory Line</div>
+                    <div className="elite-title">Direct Advisory Line</div>
                     <div style={{ fontSize:13, color:C.ink, fontFamily:"'Cormorant Garamond',serif", lineHeight:1.6, marginBottom:12 }}>
                       Direct access for capital decisions and growth strategy. Response within 4 hours.
                     </div>
-                    <button className="wa-btn" onClick={() => window.open("https://wa.me/27YOURNUMBER?text=Hi%2C+I+need+advisory+support+for+my+Command+Ledger+account","_blank")}>
-                      Open WhatsApp
+                    <button className="wa-btn" onClick={() => window.open("mailto:hello@commandledger.co?subject=Advisory%20support%20request","_blank")}>
+                      Email Advisory Support
                     </button>
                   </div>
                   <div className="elite-box">
@@ -1267,18 +1257,12 @@ function MarketingSite({ onLogin, onPlanSelect, onTerms, onPrivacy }) {
   }, []);
 
   const features = [
-    { num:"01", title:"Burn Runway Monitor",     desc:"Exactly how many months before the business dies at current spend. Not an estimate. A live calculation updated every time your numbers change." },
-    { num:"02", title:"True Free Cash",           desc:"After tax obligations and safety buffer, what you actually own and can deploy. Most founders confuse revenue with available cash. This ends that confusion." },
-    { num:"03", title:"This Week's Directive",    desc:"Not a report. One sentence telling you the single most important financial move to make this week --- built from your real numbers, not a template." },
-    { num:"04", title:"Break-Even Calculator",    desc:"The exact monthly revenue you need to cover all costs. Know whether you are above or below the line before the month ends." },
-    { num:"05", title:"LTV:CAC Intelligence",     desc:"Are you spending more to acquire customers than they return? This ratio tells you before you waste six months of marketing budget." },
-    { num:"06", title:"Revenue Concentration Risk", desc:"If more than 40% of revenue comes from one source, you have a hidden vulnerability. This surfaces it before it becomes a crisis." },
-  ];
-
-  const testis = [
-    { q:"I was making R800K a month and still running out of cash. Command Ledger showed me <strong>exactly where it was going</strong> in the first week.", name:"Sipho M.", role:"Founder, Logistics" },
-    { q:"The Hire Readiness indicator told me I could not afford the hire I was about to make. <strong>That saved my runway.</strong>", name:"Amara K.", role:"Agency Owner" },
-    { q:"I connected my QuickBooks export and within 5 minutes had <strong>more clarity than two years of accountant meetings.</strong>", name:"James T.", role:"E-commerce Founder" },
+    { num:"01", title:"AI Strategic Advisor",   desc:"Not a paragraph — a structured brief: what happened, why, the business impact, the risk level, the one action to take, and how confident to be in it. Built from your real numbers." },
+    { num:"02", title:"Risk Score",             desc:"A single number weighted from your actual runway, margin, revenue concentration, and unit economics — each only counts when there's real data behind it, so it never fakes a warning." },
+    { num:"03", title:"Growth Score",           desc:"Rewards a steady, consistent growth trend over one lucky month. Three good months in a row score higher than one great month between two bad ones, at the same average rate." },
+    { num:"04", title:"Burn Runway Monitor",    desc:"Real net burn — expenses against revenue, not expenses alone — so a profitable month never gets mistaken for a business about to run out of cash." },
+    { num:"05", title:"True Free Cash",         desc:"After tax obligations and safety buffer, what you actually own and can deploy. Most founders confuse revenue with available cash. This ends that confusion." },
+    { num:"06", title:"Break-Even Calculator",  desc:"The exact monthly revenue you need to cover all costs. Know whether you are above or below the line before the month ends." },
   ];
 
   return (
@@ -1290,35 +1274,34 @@ function MarketingSite({ onLogin, onPlanSelect, onTerms, onPrivacy }) {
         </div>
         <ul className="nav-links">
           <li><a href="#features">System</a></li>
+          <li><a href="#trust">Trust</a></li>
           <li><a href="#pricing">Pricing</a></li>
-          <li><a href="#proof">Proof</a></li>
         </ul>
         <div className="nav-cta">
           <button className="btn btn-ghost" onClick={onLogin}>Sign In</button>
-          <button className="btn btn-gold" onClick={() => onPlanSelect("pro")}>Start Free Trial</button>
+          <button className="btn btn-gold" onClick={() => onPlanSelect("pro")}>Get Started</button>
         </div>
       </nav>
 
       <section className="hero">
         <div className="hero-bg"/><div className="hero-grid"/>
-        <div className="eyebrow"><span className="eyebrow-dot"/>Financial Intelligence for Founders Doing $50K+ Monthly</div>
-        <h1 className="hero-title">You are making money.<br/>You are still broke.<br/><em>We fix that.</em></h1>
-        <p className="hero-sub">Command Ledger reads your real financial data --- from any spreadsheet, QuickBooks, Xero, or Wave export --- and tells you exactly where the money is leaking, what to cut, and the one move to make this week.</p>
+        <div className="eyebrow"><span className="eyebrow-dot"/>For Founders Past $50K/Month Who've Outgrown a Spreadsheet</div>
+        <h1 className="hero-title">You are making money.<br/>You still don't know if you're safe.<br/><em>Here's exactly why.</em></h1>
+        <p className="hero-sub">Upload one bank or QuickBooks export. In minutes, see your real runway, your true margin, and the one financial move to make this week — computed from your actual transactions, processed in your browser, never stored on our servers.</p>
         <div className="hero-cta">
-          <button className="btn btn-lg btn-primary" onClick={() => onPlanSelect("pro")}>Start Free Trial</button>
+          <button className="btn btn-lg btn-primary" onClick={() => onPlanSelect("pro")}>Get Started</button>
           <button className="btn btn-lg btn-outline" onClick={onLogin}>Sign In</button>
         </div>
         <div className="hero-scroll"><div className="scroll-line"/>Scroll</div>
       </section>
 
-      <div className="stats-bar">
+      <div className="stats-bar" id="trust">
         {[
-          { n:"$50K+", l:"Monthly Revenue, Target Clients" },
-          { n:"3",     l:"Niches We Solve For" },
-          { n:"5 Min", l:"Time to First Insight" },
-          { n:"0",     l:"Hardcoded or Fake Data" },
+          { n:"Browser-Only",    l:"Files are parsed locally and never permanently stored on our servers" },
+          { n:"RLS-Protected",   l:"Database access rules verified — only your own login can read your account" },
+          { n:"Formula Shown",   l:"Every metric traces to a published calculation, not a black box" },
         ].map((s, i) => (
-          <div className="stat" key={i}><div className="stat-n">{s.n}</div><div className="stat-l">{s.l}</div></div>
+          <div className="stat" key={i}><div className="stat-n" style={{ fontSize:26 }}>{s.n}</div><div className="stat-l">{s.l}</div></div>
         ))}
       </div>
 
@@ -1337,7 +1320,7 @@ function MarketingSite({ onLogin, onPlanSelect, onTerms, onPrivacy }) {
         </div>
       </section>
 
-      <section className="sec sec-center" id="proof-quote" style={{ borderTop:`1px solid ${C.border}` }}>
+      <section className="sec sec-center" id="mechanism" style={{ borderTop:`1px solid ${C.border}` }}>
         <div style={{ maxWidth:720, margin:"0 auto" }}>
           <div style={{
             background:C.surfaceHigh,
@@ -1347,11 +1330,11 @@ function MarketingSite({ onLogin, onPlanSelect, onTerms, onPrivacy }) {
             marginBottom:64,
           }}>
             <div style={{ position:"absolute", top:0, left:0, right:0, height:2, background:`linear-gradient(to right,transparent,${C.gold},transparent)` }}/>
-            <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:22, color:C.cream, lineHeight:1.7, fontStyle:"italic", marginBottom:20 }}>
-              "I thought I had 8 months of runway. Command Ledger showed me I had 3.1. That changed every decision I was about to make."
+            <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:22, color:C.cream, lineHeight:1.7, fontStyle:"italic", marginBottom:12 }}>
+              A spreadsheet shows you numbers. An accountant shows you last quarter. Command Ledger recalculates your runway and tells you the one thing to cut the moment a number moves.
             </div>
             <div style={{ fontSize:11, color:C.gold, letterSpacing:"0.14em", textTransform:"uppercase", fontWeight:600 }}>
-              Founder, Agency — South Africa
+              The Excel Test
             </div>
           </div>
 
@@ -1362,15 +1345,11 @@ function MarketingSite({ onLogin, onPlanSelect, onTerms, onPrivacy }) {
             {[
               {
                 q: "How does the AI advisor work?",
-                a: "You upload your financial file. Command Ledger reads every transaction, calculates your real margin, burn runway, true free cash, and unit economics. That data is sent to Claude — built by Anthropic — which analyzes your specific numbers and writes a directive telling you exactly what to do this week. Not generic advice. Your numbers. Your directive.",
+                a: "You upload your financial file. Command Ledger reads every transaction, calculates your real margin, burn runway, true free cash, and unit economics. That data is sent to Claude — built by Anthropic — which returns a structured brief: what happened, why, the business impact, the risk level, one recommended action, and how confident to be in it. Not generic advice. Your numbers. Your directive.",
               },
               {
                 q: "What file formats does it accept?",
                 a: "Bank statements, QuickBooks exports, Xero exports, Wave exports, and any CSV or Excel file. The system automatically detects your column structure — whether you have named columns like Revenue and Expenses, or a raw bank statement with positive and negative amounts. It reads all of them.",
-              },
-              {
-                q: "Is my financial data safe?",
-                a: "Your uploaded files are processed in your browser and never permanently stored on our servers. Your account data is encrypted and stored in Supabase with row-level security — meaning only you can access your own data. We do not sell your data. We do not share it. We do not use it to train AI models.",
               },
               {
                 q: "When should I still use a human accountant?",
@@ -1421,7 +1400,7 @@ function MarketingSite({ onLogin, onPlanSelect, onTerms, onPrivacy }) {
                 {p.soon ? (
                   <button
                     className="btn btn-full btn-outline"
-                    onClick={() => window.open("https://wa.me/27YOURNUMBER?text=I'm+interested+in+Command+Elite+VIP+--+please+notify+me+when+it+launches","_blank")}
+                    onClick={() => window.open("mailto:hello@commandledger.co?subject=Command%20Elite%20waitlist","_blank")}
                   >
                     Join VIP Waitlist
                   </button>
@@ -1439,22 +1418,6 @@ function MarketingSite({ onLogin, onPlanSelect, onTerms, onPrivacy }) {
         </div>
       </section>
 
-      <section className="sec" id="proof">
-        <div className="sec-eye">Proof</div>
-        <h2 className="sec-title">What founders say after<br/><em>seeing their real numbers</em></h2>
-        <div className="testi-grid">
-          {testis.map((t, i) => (
-            <div className="testi-card" key={i}>
-              <div className="testi-q" dangerouslySetInnerHTML={{ __html:`"${t.q}"` }}/>
-              <div className="testi-author">
-                <div className="testi-av">{t.name[0]}</div>
-                <div><div className="testi-name">{t.name}</div><div className="testi-role">{t.role}</div></div>
-              </div>
-            </div>
-          ))}
-        </div>
-      </section>
-
       <section className="cta-sec">
         <div style={{ position:"relative", zIndex:1 }}>
           <div className="sec-eye">The Decision</div>
@@ -1462,7 +1425,7 @@ function MarketingSite({ onLogin, onPlanSelect, onTerms, onPrivacy }) {
           <p className="sec-body" style={{ marginTop:20, marginBottom:48 }}>
             The hire you could not afford. The ad spend with no data behind it. The month you ran without knowing your runway. Command Ledger exists so those decisions never happen again.
           </p>
-          <button className="btn btn-lg btn-primary" onClick={() => onPlanSelect("pro")}>Start Free Trial</button>
+          <button className="btn btn-lg btn-primary" onClick={() => onPlanSelect("pro")}>Get Started</button>
         </div>
       </section>
 
