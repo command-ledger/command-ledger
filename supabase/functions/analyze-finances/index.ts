@@ -103,12 +103,33 @@ serve(async (req: Request) => {
       hireReady, concentration, concentrationReliable, breakEven, proj90,
       plan, mode, dataMonths, dataConfidence,
       growthScore, growthLabel, riskScore, riskLabel, trends,
+      // Per-metric confidence — { shown, level, reason } for each of
+      // runway, breakEven, proj90, hireReady, ltvCac, growth. `shown:false`
+      // means the metric's required inputs are absent (its raw value above
+      // arrives as null) — that is a different failure than a thin history
+      // and must be narrated differently.
+      confidence,
       // Expense breakdown if available
       payroll, rent, marketing, software, cogs,
     } = body
 
     const fmt = (n) => `$${Math.round(Number(n) || 0).toLocaleString("en-US")}`
     const pct = (n) => `${Number(n || 0).toFixed(1)}%`
+
+    // Narrates one confidence-gated metric for the prompt: a metric whose
+    // value arrived as null is unavailable (never rendered as $0 or 0%),
+    // and a shown-but-thin metric carries its confidence level and reason
+    // inline so the model hedges on exactly the numbers that need it —
+    // high-confidence metrics render plainly, same as the dashboard.
+    const describeMetric = (rawValue, conf, formatFn) => {
+      if (rawValue === null || rawValue === undefined || !conf?.shown) {
+        return `Not available — ${conf?.reason || "insufficient data"}`
+      }
+      const value = formatFn(rawValue)
+      if (conf.level === "high") return value
+      return `${value} [${conf.level.toUpperCase()} CONFIDENCE — ${conf.reason}]`
+    }
+    const conf = confidence || {}
 
     // Build expense breakdown section if we have category data
     const expenseBreakdown = [
@@ -142,7 +163,10 @@ Rules:
 - "confidenceScore" (0-100) must be calibrated to DATA CONFIDENCE below: low data confidence caps around 50, medium around 60-75, high can go above that. "confidenceReason" states why in one short clause (e.g. "based on 1 manually-entered month" or "based on 6 months of uploaded transaction history")
 - If TRENDS DETECTED are provided below, ground "whatHappened" and "whyItHappened" in those specific trends rather than restating raw current-period numbers
 - Each field is 1-3 sentences. No bullet points, no headers, inside any field.
-- If the numbers are bad, say they are bad. If they're good, say exactly what to do with that advantage right now.`
+- If the numbers are bad, say they are bad. If they're good, say exactly what to do with that advantage right now.
+- Any metric marked "Not available" below has no real value behind it — never state a number for it, never guess one, and never treat its absence as zero. Say plainly that you don't have enough data to assess it yet; "I cannot assess this yet" is the correct and expected thing to say about that specific metric, not a failure to answer.
+- Any metric marked LOW CONFIDENCE or MODERATE CONFIDENCE below must be hedged explicitly wherever you reference it — say "early signal," "based on limited history," or "this could move once more data comes in" rather than stating it as settled fact. A HIGH CONFIDENCE metric (or one with no confidence marking at all) is stated as fact, same as always.
+- REPORTING PERIOD of 1 month cannot support "riskLevel": "Critical" — a single bad month may be a fluke, not a fire. Cap at "Watch" in that case and say the call needs more history to confirm.`
 
     const userPrompt = `Here is the complete financial position of this business. Analyze it and tell the founder exactly what is happening and what to do:
 
@@ -163,22 +187,22 @@ CORE METRICS:
 
 CASH POSITION:
 - True Free Cash (after tax vault + safety buffer): ${fmt(trueFreeCash)}
-- Burn Runway: ${cashFlowPositive ? "Cash flow positive — revenue currently exceeds expenses, so there is no cash burn to report" : `${burnRunway} months`}
-- Break-Even Revenue Required: ${fmt(breakEven)}
-- 90-Day Revenue Projection: ${fmt(proj90)}
+- Burn Runway: ${cashFlowPositive ? "Cash flow positive — revenue currently exceeds expenses, so there is no cash burn to report" : describeMetric(burnRunway, conf.runway, (v) => `${v} months`)}
+- Break-Even Revenue Required: ${describeMetric(breakEven, conf.breakEven, fmt)}
+- 90-Day Revenue Projection: ${describeMetric(proj90, conf.proj90, fmt)}
 
 UNIT ECONOMICS:
-- LTV:CAC Ratio: ${ltvCacRatio}x
+- LTV:CAC Ratio: ${describeMetric(ltvCacRatio, conf.ltvCac, (v) => `${v}x`)}
 - COGS as % of Revenue: ${pct(cogsRatio)}
 - Marketing Spend as % of Revenue: ${pct(marketingRatio)}
 
 OPERATIONAL FLAGS:
-- Hire Readiness: ${hireReady ? "Yes — free cash supports new headcount" : "No — insufficient free cash"}
+- Hire Readiness: ${describeMetric(hireReady, conf.hireReady, (v) => v ? "Yes — free cash supports new headcount" : "No — insufficient free cash")}
 - Revenue Distribution: ${concentrationReliable ? `${pct(concentration)} of total revenue came from the single highest month — treat this as a real concentration signal only if it stays high as more months come in` : `${pct(concentration)} of total revenue came from the single highest month, but there's under 3 months of history — this is too little data to call it a concentration risk yet, don't treat it as one`}
 
 COMPUTED SCORES (already calculated — narrate these, do not recompute or contradict them):
-- Growth Score: ${growthScore ?? "n/a"}/100 (${growthLabel ?? "n/a"})
-- Risk Score: ${riskScore ?? "n/a"}/100 (${riskLabel ?? "n/a"}) — this is the value "riskLevel" in your response must match
+- Growth Score: ${describeMetric(growthScore, conf.growth, (v) => `${v}/100 (${growthLabel ?? "n/a"})`)}
+- Risk Score: ${riskScore ?? "n/a"}/100 (${riskLabel ?? "n/a"}) — this is the value "riskLevel" in your response must match, subject to the single-month cap in the rules above
 
 ${trends?.length ? `TRENDS DETECTED (comparing the latest month to the prior months' average):\n${trends.map((t) => `- ${t.message}`).join("\n")}` : "TRENDS DETECTED: none — under 3 months of history, or nothing moved meaningfully."}
 
@@ -237,6 +261,17 @@ Return the JSON object now.`
         JSON.stringify({ error: "The advisor's response could not be parsed into a structured recommendation. Try again." }),
         { headers: { ...corsHeaders, "Content-Type": "application/json" }, status: 502 }
       )
+    }
+
+    // Directive gating, enforced in code rather than left to prompt
+    // compliance: a single month of data cannot support a "Critical" call.
+    // The prompt already instructs this, but a model is not a guarantee —
+    // this is the same "verify, don't just ask nicely" pattern already
+    // used above for the required-fields check.
+    if (Number(dataMonths) <= 1 && recommendation!.riskLevel === "Critical") {
+      recommendation!.riskLevel = "Watch"
+      recommendation!.confidenceReason =
+        `${recommendation!.confidenceReason} (Capped from Critical — only 1 month of data; more history is needed to confirm a call that severe.)`
     }
 
     return new Response(JSON.stringify({ recommendation }), {

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { fmt, pc, safe, detectExpenseCategory, parseAnyCSV, computeMetrics, trailingGrowthRate, computeGrowthScore, computeRiskScore, detectTrends, applyScenario, runScenario, computeHistoricalTrajectory, detectSeasonality, computeHistoricalConfidence, buildFounderNarrative, parseTransactions, normalizeDescription, dedupeHashInput, computeDedupeHash, aggregateTransactionsByMonth } from "./financials.js";
+import { fmt, pc, safe, detectExpenseCategory, parseAnyCSV, computeMetrics, trailingGrowthRate, computeGrowthScore, computeRiskScore, detectTrends, applyScenario, runScenario, computeHistoricalTrajectory, detectSeasonality, computeHistoricalConfidence, buildFounderNarrative, parseTransactions, normalizeDescription, dedupeHashInput, computeDedupeHash, aggregateTransactionsByMonth, computeConfidence, capSeverityForVolume } from "./financials.js";
 
 describe("fmt / pc / safe", () => {
   it("formats currency and percentages", () => {
@@ -584,5 +584,111 @@ describe("aggregateTransactionsByMonth", () => {
   it("returns an empty array for no transactions, not null or an error", () => {
     expect(aggregateTransactionsByMonth([])).toEqual([]);
     expect(aggregateTransactionsByMonth(null)).toEqual([]);
+  });
+});
+
+describe("computeConfidence", () => {
+  it("scores volume alone into low/moderate/high bands", () => {
+    expect(computeConfidence(1).level).toBe("low");
+    expect(computeConfidence(2).level).toBe("low");
+    expect(computeConfidence(4).level).toBe("moderate");
+    expect(computeConfidence(5).level).toBe("moderate");
+    expect(computeConfidence(8).level).toBe("high");
+    expect(computeConfidence(14).level).toBe("high");
+  });
+
+  it("states the month count in the reason, singular vs plural", () => {
+    expect(computeConfidence(1).reason).toBe("based on 1 month of data");
+    expect(computeConfidence(6).reason).toBe("based on 6 months of data");
+  });
+
+  it("degrades one level when the most recent transaction is over 45 days old", () => {
+    const fresh = new Date();
+    fresh.setDate(fresh.getDate() - 10);
+    const stale = new Date();
+    stale.setDate(stale.getDate() - 60);
+
+    expect(computeConfidence(8, fresh.toISOString()).level).toBe("high");
+    expect(computeConfidence(8, stale.toISOString()).level).toBe("moderate");
+    expect(computeConfidence(8, stale.toISOString()).reason).toContain("days since your last upload");
+  });
+
+  it("never degrades low below low — there's no lower floor", () => {
+    const stale = new Date();
+    stale.setDate(stale.getDate() - 100);
+    expect(computeConfidence(1, stale.toISOString()).level).toBe("low");
+  });
+});
+
+describe("capSeverityForVolume", () => {
+  it("caps a critical directive to warn from a single month of data", () => {
+    expect(capSeverityForVolume("critical", 1)).toBe("warn");
+    expect(capSeverityForVolume("critical", 0)).toBe("warn");
+  });
+
+  it("leaves critical alone once there are 2+ months of data", () => {
+    expect(capSeverityForVolume("critical", 2)).toBe("critical");
+  });
+
+  it("leaves non-critical severities untouched regardless of volume", () => {
+    expect(capSeverityForVolume("warn", 1)).toBe("warn");
+    expect(capSeverityForVolume("go", 1)).toBe("go");
+    expect(capSeverityForVolume("stable", 1)).toBe("stable");
+  });
+});
+
+describe("computeMetrics — per-metric confidence", () => {
+  it("suppresses runway when the business is burning cash but no cash balance was entered", () => {
+    const burningNoCash = { mRev: 30000, mExp: 40000, mCash: 0, mCac: 0, mLtv: 0, mLeads: 0, mClose: 0 };
+    const m = computeMetrics(null, burningNoCash, "safe");
+    expect(m.hasCashData).toBe(false);
+    expect(m.runwayConfidence).toEqual({ shown: false, level: null, reason: expect.stringContaining("no cash balance entered") });
+  });
+
+  it("shows runway confidence once a cash balance is entered, even from one month of data", () => {
+    const burning = { mRev: 30000, mExp: 40000, mCash: 100000, mCac: 0, mLtv: 0, mLeads: 0, mClose: 0 };
+    const m = computeMetrics(null, burning, "safe");
+    expect(m.runwayConfidence).toMatchObject({ shown: true, level: "low" });
+  });
+
+  it("does not require a cash balance to show runway confidence when already cash-flow positive", () => {
+    const healthy = { mRev: 30000, mExp: 20000, mCash: 0, mCac: 0, mLtv: 0, mLeads: 0, mClose: 0 };
+    const m = computeMetrics(null, healthy, "safe");
+    expect(m.cashFlowPositive).toBe(true);
+    expect(m.runwayConfidence.shown).toBe(true);
+  });
+
+  it("suppresses LTV:CAC unless both CAC and LTV are present, never showing it as a real 0", () => {
+    const missingCac = { mRev: 10000, mExp: 6000, mCash: 0, mCac: 0, mLtv: 800, mLeads: 0, mClose: 0 };
+    const m = computeMetrics(null, missingCac, "safe");
+    expect(m.hasUnitEconomicsData).toBe(false);
+    expect(m.ltvcacConfidence.shown).toBe(false);
+    expect(m.ltvcac).toBe(0); // the raw number stays 0 internally — the UI layer is responsible for not rendering it
+  });
+
+  it("shows LTV:CAC confidence once both inputs are present", () => {
+    const manual = { mRev: 10000, mExp: 6000, mCash: 0, mCac: 200, mLtv: 800, mLeads: 0, mClose: 0 };
+    const m = computeMetrics(null, manual, "safe");
+    expect(m.ltvcacConfidence).toMatchObject({ shown: true, level: "low" }); // one manual snapshot = 1 month
+  });
+
+  it("raises confidence level as more months of uploaded history accumulate", () => {
+    const row = { revenue: 10000, expenses: 6000, cash: 5000, cogs:0, marketing:0, leads:0, closures:0, cac:0, ltv:0 };
+    const manual = { mRev: 0, mExp: 0, mCash: 0, mCac: 0, mLtv: 0, mLeads: 0, mClose: 0 };
+    const oneMonth = computeMetrics([row], manual, "safe");
+    const fourMonths = computeMetrics(Array(4).fill(row), manual, "safe");
+    const eightMonths = computeMetrics(Array(8).fill(row), manual, "safe");
+    expect(oneMonth.breakEvenConfidence.level).toBe("low");
+    expect(fourMonths.breakEvenConfidence.level).toBe("moderate");
+    expect(eightMonths.breakEvenConfidence.level).toBe("high");
+  });
+
+  it("passes the most recent transaction date through to degrade confidence on stale history", () => {
+    const rows = Array(8).fill({ revenue: 10000, expenses: 6000, cash: 5000, cogs:0, marketing:0, leads:0, closures:0, cac:0, ltv:0 });
+    const manual = { mRev: 0, mExp: 0, mCash: 0, mCac: 0, mLtv: 0, mLeads: 0, mClose: 0 };
+    const stale = new Date();
+    stale.setDate(stale.getDate() - 90);
+    const m = computeMetrics(rows, manual, "safe", { lastTxnDate: stale.toISOString() });
+    expect(m.breakEvenConfidence.level).toBe("moderate"); // degraded from high
   });
 });

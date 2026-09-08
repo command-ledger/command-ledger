@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { createClient } from "@supabase/supabase-js";
-import { fmt, pc, safe, parseAnyCSV, computeMetrics, runScenario, parseTransactions, computeDedupeHash, aggregateTransactionsByMonth } from "./lib/financials.js";
+import { fmt, pc, safe, parseAnyCSV, computeMetrics, runScenario, parseTransactions, computeDedupeHash, aggregateTransactionsByMonth, capSeverityForVolume } from "./lib/financials.js";
 
 const supabase = createClient(
   import.meta.env.VITE_SUPABASE_URL,
@@ -363,6 +363,24 @@ function AIRecommendation({ rec }) {
   );
 }
 
+// ─── METRIC CONFIDENCE ──────────────────────────────────────────
+// Renders nothing for a high-confidence metric — the caveat only earns
+// its place on screen when the number genuinely needs one. `#3A4A68`
+// (an earlier draft's color for this exact label style) fails WCAG AA
+// against this dashboard's background; C.inkDim (#7A7E88) is the value
+// already verified this session and used for every other small-caps
+// label in the app, so it's used here for the same reason.
+function ConfidenceLine({ c }) {
+  if (!c) return null;
+  if (c.shown && c.level === "high") return null;
+  const label = c.shown ? `${c.level} confidence` : "not enough data";
+  return (
+    <div style={{ fontSize:9, letterSpacing:"0.1em", textTransform:"uppercase", color:C.inkDim, fontWeight:600, marginTop:6, lineHeight:1.5 }}>
+      {label} — {c.reason}
+    </div>
+  );
+}
+
 // ─── RING CHART ───────────────────────────────────────────────
 function Ring({ score, size = 100, sw = 6 }) {
   const s = safe(score);
@@ -421,7 +439,7 @@ function BChart({ data }) {
 
 // ─── DECISION DIRECTIVE ───────────────────────────────────────
 function Directive({ metrics }) {
-  const { margin, burnMonths, free, concentration, concentrationReliable, vel, conv, hireReady, ltvcac } = metrics;
+  const { margin, burnMonths, free, concentration, concentrationReliable, vel, conv, hireReady, ltvcac, n } = metrics;
 
   const getDirective = () => {
     if (safe(free) < 0) return {
@@ -472,7 +490,11 @@ function Directive({ metrics }) {
   };
 
   const d = getDirective();
-  const uc = { critical:C.red, warn:C.amber, go:C.green, stable:C.gold }[d.severity];
+  // A single month of data cannot support a "critical" call — a bad number
+  // this early might be a fluke, not a fire. Cap the severity and say why.
+  const severity = capSeverityForVolume(d.severity, n);
+  const wasCapped = severity !== d.severity;
+  const uc = { critical:C.red, warn:C.amber, go:C.green, stable:C.gold }[severity];
 
   return (
     <div className="directive-box" style={{ "--uc":uc }}>
@@ -485,6 +507,7 @@ function Directive({ metrics }) {
       </div>
       <div style={{ fontSize:12, color:C.ink, lineHeight:1.7, fontFamily:"'Cormorant Garamond',serif", paddingLeft:16 }}>
         {d.reason}
+        {wasCapped && " This is based on a single month of data — treat it as an early warning, not a confirmed crisis, until more history confirms it."}
       </div>
     </div>
   );
@@ -706,6 +729,7 @@ function Dashboard({ user, profile, onLogout, onUpgrade }) {
   // every load and every period-filter change. Nothing here is computed
   // client-side and stored back; `history` is raw monthly aggregates only.
   const [history, setHistory] = useState([]);
+  const [lastTxnDate, setLastTxnDate] = useState(null);
   const [batches, setBatches] = useState([]);
   const [periodFilter, setPeriodFilter] = useState("12");
   const [historyLoading, setHistoryLoading] = useState(true);
@@ -750,9 +774,13 @@ function Dashboard({ user, profile, onLogout, onUpgrade }) {
       const { data: txns, error } = await query;
       if (error) throw error;
       setHistory(aggregateTransactionsByMonth(txns || []));
+      // Ascending order, so the last row is the most recent real transaction —
+      // this is what the confidence model's recency check degrades against.
+      setLastTxnDate(txns && txns.length > 0 ? txns[txns.length - 1].txn_date : null);
     } catch (e) {
       console.error("Failed to load transaction history:", e);
       setHistory([]);
+      setLastTxnDate(null);
     }
     setHistoryLoading(false);
   }, [periodCutoff]);
@@ -826,8 +854,13 @@ function Dashboard({ user, profile, onLogout, onUpgrade }) {
     cogsRatio, mktRatio, sov, sovLbl, taxV, safV, free, avgExp, burnMonths,
     hireReady, maxRev, concentration, concentrationReliable, breakEven, proj90, hasData,
     hasConversionData, cashFlowPositive, dataConfidence, growth, risk, trends,
-  } = computeMetrics(rows, { mRev, mExp, mCash, mCac, mLtv, mLeads, mClose }, mode);
-  const metrics = { margin, vel, conv, sov, free, burnMonths, hireReady, concentration, concentrationReliable, ltvcac, cashFlowPositive };
+    hasCashData, hasUnitEconomicsData, runwayConfidence, breakEvenConfidence,
+    proj90Confidence, hireReadyConfidence, ltvcacConfidence, growthConfidence,
+  } = computeMetrics(
+    rows, { mRev, mExp, mCash, mCac, mLtv, mLeads, mClose }, mode,
+    { lastTxnDate: history.length > 0 ? lastTxnDate : null }
+  );
+  const metrics = { margin, vel, conv, sov, free, burnMonths, hireReady, concentration, concentrationReliable, ltvcac, cashFlowPositive, n };
 
   const scenario = runScenario(
     { revenue: latest.revenue, expenses: latest.expenses, cash: activeCash, cac: activeCac, ltv: activeLtv, leads: 0, closures: 0 },
@@ -864,16 +897,18 @@ function Dashboard({ user, profile, onLogout, onUpgrade }) {
           conversionRate: conv.toFixed(1),
           sovereigntyScore: sov.toFixed(0),
           trueFreeCash:   free,
-          burnRunway:     burnMonths.toFixed(1),
+          // null out any metric whose required inputs aren't present —
+          // the model must never be handed a fabricated number to narrate.
+          burnRunway:     (!cashFlowPositive && !runwayConfidence.shown) ? null : burnMonths.toFixed(1),
           cashFlowPositive,
-          ltvCacRatio:    ltvcac.toFixed(2),
+          ltvCacRatio:    ltvcacConfidence.shown ? ltvcac.toFixed(2) : null,
           cogsRatio:      cogsRatio.toFixed(1),
           marketingRatio: mktRatio.toFixed(1),
-          hireReady,
+          hireReady:      hireReadyConfidence.shown ? hireReady : null,
           concentration:  concentration.toFixed(1),
           concentrationReliable,
-          breakEven:      breakEven.toFixed(0),
-          proj90:         proj90.toFixed(0),
+          breakEven:      breakEvenConfidence.shown ? breakEven.toFixed(0) : null,
+          proj90:         proj90Confidence.shown ? proj90.toFixed(0) : null,
           plan,
           mode,
           dataMonths:     n,
@@ -883,6 +918,14 @@ function Dashboard({ user, profile, onLogout, onUpgrade }) {
           riskScore:    risk.score.toFixed(0),
           riskLabel:    risk.label,
           trends,
+          confidence: {
+            runway:    runwayConfidence,
+            breakEven: breakEvenConfidence,
+            proj90:    proj90Confidence,
+            hireReady: hireReadyConfidence,
+            ltvCac:    ltvcacConfidence,
+            growth:    growthConfidence,
+          },
           // Expense breakdown from bank statement parser
           payroll:   totPayroll  || null,
           rent:      totRent     || null,
@@ -1169,10 +1212,10 @@ function Dashboard({ user, profile, onLogout, onUpgrade }) {
                   { lbl:"Monthly Revenue",  val:fmt(latest.revenue), col:"g",  d:`${pc(vel)} velocity`,     dt:vel>=0?"up":"dn" },
                   { lbl:"Profit Margin",    val:pc(margin),          col:"gr", d:`${fmt(totPro)} net profit`, dt:margin>0?"up":"dn" },
                   { lbl:"True Free Cash",   val:fmt(free),           col:free>=0?"g":"r", d:"After tax + safety", dt:free>=0?"up":"dn" },
-                  { lbl:"Burn Runway",      val:cashFlowPositive?"No burn":burnMonths>0?`${safe(burnMonths).toFixed(1)}mo`:"---",
+                  { lbl:"Burn Runway",      val:cashFlowPositive?"No burn":(runwayConfidence.shown && burnMonths>0)?`${safe(burnMonths).toFixed(1)}mo`:"---",
                     col:cashFlowPositive?"gr":burnMonths>=6?"gr":burnMonths>=3?"a":"r",
                     d:cashFlowPositive?"Cash flow positive":burnMonths>=6?"Safe":"Needs attention",
-                    dt:cashFlowPositive||burnMonths>=6?"up":"dn" },
+                    dt:cashFlowPositive||burnMonths>=6?"up":"dn", conf:runwayConfidence },
                 ].map((m, i) => (
                   <div key={i} className="card"
                     onMouseEnter={e => e.currentTarget.style.transform = "translateY(-2px)"}
@@ -1181,6 +1224,7 @@ function Dashboard({ user, profile, onLogout, onUpgrade }) {
                     <div className="card-lbl">{m.lbl}</div>
                     <div className={`val ${m.col}`}>{m.val}</div>
                     <div className={`delta ${m.dt}`}>{m.dt==="up"?"+":"-"} {m.d}</div>
+                    <ConfidenceLine c={m.conf}/>
                   </div>
                 ))}
               </div>
@@ -1216,6 +1260,7 @@ function Dashboard({ user, profile, onLogout, onUpgrade }) {
                         ? <>Trailing growth rate ({pc(growth.rate)}/mo), weighted with how consistently recent months grew ({Math.round(growth.consistency*100)}% of the last few were up).</>
                         : <>Based on a single growth reading — connect 3+ months of data for a consistency-weighted score.</>}
                     </div>
+                    <ConfidenceLine c={growthConfidence}/>
                   </div>
                 </div>
               </div>
@@ -1251,30 +1296,34 @@ function Dashboard({ user, profile, onLogout, onUpgrade }) {
                 {[
                   {
                     lbl:"Burn Runway",
-                    val: cashFlowPositive ? "No burn" : burnMonths > 0 ? `${safe(burnMonths).toFixed(1)} months` : "---",
-                    sub: cashFlowPositive?"Revenue covers expenses - no cash burn":burnMonths>=6?"Safe - above 6-month threshold":burnMonths>=3?"Caution - build to 6 months":burnMonths>0?"Danger - act immediately":"Enter cash balance to calculate",
+                    val: cashFlowPositive ? "No burn" : (runwayConfidence.shown && burnMonths > 0) ? `${safe(burnMonths).toFixed(1)} months` : "---",
+                    sub: cashFlowPositive?"Revenue covers expenses - no cash burn":!runwayConfidence.shown?"Enter cash balance to calculate":burnMonths>=6?"Safe - above 6-month threshold":burnMonths>=3?"Caution - build to 6 months":burnMonths>0?"Danger - act immediately":"Enter cash balance to calculate",
                     cls: cashFlowPositive?"green":burnMonths>=6?"green":burnMonths>=3?"amber":burnMonths>0?"red":"gold",
                     col: cashFlowPositive?C.green:burnMonths>=6?C.green:burnMonths>=3?C.amber:burnMonths>0?C.red:C.gold,
+                    conf: runwayConfidence,
                   },
                   {
                     lbl:"Hire Readiness",
-                    val: hireReady ? "Ready" : "Not Yet",
-                    sub: hireReady ? "Free cash supports new headcount" : `Need ${fmt(Math.max(0, 25000*6-free))} more in free cash`,
+                    val: !hireReadyConfidence.shown ? "---" : hireReady ? "Ready" : "Not Yet",
+                    sub: !hireReadyConfidence.shown ? "Enter revenue and expenses to calculate" : hireReady ? "Free cash supports new headcount" : `Need ${fmt(Math.max(0, 25000*6-free))} more in free cash`,
                     cls: hireReady ? "green" : "amber",
                     col: hireReady ? C.green : C.amber,
+                    conf: hireReadyConfidence,
                   },
                   {
                     lbl:"LTV : CAC Ratio",
-                    val: ltvcac > 0 ? `${safe(ltvcac).toFixed(1)}x` : "---",
-                    sub: ltvcac>=3?"Healthy - above 3x threshold":ltvcac>0?"Below 3x - fix before scaling":"Enter CAC and LTV in data",
+                    val: ltvcacConfidence.shown ? `${safe(ltvcac).toFixed(1)}x` : "---",
+                    sub: ltvcacConfidence.shown ? (ltvcac>=3?"Healthy - above 3x threshold":"Below 3x - fix before scaling") : "Enter CAC and LTV in data",
                     cls: ltvcac>=3?"green":ltvcac>0?"amber":"gold",
                     col: ltvcac>=3?C.green:ltvcac>0?C.amber:C.gold,
+                    conf: ltvcacConfidence,
                   },
                 ].map((ind, i) => (
                   <div key={i} className={`indicator ${ind.cls}`}>
                     <div className="card-lbl">{ind.lbl}</div>
                     <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:28, color:ind.col, marginBottom:6 }}>{ind.val}</div>
                     <div style={{ fontSize:12, color:C.ink, fontFamily:"'Cormorant Garamond',serif", lineHeight:1.5 }}>{ind.sub}</div>
+                    <ConfidenceLine c={ind.conf}/>
                   </div>
                 ))}
               </div>
@@ -1303,20 +1352,22 @@ function Dashboard({ user, profile, onLogout, onUpgrade }) {
                 <div className="card-sec">Break-Even Analysis</div>
                 <div className="card-lbl">Monthly revenue to cover all costs</div>
                 <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:32, color:C.cream, margin:"12px 0 8px" }}>
-                  {breakEven > 0 ? fmt(breakEven) : "---"}
+                  {breakEvenConfidence.shown && breakEven > 0 ? fmt(breakEven) : "---"}
                 </div>
                 <div style={{ fontSize:12, color:C.ink, fontFamily:"'Cormorant Garamond',serif", lineHeight:1.6 }}>
-                  {latest.revenue > 0 && breakEven > 0
+                  {breakEvenConfidence.shown && latest.revenue > 0 && breakEven > 0
                     ? latest.revenue >= breakEven
                       ? `You are ${fmt(latest.revenue - breakEven)} above break-even.`
                       : `You are ${fmt(breakEven - latest.revenue)} below break-even.`
                     : "Enter revenue and expenses to calculate."}
                 </div>
-                {safe(proj90) > 0 && (
+                <ConfidenceLine c={breakEvenConfidence}/>
+                {proj90Confidence.shown && safe(proj90) > 0 && (
                   <div style={{ marginTop:16 }}>
                     <div className="card-lbl">90-Day Revenue Projection</div>
                     <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:22, color:C.gold }}>{fmt(proj90)}</div>
                     <div style={{ fontSize:11, color:C.ink, fontFamily:"'Cormorant Garamond',serif" }}>At current {pc(vel)}/month velocity</div>
+                    <ConfidenceLine c={proj90Confidence}/>
                   </div>
                 )}
               </div>

@@ -581,12 +581,67 @@ export function detectTrends(rows) {
   return trends;
 }
 
+// ─── PER-METRIC CONFIDENCE ──────────────────────────────────────
+// A runway figure from one month of data and one from eighteen months
+// must not look equally authoritative. Every derived/forward-looking
+// metric (never a purely descriptive one, like a period's total revenue)
+// carries its own confidence, judged from three independent inputs:
+//   - Volume: how many months of history back the number.
+//   - Recency: how stale that history is — a number built on data that
+//     stopped arriving over a month and a half ago is stale even if the
+//     history behind it was once substantial.
+//   - Completeness (the caller's job, not this function's): a metric
+//     whose required inputs are simply absent isn't "low confidence" —
+//     it isn't calculable, and must be suppressed rather than defaulting
+//     to a zero that reads as a real answer.
+const CONFIDENCE_RECENCY_DAYS = 45;
+
+export function computeConfidence(months, lastTxnDate) {
+  const n = Math.max(0, months || 0);
+  let level = n < 3 ? "low" : n <= 5 ? "moderate" : "high";
+  let reason = `based on ${n} month${n === 1 ? "" : "s"} of data`;
+
+  if (lastTxnDate) {
+    const ms = Date.now() - new Date(lastTxnDate).getTime();
+    const days = Math.floor(ms / 86400000);
+    if (Number.isFinite(days) && days > CONFIDENCE_RECENCY_DAYS) {
+      const order = ["low", "moderate", "high"];
+      const idx = order.indexOf(level);
+      if (idx > 0) level = order[idx - 1];
+      reason += `, but ${days} days since your last upload`;
+    }
+  }
+
+  return { level, reason };
+}
+
+// Wraps computeConfidence with a completeness gate. `available` is
+// whether this specific metric's required inputs are present at all —
+// when they aren't, the metric is unavailable (`shown: false`), a
+// different failure mode from a thin-but-real history.
+function metricConfidence(available, missingReason, months, lastTxnDate) {
+  if (!available) return { shown: false, level: null, reason: missingReason };
+  const { level, reason } = computeConfidence(months, lastTxnDate);
+  return { shown: true, level, reason };
+}
+
+// Directive/severity gating: a single month of data cannot support a
+// "critical" call — with that little history, a bad number might be a
+// fluke, not a fire. Cap one level down and let the caller explain why.
+export function capSeverityForVolume(severity, months) {
+  if ((months || 0) <= 1 && severity === "critical") return "warn";
+  return severity;
+}
+
 // ─── FINANCIAL METRICS ENGINE ──────────────────────────────────
 // Pure derivation of every ratio/indicator shown on the Dashboard, from
 // either parsed CSV rows (monthly buckets) or manually entered numbers.
 // `manual` is { mRev, mExp, mCash, mCac, mLtv, mLeads, mClose }.
 // `mode` is "safe" or "growth" and controls the tax/safety reserve split.
-export function computeMetrics(rows, manual, mode) {
+// `context.lastTxnDate` (optional) is the most recent transaction date in
+// the founder's persisted history, used only for the recency check above.
+export function computeMetrics(rows, manual, mode, context = {}) {
+  const { lastTxnDate = null } = context;
   const { mRev, mExp, mCash, mCac, mLtv, mLeads, mClose } = manual;
 
   const tr = mode === "safe" ? 0.30 : 0.25;
@@ -667,6 +722,24 @@ export function computeMetrics(rows, manual, mode) {
   const risk = computeRiskScore({ cashFlowPositive, burnMonths, concentration, concentrationReliable, ltvcac, margin });
   const trends = detectTrends(rows);
 
+  // Completeness: a field being 0 here is indistinguishable from it never
+  // having been entered (manual inputs all default to 0), so — consistent
+  // with how this engine already treats missing CAC/lead data elsewhere —
+  // "present" means "greater than zero," not "not undefined."
+  const hasCashData = activeCash > 0;
+  const hasUnitEconomicsData = activeCac > 0 && activeLtv > 0;
+
+  const runwayConfidence = metricConfidence(
+    cashFlowPositive || hasCashData,
+    "no cash balance entered — add it in Connect Data to calculate runway",
+    n, lastTxnDate
+  );
+  const breakEvenConfidence = metricConfidence(hasData, "no revenue/expense data yet", n, lastTxnDate);
+  const proj90Confidence    = metricConfidence(hasData, "no revenue/expense data yet", n, lastTxnDate);
+  const hireReadyConfidence = metricConfidence(hasData, "no revenue/expense data yet", n, lastTxnDate);
+  const ltvcacConfidence    = metricConfidence(hasUnitEconomicsData, "enter both CAC and LTV to calculate", n, lastTxnDate);
+  const growthConfidence    = metricConfidence(hasData, "no revenue data yet", n, lastTxnDate);
+
   return {
     tr, sr, latest, prev, totRev, totExp, totCogs, totMkt, totL, totC,
     hasConversionData, avgRev, netBurn, cashFlowPositive, dataConfidence,
@@ -675,6 +748,9 @@ export function computeMetrics(rows, manual, mode) {
     hireReady, maxRev, concentration, concentrationReliable,
     breakEven, proj90, proj90GrowthRate, hasData,
     growth, risk, trends,
+    hasCashData, hasUnitEconomicsData,
+    runwayConfidence, breakEvenConfidence, proj90Confidence,
+    hireReadyConfidence, ltvcacConfidence, growthConfidence,
   };
 }
 
