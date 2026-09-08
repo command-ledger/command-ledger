@@ -896,7 +896,17 @@ function Dashboard({ user, profile, onLogout, onUpgrade }) {
       else setAiError(result?.error || "Analysis complete but no response returned.");
     } catch (e) {
       console.error("AI error:", e);
-      setAiError("Advisory engine offline. Ensure your Supabase Edge Function is deployed and ANTHROPIC_API_KEY is set in Supabase project secrets.");
+      // supabase-js throws a FunctionsHttpError/FunctionsRelayError whose
+      // .context is the raw Response from the Edge Function — read the real
+      // JSON error body it sent instead of showing a generic guess.
+      let detail = "";
+      try {
+        if (e?.context?.json) detail = (await e.context.json())?.error || "";
+      } catch { /* body wasn't JSON or already consumed */ }
+      if (!detail && e?.message && e.message !== "Edge Function returned a non-2xx status code") {
+        detail = e.message;
+      }
+      setAiError(detail || "Advisory engine unreachable. Check your connection and try again.");
     }
     setAiLoad(false);
   };
