@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { createClient } from "@supabase/supabase-js";
-import { fmt, pc, safe, parseAnyCSV, computeMetrics, runScenario, parseTransactions, computeDedupeHash, aggregateTransactionsByMonth, capSeverityForVolume, computeRevenueConcentration } from "./lib/financials.js";
+import { fmt, pc, safe, parseAnyCSV, computeMetrics, runScenario, parseTransactions, computeDedupeHash, aggregateTransactionsByMonth, capSeverityForVolume, computeRevenueConcentration, detectRecurringObligations, computeForwardRunway, checkAffordability, detectMissedObligations, projectForwardCalendar, summarizeCalendarByWeek } from "./lib/financials.js";
 
 const supabase = createClient(
   import.meta.env.VITE_SUPABASE_URL,
@@ -744,6 +744,9 @@ function Dashboard({ user, profile, onLogout, onUpgrade }) {
   const [history, setHistory] = useState([]);
   const [lastTxnDate, setLastTxnDate] = useState(null);
   const [concentrationData, setConcentrationData] = useState(null);
+  const [obligations, setObligations] = useState([]);
+  const [affordInput, setAffordInput] = useState("");
+  const [affordResult, setAffordResult] = useState(null);
   const [batches, setBatches] = useState([]);
   const [periodFilter, setPeriodFilter] = useState("12");
   const [historyLoading, setHistoryLoading] = useState(true);
@@ -809,8 +812,49 @@ function Dashboard({ user, profile, onLogout, onUpgrade }) {
     if (!error) setBatches(rows || []);
   }, []);
 
+  // Recurring-obligation detection always runs over the founder's FULL
+  // transaction history, independent of the dashboard's period filter —
+  // a quarterly or annual obligation can't be reliably detected from a
+  // 3-month window even if that's what's currently selected for display.
+  const loadObligations = useCallback(async () => {
+    try {
+      const { data: txns, error } = await supabase.from("transactions").select("txn_date, amount, description, category").order("txn_date", { ascending: true });
+      if (error) throw error;
+      const detected = detectRecurringObligations(txns || []);
+
+      const { data: existing } = await supabase.from("recurring_obligations").select("normalized_key, active");
+      const existingActiveByKey = {};
+      (existing || []).forEach(e => { existingActiveByKey[e.normalized_key] = e.active; });
+
+      // A founder's manual "mark inactive" (an obligation that's ended) is
+      // permanent — a fresh detection pass never resurrects it. Only the
+      // detector's own "gone quiet too long" call is allowed to flip
+      // active:true -> false automatically.
+      const rows = detected.map(o => ({
+        ...o, user_id: user.id,
+        active: existingActiveByKey[o.normalized_key] === false ? false : o.active,
+      }));
+      if (rows.length > 0) {
+        await supabase.from("recurring_obligations").upsert(rows, { onConflict: "user_id,normalized_key" });
+      }
+
+      const { data: persisted, error: persistErr } = await supabase.from("recurring_obligations").select("*").order("typical_amount", { ascending: false });
+      if (persistErr) throw persistErr;
+      setObligations(persisted || []);
+    } catch (e) {
+      console.error("Failed to detect/load recurring obligations:", e);
+      setObligations([]);
+    }
+  }, [user]);
+
+  const setObligationActive = async (id, active) => {
+    const { error } = await supabase.from("recurring_obligations").update({ active }).eq("id", id);
+    if (!error) setObligations(obs => obs.map(o => o.id === id ? { ...o, active } : o));
+  };
+
   useEffect(() => { loadHistory(); }, [loadHistory]);
   useEffect(() => { loadBatches(); }, [loadBatches]);
+  useEffect(() => { loadObligations(); }, [loadObligations]);
 
   const handleDataLoaded = async (parsedRows, source, cols, rawText) => {
     setData(parsedRows); setDataSource(source); setDetectedCols(cols); setTab("overview");
@@ -851,6 +895,7 @@ function Dashboard({ user, profile, onLogout, onUpgrade }) {
       setUploadStatus(`Added ${insertedCount} new transaction${insertedCount === 1 ? "" : "s"}. ${duplicateCount} already on file.`);
       await loadHistory();
       await loadBatches();
+      await loadObligations();
     } catch (e) {
       console.error("Failed to save transaction history:", e);
       setUploadErr("Your file was read for this session, but saving it to your permanent history failed. The numbers below are accurate for now — try re-uploading to save them.");
@@ -860,7 +905,7 @@ function Dashboard({ user, profile, onLogout, onUpgrade }) {
 
   const deleteBatch = async (batchId) => {
     const { error } = await supabase.from("upload_batches").delete().eq("id", batchId);
-    if (!error) { await loadHistory(); await loadBatches(); }
+    if (!error) { await loadHistory(); await loadBatches(); await loadObligations(); }
   };
 
   // Persisted history is the source of truth once it exists; a fresh
@@ -880,6 +925,30 @@ function Dashboard({ user, profile, onLogout, onUpgrade }) {
     { lastTxnDate: history.length > 0 ? lastTxnDate : null, revenueConcentration: concentrationData }
   );
   const metrics = { margin, vel, conv, sov, free, burnMonths, hireReady, concentration, concentrationReliable, ltvcac, cashFlowPositive, n };
+
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const activeObligations = obligations.filter(o => o.active !== false);
+  const missedObligations = detectMissedObligations(activeObligations, todayStr);
+
+  // Obligation-aware runway: real, dated obligations against current cash,
+  // instead of a single flat average-burn rate — only meaningful once
+  // there's a cash balance and at least one detected obligation to
+  // project against.
+  const forwardRunway = (hasCashData && activeObligations.length > 0)
+    ? computeForwardRunway({ currentCash: activeCash, avgRev, avgExp, obligations: activeObligations, fromDate: todayStr, horizonDays: 365 })
+    : null;
+  // Surfaced only when it tells the founder something average burn
+  // doesn't — a lumpy bill landing soon that a flat monthly rate, smoothing
+  // everything evenly, would never reveal in time.
+  const showForwardRunway = !!(forwardRunway?.crossesZero && (
+    cashFlowPositive || Math.abs(forwardRunway.monthsUntilCross - burnMonths) >= 0.5
+  ));
+
+  const checkAfford = () => {
+    const monthlyCost = Number(affordInput);
+    if (!monthlyCost || monthlyCost <= 0) { setAffordResult(null); return; }
+    setAffordResult(checkAffordability({ currentCash: activeCash, avgRev, avgExp, obligations: activeObligations, monthlyCost, fromDate: todayStr }));
+  };
 
   const scenario = runScenario(
     { revenue: latest.revenue, expenses: latest.expenses, cash: activeCash, cac: activeCac, ltv: activeLtv, leads: 0, closures: 0 },
@@ -956,6 +1025,24 @@ function Dashboard({ user, profile, onLogout, onUpgrade }) {
             ltvCac:    ltvcacConfidence,
             growth:    growthConfidence,
           },
+          // Forward cash calendar: detected recurring obligations projected
+          // 90 days ahead, plus the obligation-aware runway (real dated
+          // bills against current cash) alongside the flat average-burn
+          // figure above — null when no obligations have been detected yet.
+          forwardCalendar: activeObligations.length > 0 ? {
+            weeklyTotals: summarizeCalendarByWeek(projectForwardCalendar(activeObligations, todayStr, 90), todayStr, 90)
+              .map(w => ({ weekStart: w.weekStart, total: Math.round(w.total) })),
+            obligationAwareRunway: forwardRunway ? {
+              crossesZero: forwardRunway.crossesZero,
+              monthsUntilCross: forwardRunway.monthsUntilCross,
+              crossDate: forwardRunway.crossDate,
+            } : null,
+            missedObligations: missedObligations.map(m => ({ label: m.label, daysPast: m.daysPast })),
+            committedCosts: activeObligations.slice(0, 10).map(o => ({
+              label: o.label, cadence: o.cadence, typicalAmount: o.typical_amount,
+              nextExpected: o.next_expected, confidence: o.confidence,
+            })),
+          } : null,
           // Expense breakdown from bank statement parser
           payroll:   totPayroll  || null,
           rent:      totRent     || null,
@@ -1235,6 +1322,14 @@ function Dashboard({ user, profile, onLogout, onUpgrade }) {
 
             {hasData && <Directive metrics={metrics} concentration={concentrationData}/>}
 
+            {missedObligations.length > 0 && (
+              <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+                {missedObligations.map((m, i) => (
+                  <div key={i} className="d-alert crit">{m.message}</div>
+                ))}
+              </div>
+            )}
+
             <div>
               <div className="card-sec">Core Vitals</div>
               <div className="kpi4">
@@ -1258,6 +1353,12 @@ function Dashboard({ user, profile, onLogout, onUpgrade }) {
                   </div>
                 ))}
               </div>
+              {showForwardRunway && (
+                <div className="d-alert warn" style={{ marginTop:12 }}>
+                  {cashFlowPositive ? `No burn on average — but ` : `${safe(burnMonths).toFixed(1)} months on average burn. `}
+                  {forwardRunway.monthsUntilCross.toFixed(1)} months against your known obligations (around {forwardRunway.crossDate}). The second is the real number.
+                </div>
+              )}
             </div>
 
             <div className="g2">
@@ -1395,6 +1496,50 @@ function Dashboard({ user, profile, onLogout, onUpgrade }) {
                     )}
                   </>
                 )}
+              </div>
+            </div>
+
+            <div>
+              <div className="card-sec">Committed Costs</div>
+              <div className="card">
+                {activeObligations.length === 0 ? (
+                  <div style={{ fontSize:13, color:C.ink, fontFamily:"'Cormorant Garamond',serif", lineHeight:1.6 }}>
+                    No recurring obligations detected yet. At least 3 similar payments on a consistent schedule (rent, payroll, a quarterly VAT payment) are needed before one shows up here.
+                  </div>
+                ) : (
+                  <div style={{ display:"flex", flexDirection:"column", gap:14 }}>
+                    {activeObligations.map(o => (
+                      <div key={o.id} style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", borderBottom:`1px solid ${C.border}`, paddingBottom:12 }}>
+                        <div>
+                          <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:15, color:C.cream, textTransform:"capitalize" }}>{o.label}</div>
+                          <div style={{ fontSize:11, color:C.ink, fontFamily:"'JetBrains Mono',monospace", marginTop:2, textTransform:"capitalize" }}>
+                            {o.cadence}{o.amount_variance === "variable" ? " · variable" : ""} · next expected {o.next_expected}
+                          </div>
+                          <ConfidenceLine c={{ shown:true, level:o.confidence, reason:`${o.occurrences} occurrences observed` }}/>
+                        </div>
+                        <div style={{ textAlign:"right", flexShrink:0, marginLeft:16 }}>
+                          <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:16, color:C.gold }}>{fmt(o.typical_amount)}</div>
+                          <button className="btn" style={{ fontSize:10, padding:"4px 10px", marginTop:6 }} onClick={() => setObligationActive(o.id, false)}>Mark ended</button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                <div style={{ marginTop:20, paddingTop:16, borderTop:`1px solid ${C.border}` }}>
+                  <div className="card-lbl">Can I afford a recurring cost of $___ per month?</div>
+                  <div style={{ display:"flex", gap:8, marginTop:8 }}>
+                    <input type="number" min="0" className="di" placeholder="e.g. 1500"
+                      value={affordInput} onChange={e => setAffordInput(e.target.value)}
+                      style={{ maxWidth:160 }}/>
+                    <button className="btn btn-primary" style={{ fontSize:11, padding:"8px 16px" }} onClick={checkAfford}>Check</button>
+                  </div>
+                  {affordResult && (
+                    <div className={`d-alert ${affordResult.affordable ? "ok" : "crit"}`} style={{ marginTop:12 }}>
+                      {affordResult.message}
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
 

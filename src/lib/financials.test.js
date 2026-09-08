@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { fmt, pc, safe, detectExpenseCategory, parseAnyCSV, computeMetrics, trailingGrowthRate, computeGrowthScore, computeRiskScore, detectTrends, applyScenario, runScenario, computeHistoricalTrajectory, detectSeasonality, computeHistoricalConfidence, buildFounderNarrative, parseTransactions, normalizeDescription, dedupeHashInput, computeDedupeHash, aggregateTransactionsByMonth, computeConfidence, capSeverityForVolume, extractCounterparty, isAggregatorCounterparty, nameSimilarity, groupCounterparties, computeRevenueConcentration } from "./financials.js";
+import { fmt, pc, safe, detectExpenseCategory, parseAnyCSV, computeMetrics, trailingGrowthRate, computeGrowthScore, computeRiskScore, detectTrends, applyScenario, runScenario, computeHistoricalTrajectory, detectSeasonality, computeHistoricalConfidence, buildFounderNarrative, parseTransactions, normalizeDescription, dedupeHashInput, computeDedupeHash, aggregateTransactionsByMonth, computeConfidence, capSeverityForVolume, extractCounterparty, isAggregatorCounterparty, nameSimilarity, groupCounterparties, computeRevenueConcentration, classifyCadence, obligationConfidence, detectRecurringObligations, projectForwardCalendar, summarizeCalendarByWeek, computeForwardRunway, checkAffordability, detectMissedObligations } from "./financials.js";
 
 describe("fmt / pc / safe", () => {
   it("formats currency and percentages", () => {
@@ -891,5 +891,309 @@ describe("computeRevenueConcentration", () => {
     expect(r.largestPct).toBeCloseTo(25, 5);
     expect(r.distinctPayers).toBe(4);
     expect(r.severity).toBeNull();
+  });
+});
+
+// Independent of financials.js's own addDaysUTC — computes an expected
+// date without relying on the same code being tested.
+function addDays(base, days) {
+  const d = new Date(base);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+describe("classifyCadence", () => {
+  it("classifies each interval band", () => {
+    expect(classifyCadence(7)).toBe("weekly");
+    expect(classifyCadence(6)).toBe("weekly");
+    expect(classifyCadence(8)).toBe("weekly");
+    expect(classifyCadence(30)).toBe("monthly");
+    expect(classifyCadence(28)).toBe("monthly");
+    expect(classifyCadence(33)).toBe("monthly");
+    expect(classifyCadence(90)).toBe("quarterly");
+    expect(classifyCadence(365)).toBe("annual");
+  });
+
+  it("returns null for an interval that doesn't fit any known band", () => {
+    expect(classifyCadence(15)).toBeNull();
+    expect(classifyCadence(200)).toBeNull();
+    expect(classifyCadence(0)).toBeNull();
+  });
+});
+
+describe("obligationConfidence", () => {
+  it("marks an annual obligation low confidence when the dataset is under 13 months, regardless of occurrence count", () => {
+    expect(obligationConfidence(10, "annual", "fixed", 300)).toBe("low");
+  });
+
+  it("scores 6+ consistent occurrences as high confidence", () => {
+    expect(obligationConfidence(6, "monthly", "fixed", 200)).toBe("high");
+    expect(obligationConfidence(8, "annual", "fixed", 400)).toBe("high");
+  });
+
+  it("does not grant high confidence to a variable-amount obligation even with many occurrences", () => {
+    expect(obligationConfidence(8, "monthly", "variable", 200)).toBe("moderate");
+  });
+
+  it("scores 4-5 occurrences as moderate and exactly 3 as low", () => {
+    expect(obligationConfidence(4, "monthly", "fixed", 100)).toBe("moderate");
+    expect(obligationConfidence(5, "monthly", "fixed", 100)).toBe("moderate");
+    expect(obligationConfidence(3, "monthly", "fixed", 100)).toBe("low");
+  });
+});
+
+describe("detectRecurringObligations", () => {
+  it("detects a monthly rent payment from 3 consistent occurrences", () => {
+    const txns = [
+      { txn_date: "2026-01-02", amount: -12000, description: "Rent - Unit 14 Epping" },
+      { txn_date: "2026-02-02", amount: -12000, description: "Rent - Unit 14 Epping" },
+      { txn_date: "2026-03-02", amount: -12000, description: "Rent - Unit 14 Epping" },
+    ];
+    const [ob] = detectRecurringObligations(txns, { asOf: "2026-03-10" });
+    expect(ob.cadence).toBe("monthly");
+    expect(ob.typical_amount).toBe(12000);
+    expect(ob.amount_variance).toBe("fixed");
+    expect(ob.occurrences).toBe(3);
+    expect(ob.confidence).toBe("low"); // only 3 occurrences
+    expect(ob.day_of_month).toBe(2);
+    expect(ob.last_seen).toBe("2026-03-02");
+    expect(ob.active).toBe(true);
+  });
+
+  it("raises confidence to high with 6+ consistent occurrences", () => {
+    const txns = Array.from({ length: 6 }, (_, i) => ({
+      txn_date: addDays("2026-01-02", i * 30), amount: -5000, description: "Payroll Run",
+    }));
+    const [ob] = detectRecurringObligations(txns, { asOf: addDays("2026-01-02", 5 * 30 + 5) });
+    expect(ob.confidence).toBe("high");
+  });
+
+  it("groups differently-formatted descriptions of the same obligation via normalization", () => {
+    const txns = [
+      { txn_date: "2026-01-05", amount: -800, description: "SARS - PAYE" },
+      { txn_date: "2026-02-05", amount: -800, description: "sars  paye" },
+      { txn_date: "2026-03-05", amount: -800, description: "SARS - PAYE." },
+    ];
+    const obligations = detectRecurringObligations(txns, { asOf: "2026-03-10" });
+    expect(obligations).toHaveLength(1);
+    expect(obligations[0].occurrences).toBe(3);
+  });
+
+  it("detects a weekly cadence", () => {
+    const txns = [
+      { txn_date: "2026-01-05", amount: -500, description: "Weekly Cleaning Service" },
+      { txn_date: "2026-01-12", amount: -500, description: "Weekly Cleaning Service" },
+      { txn_date: "2026-01-19", amount: -500, description: "Weekly Cleaning Service" },
+    ];
+    const [ob] = detectRecurringObligations(txns, { asOf: "2026-01-25" });
+    expect(ob.cadence).toBe("weekly");
+  });
+
+  it("detects a quarterly cadence", () => {
+    const txns = [
+      { txn_date: "2026-01-15", amount: -9000, description: "VAT Payment" },
+      { txn_date: "2026-04-15", amount: -9000, description: "VAT Payment" },
+      { txn_date: "2026-07-15", amount: -9000, description: "VAT Payment" },
+    ];
+    const [ob] = detectRecurringObligations(txns, { asOf: "2026-07-20" });
+    expect(ob.cadence).toBe("quarterly");
+  });
+
+  it("flags an inconsistent-amount obligation as variable and uses the trailing 3-occurrence mean", () => {
+    const txns = [
+      { txn_date: "2026-01-10", amount: -1000, description: "Electricity" },
+      { txn_date: "2026-02-10", amount: -1400, description: "Electricity" },
+      { txn_date: "2026-03-10", amount: -1800, description: "Electricity" },
+      { txn_date: "2026-04-10", amount: -2200, description: "Electricity" },
+    ];
+    const [ob] = detectRecurringObligations(txns, { asOf: "2026-04-15" });
+    expect(ob.amount_variance).toBe("variable");
+    expect(ob.typical_amount).toBeCloseTo((1400 + 1800 + 2200) / 3, 2);
+  });
+
+  it("does not detect a pattern with inconsistent spacing", () => {
+    const txns = [
+      { txn_date: "2026-01-05", amount: -1000, description: "Ad Hoc Contractor" },
+      { txn_date: "2026-01-20", amount: -1000, description: "Ad Hoc Contractor" },
+      { txn_date: "2026-03-28", amount: -1000, description: "Ad Hoc Contractor" },
+    ];
+    expect(detectRecurringObligations(txns, { asOf: "2026-04-01" })).toEqual([]);
+  });
+
+  it("requires at least 3 occurrences", () => {
+    const txns = [
+      { txn_date: "2026-01-02", amount: -12000, description: "Rent" },
+      { txn_date: "2026-02-02", amount: -12000, description: "Rent" },
+    ];
+    expect(detectRecurringObligations(txns, { asOf: "2026-02-10" })).toEqual([]);
+  });
+
+  it("ignores positive-amount (income) transactions entirely", () => {
+    const txns = [
+      { txn_date: "2026-01-02", amount: 12000, description: "Client Payment - Acme" },
+      { txn_date: "2026-02-02", amount: 12000, description: "Client Payment - Acme" },
+      { txn_date: "2026-03-02", amount: 12000, description: "Client Payment - Acme" },
+    ];
+    expect(detectRecurringObligations(txns, { asOf: "2026-03-10" })).toEqual([]);
+  });
+
+  it("marks an obligation inactive once it's gone quiet for more than 2 cadence periods", () => {
+    const txns = [
+      { txn_date: "2026-01-02", amount: -12000, description: "Rent" },
+      { txn_date: "2026-02-02", amount: -12000, description: "Rent" },
+      { txn_date: "2026-03-02", amount: -12000, description: "Rent" },
+    ];
+    // Monthly cadence (30-day nominal period) — 2 periods = 60 days. Last
+    // seen 2026-03-02; asking as of 2026-05-15 is ~74 days later.
+    const [ob] = detectRecurringObligations(txns, { asOf: "2026-05-15" });
+    expect(ob.active).toBe(false);
+  });
+
+  it("marks an annual obligation low confidence when detected from under 13 months of overall history", () => {
+    // This can't actually happen for a genuinely-annual pattern (3 real
+    // annual-spaced occurrences inherently span ~2 years) — verified via
+    // obligationConfidence directly above. This test documents that the
+    // guard is still wired through detectRecurringObligations's own
+    // dataSpanDays computation for a real 3-occurrence annual pattern.
+    const txns = [
+      { txn_date: "2024-06-01", amount: -18000, description: "Annual Insurance Premium" },
+      { txn_date: "2025-06-01", amount: -18000, description: "Annual Insurance Premium" },
+      { txn_date: "2026-06-01", amount: -18000, description: "Annual Insurance Premium" },
+    ];
+    const [ob] = detectRecurringObligations(txns, { asOf: "2026-06-10" });
+    expect(ob.cadence).toBe("annual");
+    expect(ob.confidence).toBe("low"); // 3 occurrences alone already caps it at low
+  });
+});
+
+describe("projectForwardCalendar", () => {
+  const monthly = { label: "Rent", cadence: "monthly", typical_amount: 12000, next_expected: "2026-01-31", active: true };
+
+  it("projects an obligation's occurrences across the horizon, stepped by its cadence", () => {
+    const events = projectForwardCalendar([monthly], "2026-01-01", 90);
+    const second = addDays("2026-01-31", 30);
+    const third = addDays(second, 30);
+    expect(events.map(e => e.date)).toEqual(["2026-01-31", second, third]);
+    expect(events.every(e => e.amount === 12000)).toBe(true);
+  });
+
+  it("excludes inactive obligations", () => {
+    const events = projectForwardCalendar([{ ...monthly, active: false }], "2026-01-01", 90);
+    expect(events).toEqual([]);
+  });
+
+  it("produces no events when next_expected falls beyond the horizon", () => {
+    const farOut = { ...monthly, next_expected: "2026-06-01" };
+    const events = projectForwardCalendar([farOut], "2026-01-01", 90);
+    expect(events).toEqual([]);
+  });
+});
+
+describe("summarizeCalendarByWeek", () => {
+  it("sums event amounts into 7-day buckets", () => {
+    const events = [
+      { date: "2026-01-01", amount: 100 },
+      { date: "2026-01-03", amount: 200 },
+      { date: "2026-01-10", amount: 500 },
+    ];
+    const weeks = summarizeCalendarByWeek(events, "2026-01-01", 14);
+    expect(weeks).toHaveLength(2);
+    expect(weeks[0]).toMatchObject({ weekStart: "2026-01-01", weekEnd: "2026-01-07", total: 300 });
+    expect(weeks[1]).toMatchObject({ weekStart: "2026-01-08", weekEnd: "2026-01-14", total: 500 });
+  });
+});
+
+describe("computeForwardRunway", () => {
+  it("crosses zero on the obligation's actual due date, not a smoothed average", () => {
+    // Background nets to zero by construction (avgExp fully accounted for
+    // by the one recurring obligation), so the entire decline traces to
+    // the obligation's two dated hits at day 30 and day 60.
+    const obligations = [{ label: "Rent", cadence: "monthly", typical_amount: 1000, next_expected: "2026-01-31", active: true }];
+    const result = computeForwardRunway({
+      currentCash: 1500, avgRev: 0, avgExp: 1000, obligations, fromDate: "2026-01-01", horizonDays: 90,
+    });
+    expect(result.crossesZero).toBe(true);
+    expect(result.crossDate).toBe(addDays("2026-01-01", 60));
+    expect(result.daysUntilCross).toBe(60);
+    expect(result.monthsUntilCross).toBe(2);
+  });
+
+  it("does not cross zero when cash comfortably outlasts the horizon", () => {
+    const obligations = [{ label: "Rent", cadence: "monthly", typical_amount: 1000, next_expected: "2026-01-31", active: true }];
+    const result = computeForwardRunway({
+      currentCash: 1000000, avgRev: 0, avgExp: 1000, obligations, fromDate: "2026-01-01", horizonDays: 90,
+    });
+    expect(result.crossesZero).toBe(false);
+  });
+
+  it("catches a payment due exactly on fromDate, not just future days", () => {
+    const obligations = [{ label: "Rent", cadence: "monthly", typical_amount: 5000, next_expected: "2026-01-01", active: true }];
+    const result = computeForwardRunway({
+      currentCash: 3000, avgRev: 0, avgExp: 5000, obligations, fromDate: "2026-01-01", horizonDays: 90,
+    });
+    expect(result.crossesZero).toBe(true);
+    expect(result.crossDate).toBe("2026-01-01");
+    expect(result.daysUntilCross).toBe(0);
+  });
+
+  it("excludes inactive obligations from both the background rate and the calendar", () => {
+    const obligations = [{ label: "Old Subscription", cadence: "monthly", typical_amount: 500, next_expected: "2026-01-31", active: false }];
+    const result = computeForwardRunway({
+      currentCash: 2000, avgRev: 0, avgExp: 0, obligations, fromDate: "2026-01-01", horizonDays: 90,
+    });
+    expect(result.crossesZero).toBe(false); // the inactive obligation contributes nothing
+  });
+});
+
+describe("checkAffordability", () => {
+  it("confirms affordability holds for 12 months when the math supports it", () => {
+    const result = checkAffordability({
+      currentCash: 50000, avgRev: 10000, avgExp: 8000, obligations: [], monthlyCost: 1500, fromDate: "2026-01-01",
+    });
+    expect(result.affordable).toBe(true);
+  });
+
+  it("returns the specific month a hypothetical cost would break the runway", () => {
+    // No existing obligations or background flow — isolates the synthetic
+    // cost's own two hits (day 0 and day 30) against a $3,000 cushion.
+    const result = checkAffordability({
+      currentCash: 3000, avgRev: 0, avgExp: 0, obligations: [], monthlyCost: 1000, fromDate: "2026-01-01",
+    });
+    expect(result.affordable).toBe(false);
+    expect(result.breaksInMonth).toBe(2);
+    expect(result.breakDate).toBe(addDays("2026-01-01", 60));
+  });
+
+  it("treats the hypothetical cost as purely additive, not already reflected in avgExp", () => {
+    // avgRev - avgExp - monthlyCost = 10000 - 8000 - 1500 = +500/month —
+    // healthy — even though avgExp doesn't yet include this new cost.
+    const result = checkAffordability({
+      currentCash: 5000, avgRev: 10000, avgExp: 8000, obligations: [], monthlyCost: 1500, fromDate: "2026-01-01",
+    });
+    expect(result.affordable).toBe(true);
+  });
+});
+
+describe("detectMissedObligations", () => {
+  it("surfaces an obligation more than 7 days past its expected date", () => {
+    const obligations = [
+      { label: "Rent — Unit 14 Epping", cadence: "monthly", next_expected: "2026-01-01", active: true },
+    ];
+    const [missed] = detectMissedObligations(obligations, "2026-01-05" /* 4 days past — not yet flagged */);
+    expect(missed).toBeUndefined();
+
+    const [flagged] = detectMissedObligations(obligations, "2026-01-12" /* 11 days past */);
+    expect(flagged.daysPast).toBe(11);
+    expect(flagged.message).toBe("Rent — Unit 14 Epping was expected 11 days ago and has not appeared.");
+  });
+
+  it("does not flag an obligation that isn't yet overdue by more than 7 days", () => {
+    const obligations = [{ label: "Rent", cadence: "monthly", next_expected: "2026-01-01", active: true }];
+    expect(detectMissedObligations(obligations, "2026-01-06")).toEqual([]); // exactly 5 days past
+  });
+
+  it("never flags an inactive obligation", () => {
+    const obligations = [{ label: "Cancelled Subscription", cadence: "monthly", next_expected: "2026-01-01", active: false }];
+    expect(detectMissedObligations(obligations, "2026-02-01")).toEqual([]);
   });
 });

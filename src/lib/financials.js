@@ -184,6 +184,268 @@ export function computeRevenueConcentration(transactions) {
   };
 }
 
+// ─── RECURRING OBLIGATIONS & FORWARD CALENDAR ───────────────────
+// Bank history is backward-looking; a founder's real questions ("can I
+// afford this hire in March?") are forward-looking. This detects
+// obligations that repeat on a predictable schedule (rent, payroll, SARS,
+// an annual insurance premium) from raw transaction history, then projects
+// them forward into a cash calendar precise enough to answer those
+// questions — instead of the blunt average-burn approximation, which has
+// no idea rent is due on the 2nd or that a large annual premium is due
+// next month.
+//
+// All date arithmetic here uses the UTC getters/setters (getUTCDate,
+// setUTCDate, etc.), never the local-time ones — a "YYYY-MM-DD" string
+// parses as UTC midnight in JS, and mixing that with local-time .setDate()
+// silently shifts the result by a day in timezones behind UTC.
+const CADENCE_DAYS = { weekly: 7, monthly: 30, quarterly: 91, annual: 365 };
+
+export function classifyCadence(avgIntervalDays) {
+  if (avgIntervalDays >= 6   && avgIntervalDays <= 8)   return "weekly";
+  if (avgIntervalDays >= 28  && avgIntervalDays <= 33)  return "monthly";
+  if (avgIntervalDays >= 85  && avgIntervalDays <= 95)  return "quarterly";
+  if (avgIntervalDays >= 350 && avgIntervalDays <= 380) return "annual";
+  return null;
+}
+
+function mean(values) {
+  return values.length ? values.reduce((s, v) => s + v, 0) / values.length : 0;
+}
+
+function stddev(values) {
+  const m = mean(values);
+  return Math.sqrt(mean(values.map(v => Math.pow(v - m, 2))));
+}
+
+function daysBetween(a, b) {
+  return Math.round((new Date(b).getTime() - new Date(a).getTime()) / 86400000);
+}
+
+function addDaysUTC(dateStr, days) {
+  const d = new Date(dateStr);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+// Confidence for a detected obligation: occurrence count is the primary
+// signal, but an annual obligation additionally needs enough total
+// transaction history behind it to rule out coincidence outright — this
+// guard is explicit and unconditional, not left to the arithmetic of
+// "3 annual-spaced hits already implies ~2 years of data."
+export function obligationConfidence(occurrences, cadence, amountVariance, dataSpanDays) {
+  if (cadence === "annual" && dataSpanDays < 13 * 30) return "low";
+  if (occurrences >= 6 && amountVariance === "fixed") return "high";
+  if (occurrences >= 4) return "moderate";
+  return "low";
+}
+
+// Groups negative-amount (expense) transactions by normalized description,
+// tests each group of 3+ occurrences for a consistent interval and amount
+// pattern, and returns one obligation record per group that qualifies.
+// `transactions` is the raw dated list (txn_date, amount, description,
+// category) — the same shape loadHistory() already fetches. `options.asOf`
+// (default now) is the reference date used to decide whether a pattern
+// has gone quiet for too long to still call it active.
+export function detectRecurringObligations(transactions, options = {}) {
+  const asOf = (options.asOf || new Date().toISOString().slice(0, 10));
+  const expenses = (transactions || []).filter(t => Number(t.amount) < 0 && t.txn_date && t.description);
+  if (expenses.length === 0) return [];
+
+  const allDates = expenses.map(t => new Date(t.txn_date).getTime());
+  const dataSpanDays = allDates.length > 1 ? Math.round((Math.max(...allDates) - Math.min(...allDates)) / 86400000) : 0;
+
+  const groups = {};
+  expenses.forEach(t => {
+    const key = normalizeDescription(t.description);
+    if (!key) return;
+    (groups[key] = groups[key] || []).push(t);
+  });
+
+  const obligations = [];
+  Object.entries(groups).forEach(([key, txns]) => {
+    if (txns.length < 3) return;
+    const sorted = [...txns].sort((a, b) => String(a.txn_date).localeCompare(String(b.txn_date)));
+    const dates = sorted.map(t => t.txn_date);
+    const amounts = sorted.map(t => Math.abs(Number(t.amount)));
+
+    const intervals = [];
+    for (let i = 1; i < dates.length; i++) intervals.push(daysBetween(dates[i - 1], dates[i]));
+    const avgInterval = mean(intervals);
+    const intervalStd = stddev(intervals);
+    if (avgInterval <= 0 || intervalStd / avgInterval >= 0.20) return; // spacing isn't consistent enough to call this recurring
+
+    const cadence = classifyCadence(avgInterval);
+    if (!cadence) return; // doesn't fit any known cadence band
+
+    const avgAmount = mean(amounts);
+    const amountStd = stddev(amounts);
+    const cv = avgAmount > 0 ? amountStd / avgAmount : 0;
+    const amountVariance = cv < 0.25 ? "fixed" : "variable";
+    const typicalAmount = amountVariance === "fixed" ? avgAmount : mean(amounts.slice(-3));
+
+    const lastSeen = dates[dates.length - 1];
+    const nextExpected = addDaysUTC(lastSeen, Math.round(avgInterval));
+
+    // A pattern gone quiet for more than 2 full cadence periods is treated
+    // as ended, not still-recurring — recomputed fresh every run rather
+    // than trusting a stored flag that could drift out of date.
+    const daysSinceLastSeen = daysBetween(lastSeen, asOf);
+    const active = daysSinceLastSeen <= 2 * CADENCE_DAYS[cadence];
+
+    obligations.push({
+      label: sorted[sorted.length - 1].description,
+      category: sorted[sorted.length - 1].category || null,
+      cadence,
+      typical_amount: Math.round(typicalAmount * 100) / 100,
+      amount_variance: amountVariance,
+      day_of_month: new Date(lastSeen).getUTCDate(),
+      last_seen: lastSeen,
+      next_expected: nextExpected,
+      occurrences: sorted.length,
+      confidence: obligationConfidence(sorted.length, cadence, amountVariance, dataSpanDays),
+      active,
+      normalized_key: key,
+    });
+  });
+
+  return obligations.sort((a, b) => b.typical_amount - a.typical_amount);
+}
+
+// Projects each active obligation forward from `fromDate` across
+// `horizonDays`, generating one event per expected occurrence — the
+// first at its stored next_expected date, subsequent ones stepped by the
+// cadence's nominal day-count (precise enough for a planning calendar,
+// not a ledger).
+export function projectForwardCalendar(obligations, fromDate, horizonDays = 90) {
+  const endDate = addDaysUTC(fromDate, horizonDays);
+  const events = [];
+  (obligations || []).filter(o => o.active !== false).forEach(o => {
+    const step = CADENCE_DAYS[o.cadence] || 30;
+    let date = o.next_expected;
+    let guard = 0;
+    while (date <= endDate && guard < 400) {
+      if (date >= fromDate) {
+        events.push({ label: o.label, date, amount: Number(o.typical_amount) || 0, cadence: o.cadence, confidence: o.confidence, category: o.category });
+      }
+      date = addDaysUTC(date, step);
+      guard++;
+    }
+  });
+  return events.sort((a, b) => a.date.localeCompare(b.date));
+}
+
+// Sums projected obligation amounts into calendar weeks starting at
+// `fromDate`, for the "Committed Costs" week-by-week view.
+export function summarizeCalendarByWeek(events, fromDate, horizonDays = 90) {
+  const weeks = [];
+  for (let w = 0; w * 7 < horizonDays; w++) {
+    const weekStart = addDaysUTC(fromDate, w * 7);
+    const weekEnd = addDaysUTC(fromDate, w * 7 + 6);
+    const total = (events || [])
+      .filter(e => e.date >= weekStart && e.date <= weekEnd)
+      .reduce((s, e) => s + e.amount, 0);
+    weeks.push({ weekStart, weekEnd, total });
+  }
+  return weeks;
+}
+
+// Converts one obligation's typical amount into its monthly-equivalent
+// rate (a weekly $500 obligation costs roughly $2,143/month) — used to
+// separate "background" day-to-day burn from the lumpy, dated obligation
+// amounts, so a forward simulation never double-counts a known obligation
+// once as a smoothed average and again as a discrete calendar event.
+function monthlyEquivalent(amount, cadence) {
+  const days = CADENCE_DAYS[cadence] || 30;
+  return (Number(amount) || 0) * (30 / days);
+}
+
+// Obligation-aware runway: simulates cash day by day from `currentCash`,
+// applying a smoothed "background" daily flow (average revenue and
+// non-recurring expenses, with all known recurring obligations already
+// excluded) plus the actual dated obligation amounts as they land — rather
+// than a single flat average-burn rate. A lumpy annual premium landing
+// soon shows up as an earlier zero-crossing than average burn would ever
+// reveal; average burn spreads that same premium evenly across the year
+// and never sees the crunch coming.
+export function computeForwardRunway({ currentCash, avgRev, avgExp, obligations, fromDate, horizonDays = 365 }) {
+  const active = (obligations || []).filter(o => o.active !== false);
+  // Only obligations already reflected in avgExp (i.e. real, previously-
+  // detected ones) are excluded from the background rate — a hypothetical
+  // obligation being tested by checkAffordability() below is, by
+  // definition, not yet part of historical avgExp, so it must stay purely
+  // additive rather than also being subtracted back out of the background.
+  const recurringMonthlyTotal = active
+    .filter(o => o.excludeFromBackground !== false)
+    .reduce((s, o) => s + monthlyEquivalent(o.typical_amount, o.cadence), 0);
+  // Background = everything except the known recurring obligations, which
+  // get applied separately as dated events below — subtracting both would
+  // double-count them.
+  const backgroundMonthlyNet = (Number(avgRev) || 0) - ((Number(avgExp) || 0) - recurringMonthlyTotal);
+  const dailyFlow = backgroundMonthlyNet / 30;
+
+  const events = projectForwardCalendar(active, fromDate, horizonDays);
+  const byDate = {};
+  events.forEach(e => { byDate[e.date] = (byDate[e.date] || 0) + e.amount; });
+
+  let balance = Number(currentCash) || 0;
+  // A payment due exactly on fromDate (day 0) is checked before the daily
+  // loop starts — otherwise an obligation whose next_expected is "today"
+  // would be silently skipped, since the loop below only walks days 1..N.
+  if (byDate[fromDate]) balance -= byDate[fromDate];
+  if (balance <= 0) {
+    return { crossesZero: true, crossDate: fromDate, daysUntilCross: 0, monthsUntilCross: 0, recurringMonthlyTotal, dailyFlow };
+  }
+  for (let d = 1; d <= horizonDays; d++) {
+    const date = addDaysUTC(fromDate, d);
+    balance += dailyFlow;
+    if (byDate[date]) balance -= byDate[date];
+    if (balance <= 0) {
+      return {
+        crossesZero: true, crossDate: date, daysUntilCross: d,
+        monthsUntilCross: Math.round((d / 30) * 10) / 10,
+        recurringMonthlyTotal, dailyFlow,
+      };
+    }
+  }
+  return { crossesZero: false, crossDate: null, daysUntilCross: null, monthsUntilCross: null, recurringMonthlyTotal, dailyFlow };
+}
+
+// "Can I afford a recurring cost of $X/month?" — answered against the
+// forward calendar (real obligations on their real dates), not against a
+// flat current-cash check. Layers a synthetic monthly obligation onto the
+// existing ones and re-runs the same simulation over a 12-month horizon.
+export function checkAffordability({ currentCash, avgRev, avgExp, obligations, monthlyCost, fromDate }) {
+  const horizonDays = 365;
+  const synthetic = {
+    label: "Hypothetical new cost", cadence: "monthly",
+    typical_amount: Number(monthlyCost) || 0, next_expected: fromDate, active: true,
+    excludeFromBackground: false,
+  };
+  const withNew = computeForwardRunway({ currentCash, avgRev, avgExp, obligations: [...(obligations || []), synthetic], fromDate, horizonDays });
+
+  if (!withNew.crossesZero) {
+    return { affordable: true, message: "This holds for the next 12 months against your known obligations." };
+  }
+  const breaksInMonth = Math.max(1, Math.ceil(withNew.daysUntilCross / 30));
+  return {
+    affordable: false, breaksInMonth, breakDate: withNew.crossDate,
+    message: `This breaks your runway in month ${breaksInMonth} (around ${withNew.crossDate}).`,
+  };
+}
+
+// Surfaces an obligation whose expected date has passed by more than a
+// week with nothing matching it in the transaction history — often the
+// first visible signal of a cash problem, since it shows up before the
+// bank balance itself looks alarming.
+export function detectMissedObligations(obligations, asOf) {
+  const today = asOf || new Date().toISOString().slice(0, 10);
+  return (obligations || [])
+    .filter(o => o.active !== false)
+    .map(o => ({ ...o, daysPast: daysBetween(o.next_expected, today) }))
+    .filter(o => o.daysPast > 7)
+    .map(o => ({ ...o, message: `${o.label} was expected ${o.daysPast} day${o.daysPast === 1 ? "" : "s"} ago and has not appeared.` }));
+}
+
 // ─── SMART PARSER — reads any real bank or accounting export ──
 // Handles:
 //   - Bank CSVs: Date, Description, Amount (positive=in, negative=out)

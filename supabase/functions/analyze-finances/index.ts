@@ -114,6 +114,11 @@ serve(async (req: Request) => {
       // arrives as null) — that is a different failure than a thin history
       // and must be narrated differently.
       confidence,
+      // Forward cash calendar: detected recurring obligations projected 90
+      // days out, the obligation-aware runway (real dated bills against
+      // current cash, not a flat average), missed obligations, and the
+      // committed-cost list — null when nothing has been detected yet.
+      forwardCalendar,
       // Expense breakdown if available
       payroll, rent, marketing, software, cogs,
     } = body
@@ -152,6 +157,26 @@ serve(async (req: Request) => {
         ].filter(Boolean).join("\n")
       : `Not available — ${rc.reason || "payer names could not be reliably extracted from enough income transactions"}`
 
+    // Forward cash calendar — a real, dated projection of recurring
+    // obligations, distinct from the smoothed average-burn figure above.
+    const fc = forwardCalendar || null
+    const forwardCalendarSection = fc
+      ? [
+          fc.obligationAwareRunway?.crossesZero
+            ? `- Obligation-Aware Runway: crosses zero around ${fc.obligationAwareRunway.crossDate} (${fc.obligationAwareRunway.monthsUntilCross} months from today) — this accounts for the real dated obligations below, not a flat average.`
+            : `- Obligation-Aware Runway: does not cross zero within the next 12 months against known obligations.`,
+          fc.committedCosts?.length
+            ? `- Committed Costs: ${fc.committedCosts.map((c) => `${c.label} (${c.cadence}, ${fmt(c.typicalAmount)}, next ${c.nextExpected}${c.confidence !== "high" ? `, ${c.confidence} confidence` : ""})`).join("; ")}`
+            : null,
+          fc.missedObligations?.length
+            ? `- Missed Obligations: ${fc.missedObligations.map((m) => `${m.label} was expected ${m.daysPast} day(s) ago and has not appeared`).join("; ")}`
+            : null,
+          fc.weeklyTotals?.some((w) => w.total > 0)
+            ? `- Next 90 Days by Week (committed-cost totals only, not revenue): ${fc.weeklyTotals.filter((w) => w.total > 0).map((w) => `week of ${w.weekStart}: ${fmt(w.total)}`).join("; ")}`
+            : null,
+        ].filter(Boolean).join("\n")
+      : "Not available — no recurring obligations have been detected yet (needs at least 3 similar payments on a consistent schedule)."
+
     // Build expense breakdown section if we have category data
     const expenseBreakdown = [
       payroll  ? `- Payroll: ${fmt(payroll)}`   : null,
@@ -189,7 +214,9 @@ Rules:
 - Any metric marked LOW CONFIDENCE or MODERATE CONFIDENCE below must be hedged explicitly wherever you reference it — say "early signal," "based on limited history," or "this could move once more data comes in" rather than stating it as settled fact. A HIGH CONFIDENCE metric (or one with no confidence marking at all) is stated as fact, same as always.
 - REPORTING PERIOD of 1 month cannot support "riskLevel": "Critical" — a single bad month may be a fluke, not a fire. Cap at "Watch" in that case and say the call needs more history to confirm.
 - If REVENUE CONCENTRATION below is "Not available," never state or imply a concentration percentage — say plainly that payer names couldn't be reliably read from the transaction data yet.
-- If REVENUE CONCENTRATION is marked MODERATE CONFIDENCE, hedge that specific figure the same way as any other moderate-confidence metric.`
+- If REVENUE CONCENTRATION is marked MODERATE CONFIDENCE, hedge that specific figure the same way as any other moderate-confidence metric.
+- If FORWARD CASH CALENDAR shows an Obligation-Aware Runway that crosses zero, that is the real runway — lead with it over the smoothed Burn Runway figure above whenever the two disagree, and say plainly that a dated obligation (name it) is what actually breaks the cash position, not average burn.
+- If a Missed Obligation is listed, treat it as an active, first-priority signal — a bill that stopped appearing on schedule is often the earliest sign of a cash problem, worth flagging even ahead of other observations.`
 
     const userPrompt = `Here is the complete financial position of this business. Analyze it and tell the founder exactly what is happening and what to do:
 
@@ -224,6 +251,9 @@ OPERATIONAL FLAGS:
 
 REVENUE CONCENTRATION (by real paying client, extracted from transaction descriptions):
 ${concentrationSection}
+
+FORWARD CASH CALENDAR (recurring obligations — rent, payroll, tax, insurance — detected from transaction history and projected forward; this is the founder's real, dated cash picture, not the smoothed average burn above):
+${forwardCalendarSection}
 
 COMPUTED SCORES (already calculated — narrate these, do not recompute or contradict them):
 - Growth Score: ${describeMetric(growthScore, conf.growth, (v) => `${v}/100 (${growthLabel ?? "n/a"})`)}
