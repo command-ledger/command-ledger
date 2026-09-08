@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { fmt, pc, safe, detectExpenseCategory, parseAnyCSV, computeMetrics, trailingGrowthRate, computeGrowthScore, computeRiskScore, detectTrends, applyScenario, runScenario } from "./financials.js";
+import { fmt, pc, safe, detectExpenseCategory, parseAnyCSV, computeMetrics, trailingGrowthRate, computeGrowthScore, computeRiskScore, detectTrends, applyScenario, runScenario, computeHistoricalTrajectory, detectSeasonality, computeHistoricalConfidence, buildFounderNarrative, parseTransactions, normalizeDescription, dedupeHashInput, computeDedupeHash, aggregateTransactionsByMonth } from "./financials.js";
 
 describe("fmt / pc / safe", () => {
   it("formats currency and percentages", () => {
@@ -355,5 +355,234 @@ describe("runScenario", () => {
     const { before, after } = runScenario(baseline, { expenseDelta: 8000 }, "safe");
     expect(after.margin).toBeLessThan(before.margin);
     expect(after.free).toBeLessThan(before.free);
+  });
+});
+
+describe("computeHistoricalTrajectory", () => {
+  // 6 months, revenue and margin both improving every single month.
+  const snapshots = [
+    { period_month: "2026-01-01", revenue: 10000, expenses: 8000 },
+    { period_month: "2026-02-01", revenue: 10500, expenses: 8200 },
+    { period_month: "2026-03-01", revenue: 11000, expenses: 8300 },
+    { period_month: "2026-04-01", revenue: 11500, expenses: 8400 },
+    { period_month: "2026-05-01", revenue: 12000, expenses: 8500 },
+    { period_month: "2026-06-01", revenue: 12500, expenses: 8600 },
+  ];
+
+  it("detects a full-history improving-margin streak, not just latest-vs-prior", () => {
+    const t = computeHistoricalTrajectory(snapshots);
+    expect(t.monthsOfHistory).toBe(6);
+    expect(t.margin.direction).toBe("improving");
+    expect(t.margin.streak.length).toBe(5); // every one of the 5 month-over-month deltas was up
+    expect(t.margin.current).toBeCloseTo(31.2, 1); // (12500-8600)/12500*100
+  });
+
+  it("detects a matching revenue growth streak", () => {
+    const t = computeHistoricalTrajectory(snapshots);
+    expect(t.revenue.direction).toBe("growing");
+    expect(t.revenue.streak.length).toBe(5);
+  });
+
+  it("reads a widening profit cushion as improving cash flow", () => {
+    const t = computeHistoricalTrajectory(snapshots);
+    expect(t.cashFlow.direction).toBe("improving");
+  });
+
+  it("reads roughly flat concentration when growth is uniform across months", () => {
+    const t = computeHistoricalTrajectory(snapshots);
+    expect(t.concentration.direction).toBe("flat");
+  });
+
+  it("breaks a streak the moment a month moves the other direction", () => {
+    const withDip = [
+      { period_month: "2026-01-01", revenue: 10000, expenses: 8000 }, // margin 20%
+      { period_month: "2026-02-01", revenue: 10000, expenses: 7800 }, // margin 22%
+      { period_month: "2026-03-01", revenue: 10000, expenses: 7600 }, // margin 24%
+      { period_month: "2026-04-01", revenue: 10000, expenses: 8200 }, // margin 18% — the dip
+      { period_month: "2026-05-01", revenue: 10000, expenses: 8000 }, // margin 20%
+      { period_month: "2026-06-01", revenue: 10000, expenses: 7800 }, // margin 22%
+    ];
+    const t = computeHistoricalTrajectory(withDip);
+    expect(t.margin.streak.length).toBe(2); // only the last two improving deltas count, the dip breaks the longer run
+  });
+
+  it("returns null with fewer than 2 months — one point isn't a trajectory", () => {
+    expect(computeHistoricalTrajectory([{ period_month: "2026-01-01", revenue: 10000, expenses: 8000 }])).toBeNull();
+    expect(computeHistoricalTrajectory(null)).toBeNull();
+  });
+});
+
+describe("detectSeasonality", () => {
+  it("requires at least 13 months before claiming any seasonal pattern", () => {
+    const short = Array.from({ length: 12 }, (_, i) => ({ period_month: `2026-${String((i % 12) + 1).padStart(2,"0")}-01`, revenue: 10000, expenses: 8000 }));
+    expect(detectSeasonality(short)).toBeNull();
+  });
+
+  it("flags a calendar month that's consistently well above average across two occurrences", () => {
+    // 24 months: every month is $10,000 except December (index 11), which is $13,000 both years.
+    const snapshots = [];
+    for (let y = 0; y < 2; y++) {
+      for (let m = 0; m < 12; m++) {
+        const revenue = m === 11 ? 13000 : 10000;
+        snapshots.push({ period_month: `${2024 + y}-${String(m + 1).padStart(2,"0")}-01`, revenue, expenses: 8000 });
+      }
+    }
+    const seasonal = detectSeasonality(snapshots);
+    expect(seasonal).toHaveLength(1);
+    expect(seasonal[0].month).toBe("December");
+    expect(seasonal[0].occurrences).toBe(2);
+    expect(seasonal[0].avgDeltaPct).toBeGreaterThan(15);
+  });
+
+  it("does not flag a month that only occurred once, even if unusual", () => {
+    // 13 consecutive months starting January always re-lands on January at
+    // i=12 — so the outlier must sit somewhere else (i=6, July) to actually
+    // test a month that occurs exactly once in this span.
+    const snapshots = Array.from({ length: 13 }, (_, i) => ({
+      period_month: `2025-${String((i % 12) + 1).padStart(2,"0")}-01`,
+      revenue: i === 6 ? 50000 : 10000,
+      expenses: 8000,
+    }));
+    expect(detectSeasonality(snapshots)).toEqual([]);
+  });
+});
+
+describe("computeHistoricalConfidence", () => {
+  it("scales confidence with months of real history", () => {
+    expect(computeHistoricalConfidence(1)).toMatchObject({ score: 40, label: "low" });
+    expect(computeHistoricalConfidence(3)).toMatchObject({ score: 60, label: "medium" });
+    expect(computeHistoricalConfidence(8)).toMatchObject({ score: 80, label: "high" });
+    expect(computeHistoricalConfidence(15)).toMatchObject({ score: 92, label: "very high" });
+  });
+
+  it("a single month never scores as high as a full year", () => {
+    expect(computeHistoricalConfidence(1).score).toBeLessThan(computeHistoricalConfidence(12).score);
+  });
+});
+
+describe("buildFounderNarrative", () => {
+  it("gives context, not just a number, when a real trajectory exists", () => {
+    const snapshots = [
+      { period_month: "2026-01-01", revenue: 10000, expenses: 8000 },
+      { period_month: "2026-02-01", revenue: 10500, expenses: 8200 },
+      { period_month: "2026-03-01", revenue: 11000, expenses: 8300 },
+      { period_month: "2026-04-01", revenue: 11500, expenses: 8400 },
+      { period_month: "2026-05-01", revenue: 12000, expenses: 8500 },
+      { period_month: "2026-06-01", revenue: 12500, expenses: 8600 },
+    ];
+    const t = computeHistoricalTrajectory(snapshots);
+    const narrative = buildFounderNarrative(t, t.margin.current);
+    expect(narrative).toContain("improved for 6 consecutive months");
+    expect(narrative).toContain("Revenue has been growing for 6 consecutive months");
+  });
+
+  it("falls back to a plain statement with no invented context when there's no trajectory", () => {
+    const narrative = buildFounderNarrative(null, 20);
+    expect(narrative).toContain("20.0%");
+    expect(narrative).toContain("one data point isn't a trend");
+  });
+});
+
+describe("parseTransactions", () => {
+  it("emits one signed record per row from a single-Amount bank export", () => {
+    const csv = "Date,Description,Amount\n2026-01-05,Client payment received,5000\n2026-01-10,AWS hosting fee,-200\n";
+    const result = parseTransactions(csv);
+    expect(result.mode).toBe("bank");
+    expect(result.transactions).toHaveLength(2);
+    expect(result.transactions[0]).toMatchObject({ txn_date: "2026-01-05", amount: 5000, category: null });
+    expect(result.transactions[1]).toMatchObject({ txn_date: "2026-01-10", amount: -200, category: "software" });
+  });
+
+  it("nets named Revenue/Expenses columns into one signed amount per row", () => {
+    const csv = "Date,Revenue,Expenses\n2026-01-01,10000,6000\n";
+    const result = parseTransactions(csv);
+    expect(result.mode).toBe("named");
+    expect(result.transactions[0].amount).toBe(4000); // net of the two columns on that row
+  });
+
+  it("parses day-before-month for ambiguous DD/MM/YYYY dates, matching parseAnyCSV's convention", () => {
+    const csv = "Date,Description,Amount\n05/01/2026,Client payment,1000\n";
+    const result = parseTransactions(csv);
+    expect(result.transactions[0].txn_date).toBe("2026-01-05"); // 05/01 read as 5 January, not May 1st
+  });
+
+  it("skips rows with no parseable date rather than guessing one", () => {
+    const csv = "Date,Description,Amount\nnot-a-date,Mystery transaction,500\n2026-02-01,Real transaction,500\n";
+    const result = parseTransactions(csv);
+    expect(result.transactions).toHaveLength(1);
+    expect(result.transactions[0].description).toBe("Real transaction");
+  });
+
+  it("returns null when nothing usable is found", () => {
+    expect(parseTransactions("Date,Revenue,Expenses\n")).toBeNull();
+  });
+});
+
+describe("normalizeDescription / dedupeHashInput", () => {
+  it("normalizes case, punctuation, and whitespace so equivalent descriptions match", () => {
+    expect(normalizeDescription("Payment - Acme Corp.")).toBe(normalizeDescription("payment  acme corp"));
+    expect(normalizeDescription("Payment - Acme Corp.")).toBe("payment acme corp");
+  });
+
+  it("builds the same hash input for the same date/description/amount regardless of formatting", () => {
+    const a = { txn_date: "2026-01-05", description: "Payment - Acme Corp.", amount: 1250 };
+    const b = { txn_date: "2026-01-05", description: "payment  acme corp", amount: 1250.001 }; // sub-cent float noise
+    expect(dedupeHashInput(a)).toBe(dedupeHashInput(b));
+  });
+
+  it("produces a different hash input when the amount actually differs", () => {
+    const a = { txn_date: "2026-01-05", description: "Rent", amount: 1000 };
+    const b = { txn_date: "2026-01-05", description: "Rent", amount: 1000.5 };
+    expect(dedupeHashInput(a)).not.toBe(dedupeHashInput(b));
+  });
+});
+
+describe("computeDedupeHash", () => {
+  it("produces a stable 64-character hex SHA-256 digest", async () => {
+    const hash = await computeDedupeHash({ txn_date: "2026-01-05", description: "Client payment received", amount: 5000 });
+    expect(hash).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it("produces identical hashes for two uploads describing the same real-world transaction", async () => {
+    const first  = await computeDedupeHash({ txn_date: "2026-04-03", description: "Client Invoice - Acme Retainer", amount: 18500 });
+    const second = await computeDedupeHash({ txn_date: "2026-04-03", description: "client invoice   acme retainer", amount: 18500 });
+    expect(first).toBe(second); // this is exactly what makes an overlapping re-upload deduplicate silently
+  });
+
+  it("produces different hashes for genuinely different transactions", async () => {
+    const a = await computeDedupeHash({ txn_date: "2026-04-03", description: "Client Invoice - Acme", amount: 18500 });
+    const b = await computeDedupeHash({ txn_date: "2026-04-04", description: "Client Invoice - Acme", amount: 18500 });
+    expect(a).not.toBe(b);
+  });
+});
+
+describe("aggregateTransactionsByMonth", () => {
+  it("buckets signed transactions into the same monthly-row shape computeMetrics expects", () => {
+    const txns = [
+      { txn_date: "2026-03-05", description: "Client invoice", amount: 18500, category: null },
+      { txn_date: "2026-03-10", description: "AWS hosting",    amount: -1240, category: "software" },
+      { txn_date: "2026-03-12", description: "Payroll run",    amount: -14200, category: "payroll" },
+      { txn_date: "2026-04-02", description: "Client invoice", amount: 20000, category: null },
+    ];
+    const rows = aggregateTransactionsByMonth(txns);
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toMatchObject({ period_month: "2026-03-01", revenue: 18500, expenses: 15440, software: 1240, payroll: 14200 });
+    expect(rows[1]).toMatchObject({ period_month: "2026-04-01", revenue: 20000, expenses: 0 });
+  });
+
+  it("feeds directly into computeMetrics with correct results", () => {
+    const txns = [
+      { txn_date: "2026-03-01", description: "Revenue", amount: 50000, category: null },
+      { txn_date: "2026-03-05", description: "Costs",   amount: -40000, category: "cogs" },
+    ];
+    const rows = aggregateTransactionsByMonth(txns);
+    const m = computeMetrics(rows, { mRev:0, mExp:0, mCash:0, mCac:0, mLtv:0, mLeads:0, mClose:0 }, "safe");
+    expect(m.margin).toBeCloseTo(20, 5); // (50000-40000)/50000*100
+    expect(m.cogsRatio).toBeCloseTo(80, 5); // 40000/50000*100
+  });
+
+  it("returns an empty array for no transactions, not null or an error", () => {
+    expect(aggregateTransactionsByMonth([])).toEqual([]);
+    expect(aggregateTransactionsByMonth(null)).toEqual([]);
   });
 });

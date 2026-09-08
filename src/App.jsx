@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { createClient } from "@supabase/supabase-js";
-import { fmt, pc, safe, parseAnyCSV, computeMetrics, runScenario } from "./lib/financials.js";
+import { fmt, pc, safe, parseAnyCSV, computeMetrics, runScenario, parseTransactions, computeDedupeHash, aggregateTransactionsByMonth } from "./lib/financials.js";
 
 const supabase = createClient(
   import.meta.env.VITE_SUPABASE_URL,
@@ -506,7 +506,7 @@ function DataUpload({ onDataLoaded, hasData }) {
       return false;
     }
     setErr("");
-    onDataLoaded(result.rows, source, result.detectedFields);
+    onDataLoaded(result.rows, source, result.detectedFields, text);
     return true;
   };
 
@@ -702,6 +702,16 @@ function Dashboard({ user, profile, onLogout, onUpgrade }) {
   const [data, setData] = useState(null);
   const [dataSource, setDataSource]   = useState("");
   const [detectedCols, setDetectedCols] = useState([]);
+  // Financial Memory Engine — persisted transaction history, read fresh on
+  // every load and every period-filter change. Nothing here is computed
+  // client-side and stored back; `history` is raw monthly aggregates only.
+  const [history, setHistory] = useState([]);
+  const [batches, setBatches] = useState([]);
+  const [periodFilter, setPeriodFilter] = useState("12");
+  const [historyLoading, setHistoryLoading] = useState(true);
+  const [uploadStatus, setUploadStatus] = useState("");
+  const [uploadErr, setUploadErr] = useState("");
+  const [uploadBusy, setUploadBusy] = useState(false);
   const [aiRec,    setAiRec]    = useState(null);
   const [aiError,  setAiError]  = useState("");
   const [aiLoad,   setAiLoad]   = useState(false);
@@ -724,7 +734,92 @@ function Dashboard({ user, profile, onLogout, onUpgrade }) {
   const userName  = profile?.name || user?.user_metadata?.full_name || user?.email?.split("@")[0] || "Founder";
   const userAvatar = user?.user_metadata?.avatar_url;
 
-  const rows = data && data.length > 0 ? data : null;
+  const periodCutoff = useCallback(() => {
+    if (periodFilter === "all") return null;
+    const d = new Date();
+    d.setUTCMonth(d.getUTCMonth() - Number(periodFilter));
+    return d.toISOString().slice(0, 10);
+  }, [periodFilter]);
+
+  const loadHistory = useCallback(async () => {
+    setHistoryLoading(true);
+    try {
+      let query = supabase.from("transactions").select("txn_date, amount, category").order("txn_date", { ascending: true });
+      const cutoff = periodCutoff();
+      if (cutoff) query = query.gte("txn_date", cutoff);
+      const { data: txns, error } = await query;
+      if (error) throw error;
+      setHistory(aggregateTransactionsByMonth(txns || []));
+    } catch (e) {
+      console.error("Failed to load transaction history:", e);
+      setHistory([]);
+    }
+    setHistoryLoading(false);
+  }, [periodCutoff]);
+
+  const loadBatches = useCallback(async () => {
+    const { data: rows, error } = await supabase.from("upload_batches").select("*").order("uploaded_at", { ascending: false });
+    if (!error) setBatches(rows || []);
+  }, []);
+
+  useEffect(() => { loadHistory(); }, [loadHistory]);
+  useEffect(() => { loadBatches(); }, [loadBatches]);
+
+  const handleDataLoaded = async (parsedRows, source, cols, rawText) => {
+    setData(parsedRows); setDataSource(source); setDetectedCols(cols); setTab("overview");
+    setUploadStatus(""); setUploadErr(""); setUploadBusy(true);
+    try {
+      const parsed = parseTransactions(rawText);
+      if (!parsed || parsed.transactions.length === 0) {
+        setUploadErr("This file loaded for the current session, but no dated transactions could be added to your permanent history.");
+        setUploadBusy(false);
+        return;
+      }
+      const { transactions, mode: parserMode } = parsed;
+      const dates = transactions.map(t => t.txn_date).sort();
+
+      const { data: batch, error: batchErr } = await supabase.from("upload_batches").insert({
+        user_id: user.id, filename: source, row_count: transactions.length,
+        period_start: dates[0], period_end: dates[dates.length - 1], parser_mode: parserMode,
+      }).select().single();
+      if (batchErr) throw batchErr;
+
+      const hashed = await Promise.all(transactions.map(async t => ({
+        ...t, user_id: user.id, source_batch_id: batch.id, dedupe_hash: await computeDedupeHash(t),
+      })));
+
+      const { data: inserted, error: insertErr } = await supabase
+        .from("transactions")
+        .upsert(hashed, { onConflict: "user_id,dedupe_hash", ignoreDuplicates: true })
+        .select("id");
+      if (insertErr) throw insertErr;
+
+      const insertedCount = inserted?.length || 0;
+      const duplicateCount = transactions.length - insertedCount;
+
+      await supabase.from("upload_batches")
+        .update({ inserted_count: insertedCount, duplicate_count: duplicateCount })
+        .eq("id", batch.id);
+
+      setUploadStatus(`Added ${insertedCount} new transaction${insertedCount === 1 ? "" : "s"}. ${duplicateCount} already on file.`);
+      await loadHistory();
+      await loadBatches();
+    } catch (e) {
+      console.error("Failed to save transaction history:", e);
+      setUploadErr("Your file was read for this session, but saving it to your permanent history failed. The numbers below are accurate for now — try re-uploading to save them.");
+    }
+    setUploadBusy(false);
+  };
+
+  const deleteBatch = async (batchId) => {
+    const { error } = await supabase.from("upload_batches").delete().eq("id", batchId);
+    if (!error) { await loadHistory(); await loadBatches(); }
+  };
+
+  // Persisted history is the source of truth once it exists; a fresh
+  // upload's session-only `data` is only shown as an optimistic bridge
+  // until loadHistory() catches up. Manual entry never touches either.
+  const rows = history.length > 0 ? history : (data && data.length > 0 ? data : null);
   const {
     tr, sr, latest, prev, totRev, totExp, totCogs, totMkt, totL, totC,
     activeCash, activeCac, activeLtv, n, totPro, margin, vel, conv, ltvcac,
@@ -882,9 +977,41 @@ function Dashboard({ user, profile, onLogout, onUpgrade }) {
               <div className="card-sec">Upload File or Sync Google Sheet</div>
               <DataUpload
                 hasData={!!rows}
-                onDataLoaded={(r, src, cols) => { setData(r); setDataSource(src); setDetectedCols(cols); setTab("overview"); }}
+                onDataLoaded={handleDataLoaded}
               />
+              {uploadBusy && (
+                <div style={{ marginTop:14, display:"flex", alignItems:"center", gap:10, fontSize:12, color:C.inkDim, fontFamily:"'JetBrains Mono',monospace" }}>
+                  <span className="spinner"/>Saving to your transaction history...
+                </div>
+              )}
+              {!uploadBusy && uploadStatus && <div className="d-alert ok" style={{ marginTop:14 }}>{uploadStatus}</div>}
+              {!uploadBusy && uploadErr && <div className="d-alert warn" style={{ marginTop:14 }}>{uploadErr}</div>}
             </div>
+
+            <div className="card">
+              <div className="card-sec">Upload History</div>
+              {batches.length === 0 ? (
+                <div style={{ fontSize:12, color:C.inkDim, fontFamily:"'Cormorant Garamond',serif" }}>No files uploaded yet. Every upload you make is listed here, with exactly how many transactions it added versus how many were already on file.</div>
+              ) : (
+                <div style={{ display:"flex", flexDirection:"column", gap:2 }}>
+                  {batches.map(b => (
+                    <div key={b.id} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:12, padding:"12px 0", borderBottom:`1px solid ${C.border}` }}>
+                      <div>
+                        <div style={{ fontSize:12.5, color:C.cream }}>{b.filename || "Untitled upload"}</div>
+                        <div style={{ fontSize:10.5, color:C.inkDim, fontFamily:"'JetBrains Mono',monospace", marginTop:2 }}>
+                          {new Date(b.uploaded_at).toLocaleDateString()} · {b.period_start} to {b.period_end} · {b.inserted_count ?? "—"} added, {b.duplicate_count ?? "—"} duplicate
+                        </div>
+                      </div>
+                      <button className="modal-x" title="Delete this upload and its transactions"
+                        onClick={() => { if (window.confirm(`Delete "${b.filename}" and every transaction it added? This cannot be undone.`)) deleteBatch(b.id); }}>
+                        ×
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
             <div className="card">
               <div className="card-sec">Or Enter Numbers Manually</div>
               <div style={{ fontSize:13, color:C.ink, fontFamily:"'Cormorant Garamond',serif", lineHeight:1.7, marginBottom:20 }}>
@@ -1007,7 +1134,21 @@ function Dashboard({ user, profile, onLogout, onUpgrade }) {
 
         {tab === "overview" && (
           <>
-            <div className={`d-alert ${alert.t}`}>{alert.msg}</div>
+            {history.length > 0 && (
+              <div style={{ display:"flex", justifyContent:"flex-end", marginBottom:-8 }}>
+                <div className="mode-pills">
+                  {[["3","3mo"],["6","6mo"],["12","12mo"],["all","All time"]].map(([val,lbl]) => (
+                    <button key={val} className={`mpill${periodFilter===val?" on":""}`} onClick={() => setPeriodFilter(val)}>{lbl}</button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {historyLoading && !data ? (
+              <div className="d-alert info">Loading your financial history...</div>
+            ) : (
+              <div className={`d-alert ${alert.t}`}>{alert.msg}</div>
+            )}
 
             {hasData && <Directive metrics={metrics}/>}
 

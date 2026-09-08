@@ -269,6 +269,184 @@ export const parseAnyCSV = (text) => {
   return { rows, detectedFields, mode: isNamedMode?"named":isSplitMode?"split":"bank" };
 };
 
+// ─── TRANSACTION EVENT PARSER ───────────────────────────────────
+// Sibling to parseAnyCSV, but emits one signed record per source row
+// instead of pre-aggregating into monthly buckets. This is what feeds the
+// transaction event store — the DB is the source of truth, and monthly
+// aggregation happens as a read-time derivation (aggregateTransactionsByMonth),
+// never as something stored.
+export const parseTransactions = (text) => {
+  const firstLine = text.trim().split(/\r?\n/)[0] || "";
+  const delimiter = firstLine.includes("\t") ? "\t" : firstLine.includes(";") ? ";" : ",";
+
+  const parseRow = (line) => {
+    const cols = []; let cur = ""; let inQ = false;
+    for (const ch of line) {
+      if (ch === '"') { inQ = !inQ; }
+      else if (ch === delimiter && !inQ) { cols.push(cur.trim()); cur = ""; }
+      else cur += ch;
+    }
+    cols.push(cur.trim());
+    return cols.map(c => c.replace(/^"|"$/g, "").trim());
+  };
+
+  const allRows = text.trim().split(/\r?\n/).map(parseRow).filter(r => r.some(c => c.length > 0));
+  if (allRows.length < 2) return null;
+
+  let headerRowIdx = 0;
+  for (let i = 0; i < Math.min(5, allRows.length); i++) {
+    const rowStr = allRows[i].join(" ").toLowerCase();
+    if (rowStr.includes("date") || rowStr.includes("amount") || rowStr.includes("description")
+      || rowStr.includes("revenue") || rowStr.includes("debit") || rowStr.includes("credit")) {
+      headerRowIdx = i;
+      break;
+    }
+  }
+  const headers = allRows[headerRowIdx].map(h => h.toLowerCase().replace(/[_\-\s]+/g, " ").trim());
+  const dataRows = allRows.slice(headerRowIdx + 1);
+
+  const findCol = (patterns) => {
+    for (const p of patterns) {
+      const idx = headers.findIndex(h => h.includes(p) || p.includes(h));
+      if (idx !== -1) return idx;
+    }
+    return -1;
+  };
+
+  const dateCol    = findCol(["date","period","month","transaction date","posting date","value date","trans date"]);
+  const descCol    = findCol(["description","narrative","details","reference","memo","particulars","transaction","name","payee"]);
+  const amountCol  = findCol(["amount","value","net amount","total"]);
+  const debitCol   = findCol(["debit","debit amount","payment","out","withdrawals","charges"]);
+  const creditCol  = findCol(["credit","credit amount","deposit","in","receipts","money in"]);
+  const revenueCol = findCol(["revenue","income","sales","turnover","gross sales","total income","receipts earned"]);
+  const expenseCol = findCol(["expenses","expense","costs","total expenses","expenditure","overheads","total costs"]);
+
+  const toNum = (val) => {
+    if (val === undefined || val === null || val === "" || val === "-" || val === "—") return 0;
+    const cleaned = String(val).replace(/[R$£€\s,]/g, "").replace(/\(([^)]+)\)/, "-$1");
+    const n = Number(cleaned);
+    return isNaN(n) ? 0 : n;
+  };
+
+  // Full date (YYYY-MM-DD), unlike parseAnyCSV's month-only key — a real
+  // event store needs the actual day, both for display and because it's
+  // part of the dedupe hash. Day-before-month for ambiguous DD/MM/YYYY
+  // formats, matching the convention parseAnyCSV already uses.
+  const toFullDate = (val) => {
+    if (!val) return null;
+    const s = String(val).trim();
+    const monthNames = ["jan","feb","mar","apr","may","jun","jul","aug","sep","oct","nov","dec"];
+
+    let m = s.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/);
+    if (m) return `${m[1]}-${m[2].padStart(2,"0")}-${m[3].padStart(2,"0")}`;
+
+    m = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
+    if (m) return `${m[3]}-${m[2].padStart(2,"0")}-${m[1].padStart(2,"0")}`;
+
+    m = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2})$/);
+    if (m) return `20${m[3]}-${m[2].padStart(2,"0")}-${m[1].padStart(2,"0")}`;
+
+    m = s.match(/(\d{1,2})\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*\s+(\d{4})/i);
+    if (m) { const mi = monthNames.indexOf(m[2].toLowerCase().slice(0,3)); if (mi !== -1) return `${m[3]}-${String(mi+1).padStart(2,"0")}-${m[1].padStart(2,"0")}`; }
+
+    m = s.match(/(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*\s+(\d{1,2}),?\s+(\d{4})/i);
+    if (m) { const mi = monthNames.indexOf(m[1].toLowerCase().slice(0,3)); if (mi !== -1) return `${m[3]}-${String(mi+1).padStart(2,"0")}-${m[2].padStart(2,"0")}`; }
+
+    return null; // couldn't parse a real date — the caller skips this row rather than guessing one
+  };
+
+  const isNamedMode = revenueCol !== -1 && expenseCol !== -1;
+  const isSplitMode = debitCol !== -1 && creditCol !== -1 && amountCol === -1;
+  const isBankMode  = amountCol !== -1 && !isNamedMode;
+
+  const transactions = [];
+  dataRows.forEach(row => {
+    if (row.every(c => c === "")) return;
+    const desc = descCol !== -1 ? (row[descCol] || "Transaction") : "Transaction";
+    const txnDate = toFullDate(dateCol !== -1 ? row[dateCol] : null);
+    if (!txnDate) return; // no reliable date — can't place this in the timeline honestly
+
+    let amount = 0;
+    if (isNamedMode) {
+      amount = Math.abs(toNum(row[revenueCol])) - Math.abs(toNum(row[expenseCol]));
+    } else if (isSplitMode) {
+      amount = Math.abs(toNum(row[creditCol])) - Math.abs(toNum(row[debitCol]));
+    } else if (isBankMode) {
+      amount = toNum(row[amountCol]);
+    }
+    if (amount === 0) return;
+
+    transactions.push({
+      txn_date: txnDate,
+      description: desc,
+      amount: Math.round(amount * 100) / 100,
+      category: amount < 0 ? detectExpenseCategory(desc) : null,
+    });
+  });
+
+  if (transactions.length === 0) return null;
+  return { transactions, mode: isNamedMode ? "named" : isSplitMode ? "split" : "bank" };
+};
+
+// ─── DEDUPLICATION ──────────────────────────────────────────────
+// Overlapping uploads (Jan-Jun, then later Apr-Sep) must not double-count
+// April-June. Two transactions are the same event if they share a date, a
+// normalized description, and an amount — normalizing first so "Payment -
+// Acme Corp." and "payment  acme corp" hash identically.
+export function normalizeDescription(desc) {
+  return String(desc || "")
+    .toLowerCase()
+    .replace(/[^\w\s]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+export function dedupeHashInput(txn) {
+  return `${txn.txn_date}|${normalizeDescription(txn.description)}|${Number(txn.amount).toFixed(2)}`;
+}
+
+export async function computeDedupeHash(txn) {
+  const input = dedupeHashInput(txn);
+  const bytes = new TextEncoder().encode(input);
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, "0")).join("");
+}
+
+// ─── READ-TIME AGGREGATION ──────────────────────────────────────
+// Converts a flat list of stored transactions into the same monthly-row
+// shape computeMetrics() already expects — the aggregation is computed on
+// every read, never stored. `cash` is intentionally always 0 here: a
+// running balance isn't part of the transaction event schema, so current
+// cash still comes from the founder's own input, same as before.
+export function aggregateTransactionsByMonth(transactions) {
+  const buckets = {};
+  (transactions || []).forEach(t => {
+    const key = String(t.txn_date).slice(0, 7);
+    if (!buckets[key]) buckets[key] = { revenue:0, expenses:0, payroll:0, marketing:0, cogs:0, rent:0, software:0 };
+    const b = buckets[key];
+    const amt = Number(t.amount) || 0;
+    if (amt > 0) {
+      b.revenue += amt;
+    } else if (amt < 0) {
+      const abs = Math.abs(amt);
+      b.expenses += abs;
+      if (t.category && Object.prototype.hasOwnProperty.call(b, t.category)) b[t.category] += abs;
+    }
+  });
+
+  return Object.keys(buckets).sort().map(key => {
+    const b = buckets[key];
+    return {
+      period_month: `${key}-01`,
+      month: new Date(`${key}-01T00:00:00Z`).toLocaleDateString("en-US", { month:"short", year:"2-digit" }),
+      revenue: Math.round(b.revenue), expenses: Math.round(b.expenses), cash: 0,
+      payroll: Math.round(b.payroll), marketing: Math.round(b.marketing), cogs: Math.round(b.cogs),
+      rent: Math.round(b.rent), software: Math.round(b.software),
+      leads: 0, closures: 0, cac: 0, ltv: 0,
+    };
+  });
+}
+
 // Average month-over-month growth rate across up to the last 3 transitions
 // between uploaded months, rather than a single period — one anomalous
 // month (a one-off deal, a delayed invoice) shouldn't solely determine a
@@ -532,4 +710,146 @@ export function runScenario(baseline, adjustments, mode) {
     before: computeMetrics(null, baselineManual, mode),
     after: computeMetrics(null, scenarioManual, mode),
   };
+}
+
+// ─── FINANCIAL MEMORY ENGINE ────────────────────────────────────
+// Everything below operates on *persisted* monthly snapshots (see
+// supabase/schema/financial_snapshots.sql), not the in-session `rows` from
+// a single upload. A snapshot has the same numeric shape as a parsed CSV
+// row, plus a real `period_month` date — that date is what makes actual
+// seasonality detection possible, which display-only month labels can't do.
+
+// Finds the longest run of consecutive same-direction moves ending at the
+// most recent value. length is the number of matching consecutive deltas —
+// e.g. length 2 means 3 data points participated in the streak.
+function streakDirection(values) {
+  if (!values || values.length < 2) return { direction: "flat", length: 0 };
+  const lastDelta = values[values.length - 1] - values[values.length - 2];
+  const dir = lastDelta > 0 ? "up" : lastDelta < 0 ? "down" : "flat";
+  if (dir === "flat") return { direction: "flat", length: 0 };
+  let length = 1;
+  for (let i = values.length - 2; i > 0; i--) {
+    const d = values[i] - values[i - 1];
+    const thisDir = d > 0 ? "up" : d < 0 ? "down" : "flat";
+    if (thisDir !== dir) break;
+    length++;
+  }
+  return { direction: dir, length };
+}
+
+// Long-run trajectory across the full stored history — margin, revenue, and
+// net-burn streaks — generalizing detectTrends() (latest-vs-prior-average)
+// into "how many consecutive months has this actually been moving."
+export function computeHistoricalTrajectory(snapshots) {
+  if (!snapshots || snapshots.length < 2) return null;
+
+  const margins  = snapshots.map(s => s.revenue > 0 ? ((s.revenue - s.expenses) / s.revenue) * 100 : null).filter(v => v !== null);
+  const revenues = snapshots.map(s => s.revenue);
+  const burns    = snapshots.map(s => s.expenses - s.revenue); // higher = worse (more burn)
+
+  const marginStreak  = streakDirection(margins);
+  const revenueStreak = streakDirection(revenues);
+  const burnStreak    = streakDirection(burns);
+
+  // Concentration trend: compare the average of the most recent third of
+  // history against the earliest third, rather than a full streak — with
+  // only month-level revenue data (no per-customer records), a coarser
+  // "is this getting worse or better over time" read is the honest limit
+  // of what this metric can claim.
+  const third = Math.max(1, Math.floor(snapshots.length / 3));
+  const concOf = arr => {
+    const tot = arr.reduce((s, x) => s + x.revenue, 0);
+    const max = Math.max(...arr.map(x => x.revenue), 1);
+    return tot > 0 ? (max / tot) * 100 : 0;
+  };
+  const earlyConc = concOf(snapshots.slice(0, third));
+  const recentConc = concOf(snapshots.slice(-third));
+
+  return {
+    monthsOfHistory: snapshots.length,
+    margin: { streak: marginStreak, current: margins[margins.length - 1], direction: marginStreak.direction === "up" ? "improving" : marginStreak.direction === "down" ? "declining" : "flat" },
+    revenue: { streak: revenueStreak, current: revenues[revenues.length - 1], direction: revenueStreak.direction === "up" ? "growing" : revenueStreak.direction === "down" ? "shrinking" : "flat" },
+    cashFlow: { streak: burnStreak, direction: burnStreak.direction === "up" ? "deteriorating" : burnStreak.direction === "down" ? "improving" : "flat" },
+    concentration: { early: earlyConc, recent: recentConc, direction: recentConc - earlyConc >= 5 ? "worsening" : earlyConc - recentConc >= 5 ? "improving" : "flat" },
+  };
+}
+
+// Requires 13+ months (one full year plus one) because claiming a seasonal
+// pattern from a single occurrence of a calendar month isn't a pattern —
+// it's a coincidence. Flags a month only when it has 2+ occurrences and
+// averages at least 15% away from the overall mean.
+export function detectSeasonality(snapshots) {
+  if (!snapshots || snapshots.length < 13) return null;
+
+  const byMonth = {};
+  snapshots.forEach(s => {
+    const cm = new Date(s.period_month).getUTCMonth();
+    (byMonth[cm] = byMonth[cm] || []).push(s.revenue);
+  });
+
+  // The baseline is built only from calendar months with 2+ occurrences —
+  // a month that only appeared once can't be told apart from a genuine
+  // one-off, and letting it into the average would let a single outlier
+  // month drag every *other*, perfectly ordinary month's comparison off
+  // by however far that one-off happened to swing.
+  const stableAverages = Object.values(byMonth)
+    .filter(revs => revs.length >= 2)
+    .map(revs => revs.reduce((a, b) => a + b, 0) / revs.length);
+  if (stableAverages.length === 0) return [];
+  const overallAvg = stableAverages.reduce((a, b) => a + b, 0) / stableAverages.length;
+
+  const MONTH_NAMES = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+
+  return Object.entries(byMonth)
+    .filter(([, revs]) => revs.length >= 2)
+    .map(([cm, revs]) => {
+      const avg = revs.reduce((a, b) => a + b, 0) / revs.length;
+      const deltaPct = overallAvg > 0 ? ((avg - overallAvg) / overallAvg) * 100 : 0;
+      return { month: MONTH_NAMES[Number(cm)], avgDeltaPct: deltaPct, occurrences: revs.length };
+    })
+    .filter(m => Math.abs(m.avgDeltaPct) >= 15);
+}
+
+// Confidence scales with months of real history, not with how the current
+// month happens to look — a single month should never carry the same
+// weight as a year of verified trend data.
+export function computeHistoricalConfidence(monthsOfHistory) {
+  const n = monthsOfHistory || 0;
+  if (n <= 1)  return { score: 40, label: "low",       reason: "based on a single month — no trend context available" };
+  if (n <= 5)  return { score: 60, label: "medium",     reason: `based on ${n} months of history — an early trend signal` };
+  if (n <= 11) return { score: 80, label: "high",       reason: `based on ${n} months of history — a real trend, not yet a full year` };
+  return          { score: 92, label: "very high",  reason: `based on ${n} months of history — enough to account for seasonality` };
+}
+
+// Turns the computed trajectory into the kind of sentence a CFO would
+// actually say — context, not just a number. Every clause here traces to a
+// computed streak above; nothing is invented.
+export function buildFounderNarrative(trajectory, currentMargin) {
+  if (!trajectory) {
+    return `Margin is ${pc(currentMargin)} this period. Connect more months of history for trend context — one data point isn't a trend.`;
+  }
+  const parts = [];
+
+  if (trajectory.margin.streak.length >= 2) {
+    const months = trajectory.margin.streak.length + 1;
+    const verb = trajectory.margin.direction === "improving" ? "improved" : trajectory.margin.direction === "declining" ? "declined" : "held steady";
+    parts.push(`Margin has ${verb} for ${months} consecutive months, now at ${pc(trajectory.margin.current)}.`);
+  } else {
+    parts.push(`Margin is ${pc(trajectory.margin.current)} this period.`);
+  }
+
+  if (trajectory.revenue.streak.length >= 2) {
+    const months = trajectory.revenue.streak.length + 1;
+    parts.push(`Revenue has been ${trajectory.revenue.direction} for ${months} consecutive months.`);
+  }
+
+  if (trajectory.cashFlow.direction === "deteriorating" && trajectory.cashFlow.streak.length >= 2) {
+    parts.push(`Net burn has worsened for ${trajectory.cashFlow.streak.length + 1} straight months — this is a trend, not a one-off.`);
+  }
+
+  if (trajectory.concentration.direction === "worsening") {
+    parts.push(`Revenue concentration has increased since earlier in your history.`);
+  }
+
+  return parts.join(" ");
 }
