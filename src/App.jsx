@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { createClient } from "@supabase/supabase-js";
-import { fmt, pc, safe, parseAnyCSV, computeMetrics, runScenario, parseTransactions, computeDedupeHash, aggregateTransactionsByMonth, capSeverityForVolume } from "./lib/financials.js";
+import { fmt, pc, safe, parseAnyCSV, computeMetrics, runScenario, parseTransactions, computeDedupeHash, aggregateTransactionsByMonth, capSeverityForVolume, computeRevenueConcentration } from "./lib/financials.js";
 
 const supabase = createClient(
   import.meta.env.VITE_SUPABASE_URL,
@@ -438,8 +438,8 @@ function BChart({ data }) {
 }
 
 // ─── DECISION DIRECTIVE ───────────────────────────────────────
-function Directive({ metrics }) {
-  const { margin, burnMonths, free, concentration, concentrationReliable, vel, conv, hireReady, ltvcac, n } = metrics;
+function Directive({ metrics, concentration }) {
+  const { margin, burnMonths, free, vel, conv, hireReady, ltvcac, n } = metrics;
 
   const getDirective = () => {
     if (safe(free) < 0) return {
@@ -452,11 +452,24 @@ function Directive({ metrics }) {
       reason: `At current burn rate you have ${safe(burnMonths).toFixed(1)} months before the business runs dry. Suspend all non-revenue-generating spend immediately.`,
       severity: "critical",
     };
-    if (concentrationReliable && safe(concentration) > 60) return {
-      text: "Diversify your revenue before growing it.",
-      reason: `${pc(concentration)} of revenue is concentrated in a single month. One client exit or contract loss exposes the entire business. This is not visible until it is catastrophic.`,
-      severity: "warn",
-    };
+    // Only issue this from real, confidently-extracted payer names — never
+    // from a low-confidence parse. `concentration.shown` already means
+    // "confidence moderate or high," by construction of computeRevenueConcentration.
+    if (concentration?.shown && concentration.severity) {
+      const isCritical = concentration.severity === "critical";
+      const tooFewPayers = concentration.distinctPayers < 3;
+      return {
+        text: isCritical
+          ? "Diversify your revenue before growing it."
+          : tooFewPayers
+            ? "Land a third paying client before scaling spend."
+            : "Reduce reliance on your largest client before it becomes a crisis.",
+        reason: tooFewPayers
+          ? `You have ${concentration.distinctPayers} distinct paying client${concentration.distinctPayers === 1 ? "" : "s"} this period. Losing any one of them is a material hit to revenue, regardless of how the dollars split.`
+          : `${concentration.largestPct.toFixed(0)}% of revenue comes from your single largest client. One client exit or contract loss exposes the business at this concentration — this is not visible until it is catastrophic.`,
+        severity: isCritical ? "critical" : "warn",
+      };
+    }
     if (safe(ltvcac) > 0 && safe(ltvcac) < 3) return {
       text: "Fix unit economics before increasing acquisition spend.",
       reason: `LTV:CAC at ${safe(ltvcac).toFixed(1)}x means every new customer acquired costs more than it sustainably returns. Spending more on acquisition accelerates the loss.`,
@@ -730,6 +743,7 @@ function Dashboard({ user, profile, onLogout, onUpgrade }) {
   // client-side and stored back; `history` is raw monthly aggregates only.
   const [history, setHistory] = useState([]);
   const [lastTxnDate, setLastTxnDate] = useState(null);
+  const [concentrationData, setConcentrationData] = useState(null);
   const [batches, setBatches] = useState([]);
   const [periodFilter, setPeriodFilter] = useState("12");
   const [historyLoading, setHistoryLoading] = useState(true);
@@ -768,18 +782,23 @@ function Dashboard({ user, profile, onLogout, onUpgrade }) {
   const loadHistory = useCallback(async () => {
     setHistoryLoading(true);
     try {
-      let query = supabase.from("transactions").select("txn_date, amount, category").order("txn_date", { ascending: true });
+      // `description` is fetched alongside the aggregates so real revenue
+      // concentration can be computed from payer names — that only exists
+      // at the transaction level, never in a monthly bucket.
+      let query = supabase.from("transactions").select("txn_date, amount, category, description").order("txn_date", { ascending: true });
       const cutoff = periodCutoff();
       if (cutoff) query = query.gte("txn_date", cutoff);
       const { data: txns, error } = await query;
       if (error) throw error;
       setHistory(aggregateTransactionsByMonth(txns || []));
+      setConcentrationData(computeRevenueConcentration(txns || []));
       // Ascending order, so the last row is the most recent real transaction —
       // this is what the confidence model's recency check degrades against.
       setLastTxnDate(txns && txns.length > 0 ? txns[txns.length - 1].txn_date : null);
     } catch (e) {
       console.error("Failed to load transaction history:", e);
       setHistory([]);
+      setConcentrationData(computeRevenueConcentration([]));
       setLastTxnDate(null);
     }
     setHistoryLoading(false);
@@ -852,13 +871,13 @@ function Dashboard({ user, profile, onLogout, onUpgrade }) {
     tr, sr, latest, prev, totRev, totExp, totCogs, totMkt, totL, totC,
     activeCash, activeCac, activeLtv, n, totPro, margin, vel, conv, ltvcac,
     cogsRatio, mktRatio, sov, sovLbl, taxV, safV, free, avgExp, burnMonths,
-    hireReady, maxRev, concentration, concentrationReliable, breakEven, proj90, hasData,
+    hireReady, concentration, concentrationReliable, breakEven, proj90, hasData,
     hasConversionData, cashFlowPositive, dataConfidence, growth, risk, trends,
     hasCashData, hasUnitEconomicsData, runwayConfidence, breakEvenConfidence,
     proj90Confidence, hireReadyConfidence, ltvcacConfidence, growthConfidence,
   } = computeMetrics(
     rows, { mRev, mExp, mCash, mCac, mLtv, mLeads, mClose }, mode,
-    { lastTxnDate: history.length > 0 ? lastTxnDate : null }
+    { lastTxnDate: history.length > 0 ? lastTxnDate : null, revenueConcentration: concentrationData }
   );
   const metrics = { margin, vel, conv, sov, free, burnMonths, hireReady, concentration, concentrationReliable, ltvcac, cashFlowPositive, n };
 
@@ -872,7 +891,7 @@ function Dashboard({ user, profile, onLogout, onUpgrade }) {
     if (!hasData) return { t:"info", msg:"Connect your financial data in the Data tab to activate your command center." };
     if (safe(free) < 0) return { t:"crit", msg:"True Free Cash is negative. Overhead exceeds liquidity after obligations. Cut costs before next cycle." };
     if (safe(burnMonths) > 0 && safe(burnMonths) < 3) return { t:"crit", msg:`Runway is ${safe(burnMonths).toFixed(1)} months. Below the 3-month danger threshold. Protect cash immediately.` };
-    if (concentrationReliable && safe(concentration) > 60) return { t:"warn", msg:`Revenue is concentrated in a single month at ${pc(concentration)} of your total. One weak month could collapse the average.` };
+    if (concentrationReliable && safe(concentration) > 60) return { t:"warn", msg:`${pc(concentration)} of revenue comes from your single largest client. Losing that client would collapse your revenue.` };
     if (safe(ltvcac) > 0 && safe(ltvcac) < 3) return { t:"warn", msg:`LTV:CAC at ${safe(ltvcac).toFixed(1)}x. Below the 3x minimum. Fix unit economics before scaling acquisition spend.` };
     if (safe(margin) > 40 && safe(conv) > 20) return { t:"ok", msg:"Margin and conversion both strong. You are in a deployment window. Increase lead volume now." };
     return { t:"info", msg:"Foundation stable. Maintain velocity and watch your runway." };
@@ -905,8 +924,19 @@ function Dashboard({ user, profile, onLogout, onUpgrade }) {
           cogsRatio:      cogsRatio.toFixed(1),
           marketingRatio: mktRatio.toFixed(1),
           hireReady:      hireReadyConfidence.shown ? hireReady : null,
-          concentration:  concentration.toFixed(1),
-          concentrationReliable,
+          // Real payer-based concentration — null when extraction confidence
+          // is low, so the model never narrates a percentage the parser
+          // itself isn't confident in.
+          revenueConcentration: concentrationData?.shown ? {
+            confidenceLevel: concentrationData.confidenceLevel,
+            largestPct:      concentrationData.largestPct.toFixed(1),
+            top3Pct:         concentrationData.top3Pct.toFixed(1),
+            hhi:             concentrationData.hhi.toFixed(2),
+            distinctPayers:  concentrationData.distinctPayers,
+            severity:        concentrationData.severity,
+            aggregatorPct:   concentrationData.aggregatorPct.toFixed(1),
+            topPayers:       concentrationData.payers.slice(0, 5).map(p => ({ name: p.name, pct: p.pct.toFixed(1) })),
+          } : { reason: concentrationData?.reason || "no persisted transaction history yet" },
           breakEven:      breakEvenConfidence.shown ? breakEven.toFixed(0) : null,
           proj90:         proj90Confidence.shown ? proj90.toFixed(0) : null,
           plan,
@@ -1203,7 +1233,7 @@ function Dashboard({ user, profile, onLogout, onUpgrade }) {
               <div className={`d-alert ${alert.t}`}>{alert.msg}</div>
             )}
 
-            {hasData && <Directive metrics={metrics}/>}
+            {hasData && <Directive metrics={metrics} concentration={concentrationData}/>}
 
             <div>
               <div className="card-sec">Core Vitals</div>
@@ -1326,6 +1356,45 @@ function Dashboard({ user, profile, onLogout, onUpgrade }) {
                     <ConfidenceLine c={ind.conf}/>
                   </div>
                 ))}
+              </div>
+            </div>
+
+            <div>
+              <div className="card-sec">Revenue Concentration</div>
+              <div className="card">
+                {!concentrationData?.shown ? (
+                  <div style={{ fontSize:13, color:C.ink, fontFamily:"'Cormorant Garamond',serif", lineHeight:1.6 }}>
+                    {concentrationData?.confidenceLevel === "low"
+                      ? `Not enough payer names could be reliably read from your transactions to show this safely. ${concentrationData.reason}`
+                      : "Upload transaction history to see how concentrated your revenue is in your largest clients."}
+                  </div>
+                ) : (
+                  <>
+                    <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
+                      {concentrationData.payers.slice(0, 5).map((p, i) => {
+                        const isLargest = i === 0;
+                        const barColor = isLargest ? (p.pct > 60 ? C.red : p.pct > 40 ? C.amber : C.green) : C.gold;
+                        return (
+                          <div key={p.name}>
+                            <div style={{ display:"flex", justifyContent:"space-between", fontSize:12, color:C.ink, marginBottom:4, fontFamily:"'Cormorant Garamond',serif" }}>
+                              <span style={{ textTransform:"capitalize" }}>{p.name}</span>
+                              <span style={{ color: barColor }}>{p.pct.toFixed(1)}%</span>
+                            </div>
+                            <div style={{ height:8, background:C.border, borderRadius:4, overflow:"hidden" }}>
+                              <div style={{ width:`${Math.min(100, p.pct)}%`, height:"100%", background:barColor }}/>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <ConfidenceLine c={{ shown:true, level:concentrationData.confidenceLevel, reason:concentrationData.reason }}/>
+                    {concentrationData.aggregatorPct > 0.5 && (
+                      <div style={{ fontSize:11, color:C.inkDim, marginTop:12, fontFamily:"'Cormorant Garamond',serif" }}>
+                        {concentrationData.aggregatorPct.toFixed(0)}% of revenue arrives through a payment processor (Shopify, Stripe, PayPal) and can't be attributed to a single client — excluded from the figures above.
+                      </div>
+                    )}
+                  </>
+                )}
               </div>
             </div>
 

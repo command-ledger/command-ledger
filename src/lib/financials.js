@@ -33,6 +33,157 @@ export const detectIncomeFromDescription = (description) => {
   return incomeSignals.some(k => d.includes(k));
 };
 
+// ─── COUNTERPARTY EXTRACTION ────────────────────────────────────
+// Pulls a payer name out of a raw bank description, e.g.
+// "Client Payment - Coastal Retail Group" -> "coastal retail group". Only
+// meaningful for income (positive-amount) transactions — an expense
+// description's "counterparty" (a vendor) isn't in scope here.
+const COUNTERPARTY_PREFIXES = /^(client payment|wholesale order|payment from|transfer from|direct sales|invoice|deposit|sales|receipt)\b/i;
+const COUNTERPARTY_LEADING_SEPARATORS = /^[\s\-–:/]+/;
+// "pty ltd" must be tried before "ltd" alone, or stripping "ltd" first
+// would leave a dangling "pty" behind — see the leftmost-match reasoning
+// in the function below for why listing it in the alternation is enough.
+const COUNTERPARTY_TRAILING_SUFFIXES = /\s+(pty ltd|ltd|inc|llc|cc)\.?$/i;
+
+export function extractCounterparty(description) {
+  if (!description) return null;
+  let s = String(description).trim();
+  s = s.replace(COUNTERPARTY_PREFIXES, "");
+  s = s.replace(COUNTERPARTY_LEADING_SEPARATORS, "");
+  s = s.toLowerCase().replace(/\s+/g, " ").trim();
+  s = s.replace(COUNTERPARTY_TRAILING_SUFFIXES, "").trim();
+  return s.length > 0 ? s : null;
+}
+
+// Payment processors aren't clients — "Shopify Payout" might represent
+// hundreds of underlying customers bundled into one deposit. Treating it
+// as a single concentrated counterparty would be a false alarm in one
+// direction; treating its dollars as belonging to no one would silently
+// understate total revenue. It's flagged and excluded from concentration
+// math instead, with the amount still visible as its own line.
+export function isAggregatorCounterparty(name) {
+  if (!name) return false;
+  const n = name.toLowerCase();
+  return /\b(shopify|stripe|paypal)\b/.test(n) && /\b(payout|transfer)\b/.test(n);
+}
+
+function levenshteinDistance(a, b) {
+  const m = a.length, n = b.length;
+  if (m === 0) return n;
+  if (n === 0) return m;
+  let prev = Array.from({ length: n + 1 }, (_, j) => j);
+  for (let i = 1; i <= m; i++) {
+    const curr = [i];
+    for (let j = 1; j <= n; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      curr[j] = Math.min(prev[j] + 1, curr[j - 1] + 1, prev[j - 1] + cost);
+    }
+    prev = curr;
+  }
+  return prev[n];
+}
+
+// 1 = identical, 0 = completely different, scaled by the longer string's
+// length so "grp" vs "group" (a short edit) scores differently than the
+// same edit distance would on a much longer name.
+export function nameSimilarity(a, b) {
+  const maxLen = Math.max(a.length, b.length);
+  if (maxLen === 0) return 1;
+  return 1 - levenshteinDistance(a, b) / maxLen;
+}
+
+const COUNTERPARTY_SIMILARITY_THRESHOLD = 0.85;
+
+// Greedily merges near-identical counterparty names (e.g. "Coastal Retail
+// Grp" and "Coastal Retail Group") into single entities. Processes names
+// highest-revenue-first so the biggest, most-likely-canonical spelling in
+// a cluster becomes its label, and merging is deterministic regardless of
+// input order.
+export function groupCounterparties(entries) {
+  const sorted = [...(entries || [])].sort((a, b) => b.revenue - a.revenue);
+  const clusters = [];
+  for (const entry of sorted) {
+    const match = clusters.find(c => nameSimilarity(entry.name, c.name) >= COUNTERPARTY_SIMILARITY_THRESHOLD);
+    if (match) {
+      match.revenue += entry.revenue;
+      match.members.push(entry.name);
+    } else {
+      clusters.push({ name: entry.name, revenue: entry.revenue, members: [entry.name] });
+    }
+  }
+  return clusters.sort((a, b) => b.revenue - a.revenue);
+}
+
+// ─── REVENUE CONCENTRATION ──────────────────────────────────────
+// Genuine client concentration — revenue by real paying counterparty, not
+// by calendar month. A single highest MONTH is mechanically ~100% of a
+// 1-month total regardless of any real risk; this instead answers "what
+// share of revenue depends on one client," which is the actual question
+// a founder needs answered before one client leaving becomes a crisis.
+export function computeRevenueConcentration(transactions) {
+  const income = (transactions || []).filter(t => Number(t.amount) > 0);
+  const totalRevenue = income.reduce((s, t) => s + Number(t.amount), 0);
+
+  if (income.length === 0 || totalRevenue <= 0) {
+    return {
+      shown: false, confidenceLevel: "low",
+      reason: "no income transactions in this period",
+      extractionRate: 0, totalRevenue: 0,
+      payers: [], aggregatorRevenue: 0, aggregatorPct: 0,
+      largestPct: null, top3Pct: null, hhi: null, distinctPayers: 0, severity: null,
+    };
+  }
+
+  let extractedCount = 0;
+  const raw = {};
+  income.forEach(t => {
+    const name = extractCounterparty(t.description);
+    if (name) {
+      extractedCount++;
+      raw[name] = (raw[name] || 0) + Number(t.amount);
+    }
+  });
+
+  const extractionRate = extractedCount / income.length;
+  // <60% is the spec's explicit line for "don't trust this" — above that,
+  // moderate vs. high mirrors the same volume-based banding used for
+  // every other metric's confidence in this engine (see computeConfidence).
+  const confidenceLevel = extractionRate < 0.6 ? "low" : extractionRate < 0.85 ? "moderate" : "high";
+  const reason = `Payer names could not be reliably extracted from ${Math.round((1 - extractionRate) * 100)}% of income transactions.`;
+  const shown = confidenceLevel !== "low";
+
+  const entries = Object.entries(raw).map(([name, revenue]) => ({ name, revenue }));
+  const aggregatorEntries = entries.filter(e => isAggregatorCounterparty(e.name));
+  const clientEntries = entries.filter(e => !isAggregatorCounterparty(e.name));
+  const aggregatorRevenue = aggregatorEntries.reduce((s, e) => s + e.revenue, 0);
+
+  const grouped = shown ? groupCounterparties(clientEntries) : [];
+  const payers = grouped.map(c => ({ name: c.name, revenue: c.revenue, pct: (c.revenue / totalRevenue) * 100 }));
+
+  const largestPct = shown ? (payers[0]?.pct || 0) : null;
+  const top3Pct = shown ? payers.slice(0, 3).reduce((s, p) => s + p.pct, 0) : null;
+  // Herfindahl index: sum of squared revenue shares (as fractions, so the
+  // scale is 0-1). Aggregator dollars deliberately don't appear as a share
+  // here — they're unattributable to one real client by definition — so
+  // client shares can sum to less than 1 when a lot of revenue is opaque.
+  const hhi = shown ? payers.reduce((s, p) => s + Math.pow(p.pct / 100, 2), 0) : null;
+  const distinctPayers = grouped.length;
+
+  let severity = null;
+  if (shown) {
+    if (distinctPayers < 3) severity = "warn";
+    if (largestPct > 40) severity = "warn";
+    if (largestPct > 60) severity = "critical";
+  }
+
+  return {
+    shown, confidenceLevel, reason,
+    extractionRate, totalRevenue,
+    payers, aggregatorRevenue, aggregatorPct: (aggregatorRevenue / totalRevenue) * 100,
+    largestPct, top3Pct, hhi, distinctPayers, severity,
+  };
+}
+
 // ─── SMART PARSER — reads any real bank or accounting export ──
 // Handles:
 //   - Bank CSVs: Date, Description, Amount (positive=in, negative=out)
@@ -381,6 +532,7 @@ export const parseTransactions = (text) => {
       description: desc,
       amount: Math.round(amount * 100) / 100,
       category: amount < 0 ? detectExpenseCategory(desc) : null,
+      counterparty: amount > 0 ? extractCounterparty(desc) : null,
     });
   });
 
@@ -640,8 +792,12 @@ export function capSeverityForVolume(severity, months) {
 // `mode` is "safe" or "growth" and controls the tax/safety reserve split.
 // `context.lastTxnDate` (optional) is the most recent transaction date in
 // the founder's persisted history, used only for the recency check above.
+// `context.revenueConcentration` (optional) is the result of
+// computeRevenueConcentration() run on raw transactions — it's computed
+// outside this function because it needs transaction descriptions, which
+// monthly-aggregated `rows` never carry.
 export function computeMetrics(rows, manual, mode, context = {}) {
-  const { lastTxnDate = null } = context;
+  const { lastTxnDate = null, revenueConcentration = null } = context;
   const { mRev, mExp, mCash, mCac, mLtv, mLeads, mClose } = manual;
 
   const tr = mode === "safe" ? 0.30 : 0.25;
@@ -691,14 +847,15 @@ export function computeMetrics(rows, manual, mode, context = {}) {
   const cashFlowPositive = hasData && netBurn <= 0;
   const burnMonths = netBurn > 0 ? (activeCash + safV) / netBurn : 0;
   const hireReady  = free > 25000 * 6;
-  const maxRev     = rows ? Math.max(...rows.map(d => d.revenue), 1) : latest.revenue;
-  const concentration = totRev > 0 ? (maxRev / totRev) * 100 : 0;
-  // With only 1-2 months of history, the highest month is mechanically a
-  // large share of the total (100% with a single month) regardless of any
-  // real business risk — that's arithmetic, not a signal. Don't treat the
-  // "high concentration" reading as reliable until there's enough months
-  // to actually show a distribution.
-  const concentrationReliable = n >= 3;
+  // Real revenue concentration (by paying counterparty, not by calendar
+  // month — a single highest MONTH is mechanically ~100% of a 1-month
+  // total regardless of any real client-concentration risk, which is why
+  // that version of this metric was retired) is computed separately from
+  // raw transaction descriptions by computeRevenueConcentration() and
+  // passed in via context. Absent or low-confidence extraction never
+  // penalizes Risk Score, same as every other missing-data case here.
+  const concentration = revenueConcentration?.shown ? revenueConcentration.largestPct : 0;
+  const concentrationReliable = !!revenueConcentration?.shown;
   // Without a fixed/variable cost split, average monthly expenses is the
   // honest break-even bar: revenue needs to at least cover total costs.
   // The previous avgExp/(margin/100) formula is not a valid break-even
@@ -745,7 +902,7 @@ export function computeMetrics(rows, manual, mode, context = {}) {
     hasConversionData, avgRev, netBurn, cashFlowPositive, dataConfidence,
     activeCash, activeCac, activeLtv, n, totPro, margin, vel, conv, ltvcac,
     cogsRatio, mktRatio, sov, sovLbl, taxV, safV, free, avgExp, burnMonths,
-    hireReady, maxRev, concentration, concentrationReliable,
+    hireReady, concentration, concentrationReliable, revenueConcentration,
     breakEven, proj90, proj90GrowthRate, hasData,
     growth, risk, trends,
     hasCashData, hasUnitEconomicsData,

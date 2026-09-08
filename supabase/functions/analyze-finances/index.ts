@@ -100,7 +100,12 @@ serve(async (req: Request) => {
       monthlyRevenue, totalRevenue, totalExpenses, netProfit,
       profitMargin, velocity, conversionRate, sovereigntyScore,
       trueFreeCash, burnRunway, cashFlowPositive, ltvCacRatio, cogsRatio, marketingRatio,
-      hireReady, concentration, concentrationReliable, breakEven, proj90,
+      hireReady, breakEven, proj90,
+      // Real payer-based concentration (replaces the retired single-month
+      // maxRev/totRev metric). Only carries largestPct/top3Pct/hhi/etc. when
+      // extraction confidence was moderate or high — otherwise it's just
+      // { reason }, and no percentage must ever be narrated.
+      revenueConcentration,
       plan, mode, dataMonths, dataConfidence,
       growthScore, growthLabel, riskScore, riskLabel, trends,
       // Per-metric confidence — { shown, level, reason } for each of
@@ -130,6 +135,22 @@ serve(async (req: Request) => {
       return `${value} [${conf.level.toUpperCase()} CONFIDENCE — ${conf.reason}]`
     }
     const conf = confidence || {}
+
+    // Real payer-based concentration is a richer shape than the other
+    // confidence-gated metrics (several numbers plus named payers, not one
+    // value), so it gets its own narration rather than reusing describeMetric.
+    const rc = revenueConcentration || {}
+    const concentrationSection = (rc.largestPct !== undefined && rc.largestPct !== null)
+      ? [
+          `- Largest Client: ${rc.largestPct}% of revenue${rc.confidenceLevel === "high" ? "" : ` [${String(rc.confidenceLevel).toUpperCase()} CONFIDENCE]`}`,
+          `- Top 3 Clients Combined: ${rc.top3Pct}% of revenue`,
+          `- Herfindahl Index: ${rc.hhi} (0 = perfectly diversified, 1 = a single client)`,
+          `- Distinct Paying Clients: ${rc.distinctPayers}`,
+          `- Concentration Severity: ${rc.severity === "critical" ? "Critical — largest client above 60%" : rc.severity === "warn" ? "Warn" : "None — split is healthy"}`,
+          Number(rc.aggregatorPct) > 0.5 ? `- Note: ${rc.aggregatorPct}% of revenue arrives through a payment processor (Shopify/Stripe/PayPal) and is excluded above — it can't be attributed to one real client.` : null,
+          rc.topPayers?.length ? `- Top payers by revenue share: ${rc.topPayers.map((p) => `${p.name} (${p.pct}%)`).join(", ")}` : null,
+        ].filter(Boolean).join("\n")
+      : `Not available — ${rc.reason || "payer names could not be reliably extracted from enough income transactions"}`
 
     // Build expense breakdown section if we have category data
     const expenseBreakdown = [
@@ -166,7 +187,9 @@ Rules:
 - If the numbers are bad, say they are bad. If they're good, say exactly what to do with that advantage right now.
 - Any metric marked "Not available" below has no real value behind it — never state a number for it, never guess one, and never treat its absence as zero. Say plainly that you don't have enough data to assess it yet; "I cannot assess this yet" is the correct and expected thing to say about that specific metric, not a failure to answer.
 - Any metric marked LOW CONFIDENCE or MODERATE CONFIDENCE below must be hedged explicitly wherever you reference it — say "early signal," "based on limited history," or "this could move once more data comes in" rather than stating it as settled fact. A HIGH CONFIDENCE metric (or one with no confidence marking at all) is stated as fact, same as always.
-- REPORTING PERIOD of 1 month cannot support "riskLevel": "Critical" — a single bad month may be a fluke, not a fire. Cap at "Watch" in that case and say the call needs more history to confirm.`
+- REPORTING PERIOD of 1 month cannot support "riskLevel": "Critical" — a single bad month may be a fluke, not a fire. Cap at "Watch" in that case and say the call needs more history to confirm.
+- If REVENUE CONCENTRATION below is "Not available," never state or imply a concentration percentage — say plainly that payer names couldn't be reliably read from the transaction data yet.
+- If REVENUE CONCENTRATION is marked MODERATE CONFIDENCE, hedge that specific figure the same way as any other moderate-confidence metric.`
 
     const userPrompt = `Here is the complete financial position of this business. Analyze it and tell the founder exactly what is happening and what to do:
 
@@ -198,7 +221,9 @@ UNIT ECONOMICS:
 
 OPERATIONAL FLAGS:
 - Hire Readiness: ${describeMetric(hireReady, conf.hireReady, (v) => v ? "Yes — free cash supports new headcount" : "No — insufficient free cash")}
-- Revenue Distribution: ${concentrationReliable ? `${pct(concentration)} of total revenue came from the single highest month — treat this as a real concentration signal only if it stays high as more months come in` : `${pct(concentration)} of total revenue came from the single highest month, but there's under 3 months of history — this is too little data to call it a concentration risk yet, don't treat it as one`}
+
+REVENUE CONCENTRATION (by real paying client, extracted from transaction descriptions):
+${concentrationSection}
 
 COMPUTED SCORES (already calculated — narrate these, do not recompute or contradict them):
 - Growth Score: ${describeMetric(growthScore, conf.growth, (v) => `${v}/100 (${growthLabel ?? "n/a"})`)}

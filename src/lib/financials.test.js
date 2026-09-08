@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { fmt, pc, safe, detectExpenseCategory, parseAnyCSV, computeMetrics, trailingGrowthRate, computeGrowthScore, computeRiskScore, detectTrends, applyScenario, runScenario, computeHistoricalTrajectory, detectSeasonality, computeHistoricalConfidence, buildFounderNarrative, parseTransactions, normalizeDescription, dedupeHashInput, computeDedupeHash, aggregateTransactionsByMonth, computeConfidence, capSeverityForVolume } from "./financials.js";
+import { fmt, pc, safe, detectExpenseCategory, parseAnyCSV, computeMetrics, trailingGrowthRate, computeGrowthScore, computeRiskScore, detectTrends, applyScenario, runScenario, computeHistoricalTrajectory, detectSeasonality, computeHistoricalConfidence, buildFounderNarrative, parseTransactions, normalizeDescription, dedupeHashInput, computeDedupeHash, aggregateTransactionsByMonth, computeConfidence, capSeverityForVolume, extractCounterparty, isAggregatorCounterparty, nameSimilarity, groupCounterparties, computeRevenueConcentration } from "./financials.js";
 
 describe("fmt / pc / safe", () => {
   it("formats currency and percentages", () => {
@@ -131,16 +131,29 @@ describe("computeMetrics — uploaded CSV rows", () => {
     expect(m.n).toBe(2);
   });
 
-  it("flags revenue concentration from the single highest-revenue month, but marks it unreliable under 3 months of history", () => {
+  it("defaults concentration to unreliable/zero when no revenueConcentration context is supplied", () => {
+    // computeMetrics can't derive real client concentration from monthly
+    // rows alone — it needs raw transaction descriptions, passed in via
+    // context.revenueConcentration. Without it, this never fabricates a
+    // reading or penalizes Risk Score for data it was never given.
     const m = computeMetrics(rows, manual, "safe");
-    expect(m.concentration).toBeCloseTo((12000 / 22000) * 100, 5);
-    expect(m.concentrationReliable).toBe(false); // only 2 months uploaded — a high reading here is a data-volume artifact, not a signal
+    expect(m.concentration).toBe(0);
+    expect(m.concentrationReliable).toBe(false);
   });
 
-  it("considers concentration reliable once there are 3+ months of history", () => {
-    const threeRows = [...rows, { revenue: 9000, expenses: 6000, cash: 9000, cogs: 0, marketing: 0, leads: 0, closures: 0, cac: 0, ltv: 0 }];
-    const m = computeMetrics(threeRows, manual, "safe");
+  it("feeds a supplied revenueConcentration result through to concentration/concentrationReliable", () => {
+    const revenueConcentration = { shown: true, largestPct: 72 };
+    const m = computeMetrics(rows, manual, "safe", { revenueConcentration });
+    expect(m.concentration).toBe(72);
     expect(m.concentrationReliable).toBe(true);
+    expect(m.revenueConcentration).toBe(revenueConcentration);
+  });
+
+  it("ignores a low-confidence revenueConcentration result rather than treating it as reliable", () => {
+    const revenueConcentration = { shown: false, largestPct: null };
+    const m = computeMetrics(rows, manual, "safe", { revenueConcentration });
+    expect(m.concentration).toBe(0);
+    expect(m.concentrationReliable).toBe(false);
   });
 
   it("has medium data confidence for a short uploaded history, and high confidence at 3+ months", () => {
@@ -493,6 +506,13 @@ describe("parseTransactions", () => {
     expect(result.transactions[1]).toMatchObject({ txn_date: "2026-01-10", amount: -200, category: "software" });
   });
 
+  it("extracts a counterparty for a positive-amount row, and never for an expense row", () => {
+    const csv = "Date,Description,Amount\n2026-01-05,Client Payment - Coastal Retail Group,5000\n2026-01-10,AWS hosting fee,-200\n";
+    const result = parseTransactions(csv);
+    expect(result.transactions[0].counterparty).toBe("coastal retail group");
+    expect(result.transactions[1].counterparty).toBeNull(); // expense row — not in scope
+  });
+
   it("nets named Revenue/Expenses columns into one signed amount per row", () => {
     const csv = "Date,Revenue,Expenses\n2026-01-01,10000,6000\n";
     const result = parseTransactions(csv);
@@ -690,5 +710,186 @@ describe("computeMetrics — per-metric confidence", () => {
     stale.setDate(stale.getDate() - 90);
     const m = computeMetrics(rows, manual, "safe", { lastTxnDate: stale.toISOString() });
     expect(m.breakEvenConfidence.level).toBe("moderate"); // degraded from high
+  });
+});
+
+describe("extractCounterparty", () => {
+  it("strips known transactional prefixes and leading separators", () => {
+    expect(extractCounterparty("Client Payment - Coastal Retail Group")).toBe("coastal retail group");
+    expect(extractCounterparty("Wholesale Order - Northgate Distributors")).toBe("northgate distributors");
+    expect(extractCounterparty("Direct Sales - Shopify Payout")).toBe("shopify payout");
+    expect(extractCounterparty("Invoice: Acme Corp")).toBe("acme corp");
+    expect(extractCounterparty("Payment from Jane Doe")).toBe("jane doe");
+    expect(extractCounterparty("Deposit / Northwind Traders")).toBe("northwind traders");
+  });
+
+  it("normalizes case and collapses whitespace", () => {
+    expect(extractCounterparty("CLIENT PAYMENT -   Acme   Corp")).toBe("acme corp");
+  });
+
+  it("strips trailing entity suffixes, including multi-word ones before shorter ones", () => {
+    expect(extractCounterparty("Client Payment - Acme Pty Ltd")).toBe("acme");
+    expect(extractCounterparty("Client Payment - Acme Ltd")).toBe("acme");
+    expect(extractCounterparty("Client Payment - Acme Inc")).toBe("acme");
+    expect(extractCounterparty("Client Payment - Acme LLC")).toBe("acme");
+    expect(extractCounterparty("Client Payment - Acme CC")).toBe("acme");
+  });
+
+  it("returns null for empty or unparseable input, never an empty string", () => {
+    expect(extractCounterparty("")).toBeNull();
+    expect(extractCounterparty(null)).toBeNull();
+    expect(extractCounterparty("Client Payment -")).toBeNull();
+  });
+});
+
+describe("isAggregatorCounterparty", () => {
+  it("flags known payment processors", () => {
+    expect(isAggregatorCounterparty("shopify payout")).toBe(true);
+    expect(isAggregatorCounterparty("stripe transfer")).toBe(true);
+    expect(isAggregatorCounterparty("paypal transfer")).toBe(true);
+  });
+
+  it("does not flag a real client whose name happens to share no processor keywords", () => {
+    expect(isAggregatorCounterparty("coastal retail group")).toBe(false);
+    expect(isAggregatorCounterparty("northgate distributors")).toBe(false);
+  });
+});
+
+describe("nameSimilarity / groupCounterparties", () => {
+  it("scores near-identical names above the 0.85 threshold and distinct names below it", () => {
+    expect(nameSimilarity("coastal retail grp", "coastal retail group")).toBeGreaterThanOrEqual(0.85);
+    expect(nameSimilarity("coastal retail group", "northgate distributors")).toBeLessThan(0.85);
+  });
+
+  it("merges near-identical spellings into one entity, keeping the highest-revenue spelling as the label", () => {
+    const grouped = groupCounterparties([
+      { name: "coastal retail grp", revenue: 2000 },
+      { name: "coastal retail group", revenue: 8000 },
+      { name: "northgate distributors", revenue: 5000 },
+    ]);
+    expect(grouped).toHaveLength(2);
+    expect(grouped[0]).toMatchObject({ name: "coastal retail group", revenue: 10000 }); // merged: 8000 + 2000
+    expect(grouped[0].members).toContain("coastal retail grp");
+    expect(grouped[1]).toMatchObject({ name: "northgate distributors", revenue: 5000 });
+  });
+
+  it("keeps genuinely distinct names separate", () => {
+    const grouped = groupCounterparties([
+      { name: "acme corp", revenue: 1000 },
+      { name: "beta industries", revenue: 1000 },
+    ]);
+    expect(grouped).toHaveLength(2);
+  });
+});
+
+describe("computeRevenueConcentration", () => {
+  it("returns a not-shown result with no income transactions", () => {
+    const r = computeRevenueConcentration([]);
+    expect(r.shown).toBe(false);
+    expect(r.largestPct).toBeNull();
+    expect(r.severity).toBeNull();
+  });
+
+  it("computes largest/top3/HHI/distinct-payer figures once extraction confidence is adequate", () => {
+    const txns = [
+      { amount: 6000, description: "Client Payment - Coastal Retail Group" },
+      { amount: 2000, description: "Client Payment - Northgate Distributors" },
+      { amount: 1000, description: "Client Payment - Third Client Ltd" },
+      { amount: 1000, description: "Client Payment - Fourth Client Ltd" },
+      { amount: -500, description: "Office rent" }, // expense — excluded from income
+    ];
+    const r = computeRevenueConcentration(txns);
+    expect(r.shown).toBe(true);
+    expect(r.confidenceLevel).toBe("high"); // 4/4 income transactions extracted
+    expect(r.distinctPayers).toBe(4);
+    expect(r.largestPct).toBeCloseTo(60, 5); // 6000/10000
+    expect(r.top3Pct).toBeCloseTo(90, 5);    // (6000+2000+1000)/10000
+    expect(r.hhi).toBeCloseTo(0.36 + 0.04 + 0.01 + 0.01, 5);
+  });
+
+  it("merges fuzzy-matched payer names before computing concentration", () => {
+    const txns = [
+      { amount: 5000, description: "Client Payment - Coastal Retail Group" },
+      { amount: 3000, description: "Client Payment - Coastal Retail Grp" },
+      { amount: 2000, description: "Client Payment - Northgate Distributors" },
+    ];
+    const r = computeRevenueConcentration(txns);
+    expect(r.distinctPayers).toBe(2); // the two Coastal spellings merged into one
+    expect(r.largestPct).toBeCloseTo(80, 5); // (5000+3000)/10000
+  });
+
+  it("marks low confidence and suppresses percentages when under 60% of income transactions yield a payer name", () => {
+    const txns = [
+      { amount: 1000, description: "Client Payment - Acme Corp" }, // extracts fine
+      { amount: 1000, description: "Deposit" },  // prefix-only — strips to nothing
+      { amount: 1000, description: "Receipt" },  // prefix-only — strips to nothing
+      { amount: 1000, description: "Invoice" },  // prefix-only — strips to nothing
+      { amount: 1000, description: "Sales" },    // prefix-only — strips to nothing
+    ];
+    const r = computeRevenueConcentration(txns);
+    expect(r.extractionRate).toBeCloseTo(0.2, 5); // only 1 of 5
+    expect(r.confidenceLevel).toBe("low");
+    expect(r.shown).toBe(false);
+    expect(r.largestPct).toBeNull();
+    expect(r.severity).toBeNull();
+    expect(r.reason).toContain("could not be reliably extracted from 80%");
+  });
+
+  it("excludes payment processors from concentration risk while still reporting their revenue", () => {
+    const txns = [
+      { amount: 7000, description: "Direct Sales - Shopify Payout" },
+      { amount: 1500, description: "Client Payment - Acme Corp" },
+      { amount: 1500, description: "Client Payment - Beta Industries" },
+    ];
+    const r = computeRevenueConcentration(txns);
+    expect(r.payers.map(p => p.name)).not.toContain("shopify payout");
+    expect(r.aggregatorRevenue).toBe(7000);
+    expect(r.aggregatorPct).toBeCloseTo(70, 5);
+    // Concentration is judged against total revenue, not just the
+    // identified-client slice, so a big processor share doesn't inflate
+    // the apparent client concentration among the two real clients.
+    expect(r.largestPct).toBeCloseTo(15, 5); // 1500/10000
+  });
+
+  it("flags fewer than 3 distinct payers as warn even when the split looks even", () => {
+    const txns = [
+      { amount: 5000, description: "Client Payment - Acme Corp" },
+      { amount: 5000, description: "Client Payment - Beta Industries" },
+    ];
+    const r = computeRevenueConcentration(txns);
+    expect(r.distinctPayers).toBe(2);
+    expect(r.severity).toBe("warn");
+  });
+
+  it("flags warn above 40% and critical above 60% for the largest client", () => {
+    const warnCase = computeRevenueConcentration([
+      { amount: 4500, description: "Client Payment - Acme Corp" },
+      { amount: 2000, description: "Client Payment - Beta Industries" },
+      { amount: 2000, description: "Client Payment - Gamma LLC" },
+      { amount: 1500, description: "Client Payment - Delta Inc" },
+    ]);
+    expect(warnCase.largestPct).toBeCloseTo(45, 5);
+    expect(warnCase.severity).toBe("warn");
+
+    const criticalCase = computeRevenueConcentration([
+      { amount: 6500, description: "Client Payment - Acme Corp" },
+      { amount: 1500, description: "Client Payment - Beta Industries" },
+      { amount: 1000, description: "Client Payment - Gamma LLC" },
+      { amount: 1000, description: "Client Payment - Delta Inc" },
+    ]);
+    expect(criticalCase.largestPct).toBeCloseTo(65, 5);
+    expect(criticalCase.severity).toBe("critical");
+  });
+
+  it("issues no severity at all when the split is healthy", () => {
+    const r = computeRevenueConcentration([
+      { amount: 2500, description: "Client Payment - Acme Corp" },
+      { amount: 2500, description: "Client Payment - Beta Industries" },
+      { amount: 2500, description: "Client Payment - Gamma LLC" },
+      { amount: 2500, description: "Client Payment - Delta Inc" },
+    ]);
+    expect(r.largestPct).toBeCloseTo(25, 5);
+    expect(r.distinctPayers).toBe(4);
+    expect(r.severity).toBeNull();
   });
 });
