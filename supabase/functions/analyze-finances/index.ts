@@ -119,6 +119,10 @@ serve(async (req: Request) => {
       // current cash, not a flat average), missed obligations, and the
       // committed-cost list — null when nothing has been detected yet.
       forwardCalendar,
+      // Decision history: the last 3 directives issued, what the founder
+      // did about each, and what happened to the targeted metric
+      // afterward — the record that makes this an advisor, not a tool.
+      directiveHistory,
       // Expense breakdown if available
       payroll, rent, marketing, software, cogs,
     } = body
@@ -177,6 +181,22 @@ serve(async (req: Request) => {
         ].filter(Boolean).join("\n")
       : "Not available — no recurring obligations have been detected yet (needs at least 3 similar payments on a consistent schedule)."
 
+    // Decision history — this is what makes the product an advisor that
+    // follows up rather than a tool that talks and forgets.
+    const ACTION_LABELS = {
+      acted: "Founder said: Acted on it", partially: "Founder said: Partially acted",
+      ignored: "Founder said: Ignored it", disagreed: "Founder disagreed with it",
+      awaiting_response: "Founder has not yet responded",
+    }
+    const directiveHistorySection = directiveHistory?.length
+      ? directiveHistory.map((d, i) => {
+          const date = d.issuedAt ? new Date(d.issuedAt).toISOString().slice(0, 10) : "unknown date"
+          const action = ACTION_LABELS[d.actionTaken] || d.actionTaken
+          const noteLine = d.founderNote ? ` Founder's note: "${d.founderNote}"` : ""
+          return `${i + 1}. [${date}, ${String(d.severity || "").toUpperCase()}] "${d.text}" — ${action}.${noteLine} Outcome: ${d.outcome?.message || "not yet measured"}`
+        }).join("\n")
+      : "No prior directives on record yet — this is the first one issued."
+
     // Build expense breakdown section if we have category data
     const expenseBreakdown = [
       payroll  ? `- Payroll: ${fmt(payroll)}`   : null,
@@ -216,7 +236,9 @@ Rules:
 - If REVENUE CONCENTRATION below is "Not available," never state or imply a concentration percentage — say plainly that payer names couldn't be reliably read from the transaction data yet.
 - If REVENUE CONCENTRATION is marked MODERATE CONFIDENCE, hedge that specific figure the same way as any other moderate-confidence metric.
 - If FORWARD CASH CALENDAR shows an Obligation-Aware Runway that crosses zero, that is the real runway — lead with it over the smoothed Burn Runway figure above whenever the two disagree, and say plainly that a dated obligation (name it) is what actually breaks the cash position, not average burn.
-- If a Missed Obligation is listed, treat it as an active, first-priority signal — a bill that stopped appearing on schedule is often the earliest sign of a cash problem, worth flagging even ahead of other observations.`
+- If a Missed Obligation is listed, treat it as an active, first-priority signal — a bill that stopped appearing on schedule is often the earliest sign of a cash problem, worth flagging even ahead of other observations.
+- Read DECISION HISTORY below and reference it directly, not generically. If the founder ignored the same or a substantially similar directive twice, say so plainly — name it. If they acted and the outcome shows improvement, confirm it worked and state the measured change. If they disagreed, treat their note as a real input to weigh, not something to override by default — their reasoning may be correct.
+- Never shame the founder for an ignored directive. State the fact and the consequence, nothing more — e.g. "You have not reduced X since the Y directive; Z has since moved from A to B," never a judgment about the founder's choice.`
 
     const userPrompt = `Here is the complete financial position of this business. Analyze it and tell the founder exactly what is happening and what to do:
 
@@ -254,6 +276,9 @@ ${concentrationSection}
 
 FORWARD CASH CALENDAR (recurring obligations — rent, payroll, tax, insurance — detected from transaction history and projected forward; this is the founder's real, dated cash picture, not the smoothed average burn above):
 ${forwardCalendarSection}
+
+DECISION HISTORY (the last 3 directives issued, oldest listed last):
+${directiveHistorySection}
 
 COMPUTED SCORES (already calculated — narrate these, do not recompute or contradict them):
 - Growth Score: ${describeMetric(growthScore, conf.growth, (v) => `${v}/100 (${growthLabel ?? "n/a"})`)}

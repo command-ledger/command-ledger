@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { fmt, pc, safe, detectExpenseCategory, parseAnyCSV, computeMetrics, trailingGrowthRate, computeGrowthScore, computeRiskScore, detectTrends, applyScenario, runScenario, computeHistoricalTrajectory, detectSeasonality, computeHistoricalConfidence, buildFounderNarrative, parseTransactions, normalizeDescription, dedupeHashInput, computeDedupeHash, aggregateTransactionsByMonth, computeConfidence, capSeverityForVolume, extractCounterparty, isAggregatorCounterparty, nameSimilarity, groupCounterparties, computeRevenueConcentration, classifyCadence, obligationConfidence, detectRecurringObligations, projectForwardCalendar, summarizeCalendarByWeek, computeForwardRunway, checkAffordability, detectMissedObligations } from "./financials.js";
+import { fmt, pc, safe, detectExpenseCategory, parseAnyCSV, computeMetrics, trailingGrowthRate, computeGrowthScore, computeRiskScore, detectTrends, applyScenario, runScenario, computeHistoricalTrajectory, detectSeasonality, computeHistoricalConfidence, buildFounderNarrative, parseTransactions, normalizeDescription, dedupeHashInput, computeDedupeHash, aggregateTransactionsByMonth, computeConfidence, capSeverityForVolume, extractCounterparty, isAggregatorCounterparty, nameSimilarity, groupCounterparties, computeRevenueConcentration, classifyCadence, obligationConfidence, detectRecurringObligations, projectForwardCalendar, summarizeCalendarByWeek, computeForwardRunway, checkAffordability, detectMissedObligations, computeDirective, getDirectiveMetricValue, describeDirectiveOutcome } from "./financials.js";
 
 describe("fmt / pc / safe", () => {
   it("formats currency and percentages", () => {
@@ -1195,5 +1195,150 @@ describe("detectMissedObligations", () => {
   it("never flags an inactive obligation", () => {
     const obligations = [{ label: "Cancelled Subscription", cadence: "monthly", next_expected: "2026-01-01", active: false }];
     expect(detectMissedObligations(obligations, "2026-02-01")).toEqual([]);
+  });
+});
+
+describe("computeDirective", () => {
+  const healthy = { margin: 25, burnMonths: 8, free: 20000, vel: 12, conv: 15, hireReady: false, ltvcac: 4, months: 6, concentration: null };
+
+  it("issues negative_free_cash as critical, above every other signal", () => {
+    const d = computeDirective({ ...healthy, free: -500, burnMonths: 1, ltvcac: 1 });
+    expect(d.rule).toBe("negative_free_cash");
+    expect(d.targetMetric).toBe("free");
+    expect(d.severity).toBe("critical");
+  });
+
+  it("issues low_runway as critical when runway is under 3 months and free cash is still positive", () => {
+    const d = computeDirective({ ...healthy, burnMonths: 2 });
+    expect(d.rule).toBe("low_runway");
+    expect(d.targetMetric).toBe("burnMonths");
+    expect(d.severity).toBe("critical");
+  });
+
+  it("issues client_concentration ahead of unit-economics/conversion signals when present", () => {
+    const concentration = { shown: true, severity: "critical", largestPct: 72, distinctPayers: 4 };
+    const d = computeDirective({ ...healthy, ltvcac: 1, conv: 5, concentration });
+    expect(d.rule).toBe("client_concentration");
+    expect(d.targetMetric).toBe("concentration");
+    expect(d.severity).toBe("critical");
+  });
+
+  it("never issues client_concentration from a low-confidence extraction", () => {
+    const concentration = { shown: false, severity: "critical", largestPct: 72, distinctPayers: 4 };
+    const d = computeDirective({ ...healthy, ltvcac: 1, concentration });
+    expect(d.rule).not.toBe("client_concentration");
+  });
+
+  it("issues poor_unit_economics as warn", () => {
+    const d = computeDirective({ ...healthy, ltvcac: 1.5 });
+    expect(d.rule).toBe("poor_unit_economics");
+    expect(d.targetMetric).toBe("ltvcac");
+    expect(d.severity).toBe("warn");
+  });
+
+  it("issues weak_conversion as warn", () => {
+    const d = computeDirective({ ...healthy, conv: 5 });
+    expect(d.rule).toBe("weak_conversion");
+    expect(d.targetMetric).toBe("conv");
+  });
+
+  it("issues scale_window as go when margin and conversion both clear threshold", () => {
+    const d = computeDirective({ ...healthy, margin: 45, conv: 25 });
+    expect(d.rule).toBe("scale_window");
+    expect(d.targetMetric).toBe("vel");
+    expect(d.severity).toBe("go");
+  });
+
+  it("issues hire_ready as go", () => {
+    const d = computeDirective({ ...healthy, margin: 20, conv: 15, hireReady: true });
+    expect(d.rule).toBe("hire_ready");
+    expect(d.targetMetric).toBe("free");
+    expect(d.severity).toBe("go");
+  });
+
+  it("issues stalled_growth as warn when velocity is low but non-negative", () => {
+    const d = computeDirective({ ...healthy, margin: 20, conv: 15, vel: 2 });
+    expect(d.rule).toBe("stalled_growth");
+  });
+
+  it("falls back to stable_foundation when nothing else fires", () => {
+    const d = computeDirective({ ...healthy, margin: 20, conv: 15, vel: -3 });
+    expect(d.rule).toBe("stable_foundation");
+    expect(d.severity).toBe("stable");
+  });
+
+  it("caps a would-be critical severity to warn from a single month of data, and flags wasCapped", () => {
+    const d = computeDirective({ ...healthy, free: -500, months: 1 });
+    expect(d.severity).toBe("warn");
+    expect(d.wasCapped).toBe(true);
+  });
+
+  it("does not cap severity once there are 2+ months of data", () => {
+    const d = computeDirective({ ...healthy, free: -500, months: 2 });
+    expect(d.severity).toBe("critical");
+    expect(d.wasCapped).toBe(false);
+  });
+});
+
+describe("getDirectiveMetricValue", () => {
+  const metrics = { free: 12000, burnMonths: 4.5, ltvcac: 3.2, conv: 18, vel: 9 };
+  const concentration = { shown: true, largestPct: 42.5 };
+
+  it("reads a plain numeric metric by name", () => {
+    expect(getDirectiveMetricValue("free", metrics, concentration)).toBe(12000);
+    expect(getDirectiveMetricValue("burnMonths", metrics, concentration)).toBe(4.5);
+  });
+
+  it("reads concentration's largestPct specifically for the 'concentration' target", () => {
+    expect(getDirectiveMetricValue("concentration", metrics, concentration)).toBe(42.5);
+  });
+
+  it("returns null when concentration isn't confidently shown", () => {
+    expect(getDirectiveMetricValue("concentration", metrics, { shown: false })).toBeNull();
+  });
+
+  it("returns null for an unknown or non-numeric target metric", () => {
+    expect(getDirectiveMetricValue("hireReady", { hireReady: true }, null)).toBeNull();
+    expect(getDirectiveMetricValue("nonsense", metrics, concentration)).toBeNull();
+  });
+});
+
+describe("describeDirectiveOutcome", () => {
+  it("reports pending with days remaining when under 60 days have elapsed", () => {
+    const issued = new Date();
+    issued.setDate(issued.getDate() - 20);
+    const result = describeDirectiveOutcome({ target_metric: "free", metric_at_issue: 1000, outcome_metric: null, issued_at: issued.toISOString() });
+    expect(result.status).toBe("pending");
+    expect(result.message).toContain("40 day");
+  });
+
+  it("states a higher-is-better metric's movement as improved when it rises", () => {
+    const result = describeDirectiveOutcome({ target_metric: "free", metric_at_issue: 1000, outcome_metric: 5000, issued_at: "2026-01-01" });
+    expect(result.status).toBe("measured");
+    expect(result.improved).toBe(true);
+    expect(result.message).toContain("$1,000");
+    expect(result.message).toContain("$5,000");
+  });
+
+  it("states a lower-is-better metric's (concentration) movement as improved when it falls", () => {
+    const result = describeDirectiveOutcome({ target_metric: "concentration", metric_at_issue: 70, outcome_metric: 45, issued_at: "2026-01-01" });
+    expect(result.improved).toBe(true);
+    expect(result.message).toBe("Revenue concentration in your largest client moved from 70.0% to 45.0%.");
+  });
+
+  it("states the same concentration movement as not improved when it rises", () => {
+    const result = describeDirectiveOutcome({ target_metric: "concentration", metric_at_issue: 40, outcome_metric: 65, issued_at: "2026-01-01" });
+    expect(result.improved).toBe(false);
+  });
+
+  it("states no change neutrally without an improved/worsened verdict", () => {
+    const result = describeDirectiveOutcome({ target_metric: "burnMonths", metric_at_issue: 4, outcome_metric: 4, issued_at: "2026-01-01" });
+    expect(result.improved).toBeNull();
+    expect(result.message).toContain("has not moved");
+  });
+
+  it("falls back to pending for an unrecognized target metric even with an outcome value present", () => {
+    const result = describeDirectiveOutcome({ target_metric: "unknown_thing", metric_at_issue: 1, outcome_metric: 2, issued_at: "2026-01-01" });
+    expect(result.status).toBe("pending");
   });
 });

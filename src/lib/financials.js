@@ -1348,3 +1348,131 @@ export function buildFounderNarrative(trajectory, currentMargin) {
 
   return parts.join(" ");
 }
+
+// ─── DECISION DIRECTIVE & OUTCOME TRACKING ───────────────────────
+// A directive nobody follows up on is a tool, not an advisor. This is the
+// single decision-selection function — used both to render "This Week's
+// Directive" and to decide what gets persisted to the `directives` table —
+// so the two can never drift out of sync with each other. Each branch
+// carries a stable `rule` id and a `targetMetric` naming which field of
+// the metrics object this call is trying to move, so an outcome can be
+// measured against the same value later without guessing.
+export function computeDirective({ margin, burnMonths, free, vel, conv, hireReady, ltvcac, months, concentration }) {
+  const raw = (() => {
+    if (safe(free) < 0) return {
+      text: "Cut all non-essential spend before end of this week.",
+      reason: `Your True Free Cash is ${fmt(free)}. After tax obligations and safety buffer, you owe more than you earn. Every day of inaction erodes your position further.`,
+      severity: "critical", rule: "negative_free_cash", targetMetric: "free",
+    };
+    if (safe(burnMonths) > 0 && safe(burnMonths) < 3) return {
+      text: "Protect your runway. You have less than 3 months.",
+      reason: `At current burn rate you have ${safe(burnMonths).toFixed(1)} months before the business runs dry. Suspend all non-revenue-generating spend immediately.`,
+      severity: "critical", rule: "low_runway", targetMetric: "burnMonths",
+    };
+    // Only from real, confidently-extracted payer names — never from a
+    // low-confidence parse. `concentration.shown` already means
+    // "confidence moderate or high," by construction of computeRevenueConcentration.
+    if (concentration?.shown && concentration.severity) {
+      const isCritical = concentration.severity === "critical";
+      const tooFewPayers = concentration.distinctPayers < 3;
+      return {
+        text: isCritical
+          ? "Diversify your revenue before growing it."
+          : tooFewPayers
+            ? "Land a third paying client before scaling spend."
+            : "Reduce reliance on your largest client before it becomes a crisis.",
+        reason: tooFewPayers
+          ? `You have ${concentration.distinctPayers} distinct paying client${concentration.distinctPayers === 1 ? "" : "s"} this period. Losing any one of them is a material hit to revenue, regardless of how the dollars split.`
+          : `${concentration.largestPct.toFixed(0)}% of revenue comes from your single largest client. One client exit or contract loss exposes the business at this concentration — this is not visible until it is catastrophic.`,
+        severity: isCritical ? "critical" : "warn", rule: "client_concentration", targetMetric: "concentration",
+      };
+    }
+    if (safe(ltvcac) > 0 && safe(ltvcac) < 3) return {
+      text: "Fix unit economics before increasing acquisition spend.",
+      reason: `LTV:CAC at ${safe(ltvcac).toFixed(1)}x means every new customer acquired costs more than it sustainably returns. Spending more on acquisition accelerates the loss.`,
+      severity: "warn", rule: "poor_unit_economics", targetMetric: "ltvcac",
+    };
+    if (safe(conv) > 0 && safe(conv) < 10) return {
+      text: "Fix the sales funnel before generating more leads.",
+      reason: `Converting ${pc(conv)} of leads signals a broken process or a mismatched offer. More leads through a broken funnel wastes budget and time.`,
+      severity: "warn", rule: "weak_conversion", targetMetric: "conv",
+    };
+    if (safe(margin) > 40 && safe(conv) > 20) return {
+      text: "Scale lead acquisition now. Your funnel is ready.",
+      reason: `Margin at ${pc(margin)} and conversion at ${pc(conv)} are both above threshold. This is a deployment window. Increase lead volume 30% --- the economics support it.`,
+      severity: "go", rule: "scale_window", targetMetric: "vel",
+    };
+    if (hireReady) return {
+      text: "You can afford the next hire. Move within 30 days.",
+      reason: `True Free Cash supports additional headcount for 6+ months. The opportunity cost of not hiring now exceeds the cost of hiring.`,
+      severity: "go", rule: "hire_ready", targetMetric: "free",
+    };
+    if (safe(vel) < 5 && safe(vel) >= 0) return {
+      text: "Revenue growth has stalled. Find the constraint this week.",
+      reason: `Velocity at ${pc(vel)}/month signals a blockage --- pipeline, conversion, or retention. Diagnose before spending more on growth.`,
+      severity: "warn", rule: "stalled_growth", targetMetric: "vel",
+    };
+    return {
+      text: "Maintain trajectory. Increase lead volume by 20%.",
+      reason: `Fundamentals are stable. The highest-ROI move at this position is controlled growth through the same funnel that is already converting.`,
+      severity: "stable", rule: "stable_foundation", targetMetric: "vel",
+    };
+  })();
+
+  const severity = capSeverityForVolume(raw.severity, months);
+  const wasCapped = severity !== raw.severity;
+  return { ...raw, severity, wasCapped };
+}
+
+// Reads a directive's numeric target-metric value out of a metrics/
+// concentration pair, by the same names computeDirective() assigns to
+// targetMetric — the single place both "record it at issue" and
+// "measure it again 60 days later" agree on what a metric named
+// "concentration" or "free" actually means.
+export function getDirectiveMetricValue(targetMetric, metrics, concentration) {
+  if (targetMetric === "concentration") return concentration?.shown ? concentration.largestPct : null;
+  const v = metrics?.[targetMetric];
+  return typeof v === "number" && Number.isFinite(v) ? v : null;
+}
+
+const DIRECTIVE_METRIC_LABELS = {
+  free: { label: "True Free Cash", fmt: fmt, higherIsBetter: true },
+  burnMonths: { label: "Burn Runway", fmt: (v) => `${v.toFixed(1)} months`, higherIsBetter: true },
+  concentration: { label: "Revenue concentration in your largest client", fmt: (v) => `${v.toFixed(1)}%`, higherIsBetter: false },
+  ltvcac: { label: "LTV:CAC ratio", fmt: (v) => `${v.toFixed(1)}x`, higherIsBetter: true },
+  conv: { label: "Conversion rate", fmt: (v) => `${v.toFixed(1)}%`, higherIsBetter: true },
+  vel: { label: "Revenue velocity", fmt: (v) => `${v.toFixed(1)}%/mo`, higherIsBetter: true },
+};
+
+// Neutral, fact-only outcome narration — states the metric's movement,
+// never a verdict on the founder. "Never shame the founder for ignoring a
+// directive. State the fact and the consequence" applies just as much to
+// a directive they DID act on: the number either moved or it didn't, and
+// that's what gets said, independent of the action they logged.
+export function describeDirectiveOutcome(directive) {
+  const meta = DIRECTIVE_METRIC_LABELS[directive?.target_metric] || null;
+  if (directive?.outcome_metric === null || directive?.outcome_metric === undefined || !meta) {
+    const daysSince = directive?.issued_at
+      ? Math.floor((Date.now() - new Date(directive.issued_at).getTime()) / 86400000)
+      : 0;
+    const daysRemaining = Math.max(0, 60 - daysSince);
+    return {
+      status: "pending",
+      message: daysRemaining > 0
+        ? `Pending — measured 60 days after issue (${daysRemaining} day${daysRemaining === 1 ? "" : "s"} remaining).`
+        : "Pending — outcome not yet measured.",
+    };
+  }
+
+  const before = Number(directive.metric_at_issue);
+  const after = Number(directive.outcome_metric);
+  const improved = meta.higherIsBetter ? after > before : after < before;
+  const unchanged = Math.abs(after - before) < 1e-9;
+  return {
+    status: "measured",
+    improved: unchanged ? null : improved,
+    message: unchanged
+      ? `${meta.label} has not moved — still ${meta.fmt(after)}.`
+      : `${meta.label} moved from ${meta.fmt(before)} to ${meta.fmt(after)}.`,
+  };
+}

@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { createClient } from "@supabase/supabase-js";
-import { fmt, pc, safe, parseAnyCSV, computeMetrics, runScenario, parseTransactions, computeDedupeHash, aggregateTransactionsByMonth, capSeverityForVolume, computeRevenueConcentration, detectRecurringObligations, computeForwardRunway, checkAffordability, detectMissedObligations, projectForwardCalendar, summarizeCalendarByWeek } from "./lib/financials.js";
+import { fmt, pc, safe, parseAnyCSV, computeMetrics, runScenario, parseTransactions, computeDedupeHash, aggregateTransactionsByMonth, computeRevenueConcentration, detectRecurringObligations, computeForwardRunway, checkAffordability, detectMissedObligations, projectForwardCalendar, summarizeCalendarByWeek, computeDirective, getDirectiveMetricValue, describeDirectiveOutcome } from "./lib/financials.js";
 
 const supabase = createClient(
   import.meta.env.VITE_SUPABASE_URL,
@@ -438,75 +438,13 @@ function BChart({ data }) {
 }
 
 // ─── DECISION DIRECTIVE ───────────────────────────────────────
+// The actual decision logic lives in computeDirective() (financials.js) —
+// shared with Dashboard's persistence path so what's rendered here and
+// what's written to the `directives` table can never drift apart.
 function Directive({ metrics, concentration }) {
   const { margin, burnMonths, free, vel, conv, hireReady, ltvcac, n } = metrics;
-
-  const getDirective = () => {
-    if (safe(free) < 0) return {
-      text: "Cut all non-essential spend before end of this week.",
-      reason: `Your True Free Cash is ${fmt(free)}. After tax obligations and safety buffer, you owe more than you earn. Every day of inaction erodes your position further.`,
-      severity: "critical",
-    };
-    if (safe(burnMonths) > 0 && safe(burnMonths) < 3) return {
-      text: "Protect your runway. You have less than 3 months.",
-      reason: `At current burn rate you have ${safe(burnMonths).toFixed(1)} months before the business runs dry. Suspend all non-revenue-generating spend immediately.`,
-      severity: "critical",
-    };
-    // Only issue this from real, confidently-extracted payer names — never
-    // from a low-confidence parse. `concentration.shown` already means
-    // "confidence moderate or high," by construction of computeRevenueConcentration.
-    if (concentration?.shown && concentration.severity) {
-      const isCritical = concentration.severity === "critical";
-      const tooFewPayers = concentration.distinctPayers < 3;
-      return {
-        text: isCritical
-          ? "Diversify your revenue before growing it."
-          : tooFewPayers
-            ? "Land a third paying client before scaling spend."
-            : "Reduce reliance on your largest client before it becomes a crisis.",
-        reason: tooFewPayers
-          ? `You have ${concentration.distinctPayers} distinct paying client${concentration.distinctPayers === 1 ? "" : "s"} this period. Losing any one of them is a material hit to revenue, regardless of how the dollars split.`
-          : `${concentration.largestPct.toFixed(0)}% of revenue comes from your single largest client. One client exit or contract loss exposes the business at this concentration — this is not visible until it is catastrophic.`,
-        severity: isCritical ? "critical" : "warn",
-      };
-    }
-    if (safe(ltvcac) > 0 && safe(ltvcac) < 3) return {
-      text: "Fix unit economics before increasing acquisition spend.",
-      reason: `LTV:CAC at ${safe(ltvcac).toFixed(1)}x means every new customer acquired costs more than it sustainably returns. Spending more on acquisition accelerates the loss.`,
-      severity: "warn",
-    };
-    if (safe(conv) > 0 && safe(conv) < 10) return {
-      text: "Fix the sales funnel before generating more leads.",
-      reason: `Converting ${pc(conv)} of leads signals a broken process or a mismatched offer. More leads through a broken funnel wastes budget and time.`,
-      severity: "warn",
-    };
-    if (safe(margin) > 40 && safe(conv) > 20) return {
-      text: "Scale lead acquisition now. Your funnel is ready.",
-      reason: `Margin at ${pc(margin)} and conversion at ${pc(conv)} are both above threshold. This is a deployment window. Increase lead volume 30% --- the economics support it.`,
-      severity: "go",
-    };
-    if (hireReady) return {
-      text: "You can afford the next hire. Move within 30 days.",
-      reason: `True Free Cash supports additional headcount for 6+ months. The opportunity cost of not hiring now exceeds the cost of hiring.`,
-      severity: "go",
-    };
-    if (safe(vel) < 5 && safe(vel) >= 0) return {
-      text: "Revenue growth has stalled. Find the constraint this week.",
-      reason: `Velocity at ${pc(vel)}/month signals a blockage --- pipeline, conversion, or retention. Diagnose before spending more on growth.`,
-      severity: "warn",
-    };
-    return {
-      text: "Maintain trajectory. Increase lead volume by 20%.",
-      reason: `Fundamentals are stable. The highest-ROI move at this position is controlled growth through the same funnel that is already converting.`,
-      severity: "stable",
-    };
-  };
-
-  const d = getDirective();
-  // A single month of data cannot support a "critical" call — a bad number
-  // this early might be a fluke, not a fire. Cap the severity and say why.
-  const severity = capSeverityForVolume(d.severity, n);
-  const wasCapped = severity !== d.severity;
+  const d = computeDirective({ margin, burnMonths, free, vel, conv, hireReady, ltvcac, months: n, concentration });
+  const { severity, wasCapped } = d;
   const uc = { critical:C.red, warn:C.amber, go:C.green, stable:C.gold }[severity];
 
   return (
@@ -747,6 +685,11 @@ function Dashboard({ user, profile, onLogout, onUpgrade }) {
   const [obligations, setObligations] = useState([]);
   const [affordInput, setAffordInput] = useState("");
   const [affordResult, setAffordResult] = useState(null);
+  // Decision Log — every directive issued, whether it was acted on, and
+  // what happened to its target metric afterward. Newest first.
+  const [directives, setDirectives] = useState([]);
+  const [directivesLoading, setDirectivesLoading] = useState(true);
+  const [ackNote, setAckNote] = useState("");
   const [batches, setBatches] = useState([]);
   const [periodFilter, setPeriodFilter] = useState("12");
   const [historyLoading, setHistoryLoading] = useState(true);
@@ -852,9 +795,26 @@ function Dashboard({ user, profile, onLogout, onUpgrade }) {
     if (!error) setObligations(obs => obs.map(o => o.id === id ? { ...o, active } : o));
   };
 
+  const loadDirectives = useCallback(async () => {
+    setDirectivesLoading(true);
+    const { data: rows, error } = await supabase.from("directives").select("*").order("issued_at", { ascending: false });
+    if (!error) setDirectives(rows || []);
+    setDirectivesLoading(false);
+  }, []);
+
+  const acknowledgeDirective = async (directiveId, actionTaken) => {
+    const patch = { acknowledged_at: new Date().toISOString(), action_taken: actionTaken, founder_note: ackNote.trim() || null };
+    const { error } = await supabase.from("directives").update(patch).eq("id", directiveId);
+    if (!error) {
+      setDirectives(ds => ds.map(d => d.id === directiveId ? { ...d, ...patch } : d));
+      setAckNote("");
+    }
+  };
+
   useEffect(() => { loadHistory(); }, [loadHistory]);
   useEffect(() => { loadBatches(); }, [loadBatches]);
   useEffect(() => { loadObligations(); }, [loadObligations]);
+  useEffect(() => { loadDirectives(); }, [loadDirectives]);
 
   const handleDataLoaded = async (parsedRows, source, cols, rawText) => {
     setData(parsedRows); setDataSource(source); setDetectedCols(cols); setTab("overview");
@@ -966,6 +926,67 @@ function Dashboard({ user, profile, onLogout, onUpgrade }) {
     return { t:"info", msg:"Foundation stable. Maintain velocity and watch your runway." };
   })();
 
+  // ─── DECISION LOG ────────────────────────────────────────────
+  // A directive nobody follows up on is a tool, not an advisor. This
+  // computes the same directive Directive renders, so what's persisted
+  // and what's shown can never disagree.
+  const currentDirective = hasData
+    ? computeDirective({ margin, burnMonths, free, vel, conv, hireReady, ltvcac, months: n, concentration: concentrationData })
+    : null;
+
+  // Persist a directive only when it genuinely differs from the most
+  // recently stored one — never on every render or page load. Waits for
+  // the initial fetch to land first, so an already-persisted directive
+  // that just hasn't loaded into state yet is never duplicated.
+  useEffect(() => {
+    if (!currentDirective || directivesLoading) return;
+    const latestStored = directives[0];
+    const isNew = !latestStored || latestStored.directive_text !== currentDirective.text || latestStored.trigger_rule !== currentDirective.rule;
+    if (!isNew) return;
+    (async () => {
+      const value = getDirectiveMetricValue(currentDirective.targetMetric, metrics, concentrationData);
+      const { data: inserted, error } = await supabase.from("directives").insert({
+        user_id: user.id,
+        directive_text: currentDirective.text,
+        reason_text: currentDirective.reason,
+        severity: currentDirective.severity,
+        trigger_rule: currentDirective.rule,
+        target_metric: currentDirective.targetMetric,
+        metric_at_issue: value,
+        snapshot: metrics,
+      }).select().single();
+      if (!error && inserted) setDirectives(ds => [inserted, ...ds]);
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentDirective?.text, currentDirective?.rule, directivesLoading]);
+
+  // Outcome measurement: 60 days after issue, recompute the target
+  // metric's current value from the event store and record it — never
+  // earlier, and never guessed. "Pending" is the honest answer before then.
+  useEffect(() => {
+    if (directivesLoading || !hasData) return;
+    const now = Date.now();
+    const due = directives.filter(d =>
+      (d.outcome_metric === null || d.outcome_metric === undefined) &&
+      (now - new Date(d.issued_at).getTime()) >= 60 * 86400000
+    );
+    if (due.length === 0) return;
+    (async () => {
+      for (const d of due) {
+        const value = getDirectiveMetricValue(d.target_metric, metrics, concentrationData);
+        if (value === null) continue;
+        const patch = { outcome_metric: value, outcome_at: new Date().toISOString() };
+        const { error } = await supabase.from("directives").update(patch).eq("id", d.id);
+        if (!error) setDirectives(ds => ds.map(x => x.id === d.id ? { ...x, ...patch } : x));
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [directivesLoading, hasData, directives.length]);
+
+  const latestDirective = directives[0] || null;
+  const needsAcknowledgement = !!(latestDirective && !latestDirective.acknowledged_at &&
+    (Date.now() - new Date(latestDirective.issued_at).getTime()) >= 7 * 86400000);
+
   const runAI = async () => {
     setAiLoad(true); setAiRec(null); setAiError("");
     // Aggregate expense categories from uploaded bank data if available
@@ -1043,6 +1064,16 @@ function Dashboard({ user, profile, onLogout, onUpgrade }) {
               nextExpected: o.next_expected, confidence: o.confidence,
             })),
           } : null,
+          // Decision history: the last 3 directives with what the founder
+          // did about them and what happened to the metric afterward. A
+          // disagreement's note is included verbatim — the founder's
+          // reasoning may be correct, and the model should account for it.
+          directiveHistory: directives.slice(0, 3).map(d => ({
+            text: d.directive_text, severity: d.severity, issuedAt: d.issued_at,
+            actionTaken: d.action_taken || "awaiting_response",
+            founderNote: d.founder_note || null,
+            outcome: describeDirectiveOutcome(d),
+          })),
           // Expense breakdown from bank statement parser
           payroll:   totPayroll  || null,
           rent:      totRent     || null,
@@ -1330,6 +1361,24 @@ function Dashboard({ user, profile, onLogout, onUpgrade }) {
               </div>
             )}
 
+            {needsAcknowledgement && (
+              <div className="card" style={{ borderLeft:`3px solid ${C.gold}` }}>
+                <div className="card-sec">Did you act on this?</div>
+                <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:15, color:C.cream, marginBottom:14, lineHeight:1.5 }}>
+                  Last directive ({new Date(latestDirective.issued_at).toLocaleDateString()}): "{latestDirective.directive_text}"
+                </div>
+                <div style={{ display:"flex", gap:8, flexWrap:"wrap", marginBottom:10 }}>
+                  {[["acted","Acted"],["partially","Partially"],["ignored","Ignored"],["disagreed","I disagreed"]].map(([val,lbl]) => (
+                    <button key={val} className="btn btn-primary" style={{ fontSize:11, padding:"8px 16px" }}
+                      onClick={() => acknowledgeDirective(latestDirective.id, val)}>{lbl}</button>
+                  ))}
+                </div>
+                <textarea className="di" placeholder="Optional note — why you did (or didn't) act..."
+                  value={ackNote} onChange={e => setAckNote(e.target.value)}
+                  style={{ minHeight:56, resize:"vertical", fontFamily:"'Cormorant Garamond',serif", fontSize:13 }}/>
+              </div>
+            )}
+
             <div>
               <div className="card-sec">Core Vitals</div>
               <div className="kpi4">
@@ -1540,6 +1589,42 @@ function Dashboard({ user, profile, onLogout, onUpgrade }) {
                     </div>
                   )}
                 </div>
+              </div>
+            </div>
+
+            <div>
+              <div className="card-sec">Decision History</div>
+              <div className="card">
+                {directives.length === 0 ? (
+                  <div style={{ fontSize:13, color:C.ink, fontFamily:"'Cormorant Garamond',serif", lineHeight:1.6 }}>
+                    No directives issued yet. Once Command Ledger issues its first call, it's logged here permanently — along with whether you acted on it and what happened to the metric it targeted afterward.
+                  </div>
+                ) : (
+                  <div style={{ display:"flex", flexDirection:"column", gap:16 }}>
+                    {directives.map((d, i) => {
+                      const uc = { critical:C.red, warn:C.amber, go:C.green, stable:C.gold }[d.severity] || C.gold;
+                      const outcome = describeDirectiveOutcome(d);
+                      const actionLabel = { acted:"Acted", partially:"Partially acted", ignored:"Ignored", disagreed:"Disagreed" }[d.action_taken] || "Awaiting response";
+                      const outcomeColor = outcome.status === "measured"
+                        ? (outcome.improved === true ? C.green : outcome.improved === false ? C.red : C.ink)
+                        : C.inkDim;
+                      return (
+                        <div key={d.id} style={{ borderLeft:`3px solid ${uc}`, paddingLeft:14, paddingBottom: i < directives.length - 1 ? 16 : 0, borderBottom: i < directives.length - 1 ? `1px solid ${C.border}` : "none" }}>
+                          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"baseline", flexWrap:"wrap", gap:8 }}>
+                            <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:15, color:C.cream }}>{d.directive_text}</div>
+                            <div style={{ fontSize:10.5, color:C.inkDim, fontFamily:"'JetBrains Mono',monospace", whiteSpace:"nowrap" }}>{new Date(d.issued_at).toLocaleDateString()}</div>
+                          </div>
+                          <div style={{ fontSize:11, color:C.ink, marginTop:4, fontFamily:"'Cormorant Garamond',serif" }}>
+                            {actionLabel}{d.founder_note ? ` — "${d.founder_note}"` : ""}
+                          </div>
+                          <div style={{ fontSize:11, color:outcomeColor, marginTop:4, fontFamily:"'Cormorant Garamond',serif" }}>
+                            {outcome.message}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             </div>
 
