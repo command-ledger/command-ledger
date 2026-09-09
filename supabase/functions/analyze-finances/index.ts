@@ -107,7 +107,12 @@ serve(async (req: Request) => {
       // { reason }, and no percentage must ever be narrated.
       revenueConcentration,
       plan, mode, dataMonths, dataConfidence,
-      growthScore, growthLabel, riskScore, riskLabel, trends,
+      growthScore, growthLabel, growthSeasonallyAdjusted, riskScore, riskLabel, trends,
+      // Null unless the latest month is a real, repeating seasonal pattern
+      // (13+ months of history) — when present, this month's dip or spike
+      // is expected, not a new problem, and growthScore above was compared
+      // to the same month last year rather than last month.
+      seasonalPattern, founderNarrative,
       // Per-metric confidence — { shown, level, reason } for each of
       // runway, breakEven, proj90, hireReady, ltvCac, growth. `shown:false`
       // means the metric's required inputs are absent (its raw value above
@@ -238,7 +243,8 @@ Rules:
 - If FORWARD CASH CALENDAR shows an Obligation-Aware Runway that crosses zero, that is the real runway — lead with it over the smoothed Burn Runway figure above whenever the two disagree, and say plainly that a dated obligation (name it) is what actually breaks the cash position, not average burn.
 - If a Missed Obligation is listed, treat it as an active, first-priority signal — a bill that stopped appearing on schedule is often the earliest sign of a cash problem, worth flagging even ahead of other observations.
 - Read DECISION HISTORY below and reference it directly, not generically. If the founder ignored the same or a substantially similar directive twice, say so plainly — name it. If they acted and the outcome shows improvement, confirm it worked and state the measured change. If they disagreed, treat their note as a real input to weigh, not something to override by default — their reasoning may be correct.
-- Never shame the founder for an ignored directive. State the fact and the consequence, nothing more — e.g. "You have not reduced X since the Y directive; Z has since moved from A to B," never a judgment about the founder's choice.`
+- Never shame the founder for an ignored directive. State the fact and the consequence, nothing more — e.g. "You have not reduced X since the Y directive; Z has since moved from A to B," never a judgment about the founder's choice.
+- If SEASONAL CONTEXT is present below, the current month's dip or spike is an established, repeating pattern, not a new problem — never call it a decline, a red flag, or something to fix. Say plainly that it's seasonal and reference the historical pattern.`
 
     const userPrompt = `Here is the complete financial position of this business. Analyze it and tell the founder exactly what is happening and what to do:
 
@@ -281,10 +287,14 @@ DECISION HISTORY (the last 3 directives issued, oldest listed last):
 ${directiveHistorySection}
 
 COMPUTED SCORES (already calculated — narrate these, do not recompute or contradict them):
-- Growth Score: ${describeMetric(growthScore, conf.growth, (v) => `${v}/100 (${growthLabel ?? "n/a"})`)}
+- Growth Score: ${describeMetric(growthScore, conf.growth, (v) => `${v}/100 (${growthLabel ?? "n/a"})`)}${growthSeasonallyAdjusted ? " — compared to the same month last year, not last month (see SEASONAL CONTEXT below); this is the correct comparison, do not treat it as a weaker or hedged reading" : ""}
 - Risk Score: ${riskScore ?? "n/a"}/100 (${riskLabel ?? "n/a"}) — this is the value "riskLevel" in your response must match, subject to the single-month cap in the rules above
 
 ${trends?.length ? `TRENDS DETECTED (comparing the latest month to the prior months' average):\n${trends.map((t) => `- ${t.message}`).join("\n")}` : "TRENDS DETECTED: none — under 3 months of history, or nothing moved meaningfully."}
+
+${seasonalPattern ? `SEASONAL CONTEXT: The current month (${seasonalPattern.month}) is a known, repeating seasonal ${Number(seasonalPattern.avgDeltaPct) < 0 ? "dip" : "spike"} — it has run ${Math.abs(Number(seasonalPattern.avgDeltaPct)).toFixed(0)}% ${Number(seasonalPattern.avgDeltaPct) < 0 ? "below" : "above"} average for ${seasonalPattern.occurrences} years running. This is expected, not a new problem.` : ""}
+
+${founderNarrative ? `HISTORICAL TRAJECTORY: ${founderNarrative}` : ""}
 
 ${expenseBreakdown ? `EXPENSE BREAKDOWN:\n${expenseBreakdown}` : ""}
 

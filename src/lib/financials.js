@@ -886,12 +886,26 @@ export function trailingGrowthRate(rows, singlePeriodVel) {
 // 30% is how many of the recent month-over-month changes were positive, so
 // three steadily-growing months outscore one great month sandwiched
 // between two down months at the same average rate.
-export function computeGrowthScore(rows, singlePeriodVel) {
-  const rate = Math.max(-50, Math.min(50, trailingGrowthRate(rows, singlePeriodVel)));
+// `seasonalRate` (optional): when the latest month matches a detected
+// seasonal pattern (detectCurrentMonthSeasonality, 13+ months of history),
+// the caller passes a year-over-year rate here instead of letting this
+// function fall back to its own month-over-month trailing average — a
+// December that's reliably 30% below November every year is not a
+// decline, and comparing it to the same December a year ago is the
+// correct comparison, not comparing it to November.
+export function computeGrowthScore(rows, singlePeriodVel, seasonalRate = null) {
+  const usingSeasonalRate = seasonalRate !== null && Number.isFinite(seasonalRate);
+  const rate = usingSeasonalRate
+    ? Math.max(-50, Math.min(50, seasonalRate))
+    : Math.max(-50, Math.min(50, trailingGrowthRate(rows, singlePeriodVel)));
   const rateScore = Math.min(100, Math.max(0, 50 + rate * 3));
 
-  let consistency = 0.5; // not enough history to judge — neutral, not penalized
-  if (rows && rows.length >= 3) {
+  // Neutral by default. Also left neutral (not computed from raw MoM
+  // deltas) when a seasonal rate is in play — the trailing month-over-month
+  // consistency check doesn't apply cleanly to a month whose normal
+  // comparison point is a year ago, not last month.
+  let consistency = 0.5;
+  if (!usingSeasonalRate && rows && rows.length >= 3) {
     const deltas = [];
     for (let i = 1; i < rows.length; i++) {
       if (rows[i - 1].revenue > 0) deltas.push(rows[i].revenue - rows[i - 1].revenue);
@@ -902,7 +916,7 @@ export function computeGrowthScore(rows, singlePeriodVel) {
 
   const score = Math.min(100, Math.max(0, rateScore * 0.7 + consistency * 100 * 0.3));
   const label = score >= 80 ? "Accelerating" : score >= 60 ? "Growing" : score >= 40 ? "Flat" : "Declining";
-  return { score, label, rate, consistency };
+  return { score, label, rate, consistency, seasonallyAdjusted: usingSeasonalRate };
 }
 
 // Risk Score (0-100, higher = riskier): a composite of four already-verified
@@ -940,7 +954,13 @@ export function computeRiskScore({ cashFlowPositive, burnMonths, concentration, 
 // of the prior months. Requires at least 3 months of real rows — the same
 // floor used for concentrationReliable — because a "trend" from one or two
 // data points isn't a trend, it's a single data point.
-export function detectTrends(rows) {
+// `seasonalPattern` (optional, from detectCurrentMonthSeasonality): when
+// the latest month is a known recurring seasonal month, a margin or burn
+// trend fired for it is annotated rather than suppressed — the shift is
+// real, but it isn't necessarily a new problem, and the founder should
+// see both facts. Expense-category creep isn't annotated: it isn't a
+// consequence of revenue seasonality the way margin and burn are.
+export function detectTrends(rows, seasonalPattern = null) {
   if (!rows || rows.length < 3) return [];
   const trends = [];
 
@@ -990,6 +1010,11 @@ export function detectTrends(rows) {
         message: `Net burn ${delta < 0 ? "improved" : "worsened"} to ${fmt(latest)}/mo this month, vs a ${fmt(avgPrior)}/mo average.`,
       });
     }
+  }
+
+  if (seasonalPattern) {
+    const note = ` This may reflect a recurring seasonal pattern for ${seasonalPattern.month} rather than a new problem — it has moved this way for ${seasonalPattern.occurrences} years running.`;
+    return trends.map(t => (t.type === "margin" || t.type === "burn") ? { ...t, message: t.message + note, seasonallyAnnotated: true } : t);
   }
 
   return trends;
@@ -1082,6 +1107,12 @@ export function computeMetrics(rows, manual, mode, context = {}) {
   const totPro   = totRev - totExp;
   const margin   = totRev > 0 ? (totPro / totRev) * 100 : 0;
   const vel      = prev.revenue > 0 ? ((latest.revenue - prev.revenue) / prev.revenue) * 100 : 0;
+  // Only persisted, period_month-bearing history (aggregateTransactionsByMonth's
+  // output) can be checked for real calendar seasonality — a CSV parsed for
+  // this session only carries a display-string month label, not a date.
+  const hasPeriodMonth = !!(rows && rows.length > 0 && rows[0].period_month);
+  const seasonalPattern = hasPeriodMonth ? detectCurrentMonthSeasonality(rows) : null;
+  const seasonalAdjustedVel = seasonalPattern ? computeSeasonallyAdjustedVelocity(rows) : null;
   const conv     = totL > 0 ? (totC / totL) * 100 : 0;
   const hasConversionData = totL > 0;
   const ltvcac   = activeCac > 0 ? activeLtv / activeCac : 0;
@@ -1137,9 +1168,16 @@ export function computeMetrics(rows, manual, mode, context = {}) {
   // "high"   — real uploaded data with 3+ months of history.
   const dataConfidence = !rows ? "low" : n >= 3 ? "high" : "medium";
 
-  const growth = computeGrowthScore(rows, vel);
+  const growth = computeGrowthScore(rows, vel, seasonalAdjustedVel);
   const risk = computeRiskScore({ cashFlowPositive, burnMonths, concentration, concentrationReliable, ltvcac, margin });
-  const trends = detectTrends(rows);
+  const trends = detectTrends(rows, seasonalPattern);
+
+  // Long-run trajectory, seasonality, and a plain-language narrative —
+  // same 13+/2+ month floors as the functions themselves. Every field
+  // here is null (not fabricated) until there's real history behind it.
+  const trajectory = hasPeriodMonth && rows.length >= 2 ? computeHistoricalTrajectory(rows) : null;
+  const historicalConfidence = hasPeriodMonth ? computeHistoricalConfidence(n) : null;
+  const founderNarrative = hasPeriodMonth ? buildFounderNarrative(trajectory, margin) : null;
 
   // Completeness: a field being 0 here is indistinguishable from it never
   // having been entered (manual inputs all default to 0), so — consistent
@@ -1166,7 +1204,7 @@ export function computeMetrics(rows, manual, mode, context = {}) {
     cogsRatio, mktRatio, sov, sovLbl, taxV, safV, free, avgExp, burnMonths,
     hireReady, concentration, concentrationReliable, revenueConcentration,
     breakEven, proj90, proj90GrowthRate, hasData,
-    growth, risk, trends,
+    growth, risk, trends, seasonalPattern, trajectory, historicalConfidence, founderNarrative,
     hasCashData, hasUnitEconomicsData,
     runwayConfidence, breakEvenConfidence, proj90Confidence,
     hireReadyConfidence, ltvcacConfidence, growthConfidence,
@@ -1208,11 +1246,13 @@ export function runScenario(baseline, adjustments, mode) {
 }
 
 // ─── FINANCIAL MEMORY ENGINE ────────────────────────────────────
-// Everything below operates on *persisted* monthly snapshots (see
-// supabase/schema/financial_snapshots.sql), not the in-session `rows` from
-// a single upload. A snapshot has the same numeric shape as a parsed CSV
-// row, plus a real `period_month` date — that date is what makes actual
-// seasonality detection possible, which display-only month labels can't do.
+// Everything below operates on *persisted* monthly snapshots — in
+// practice, aggregateTransactionsByMonth()'s output (`history` in
+// Dashboard), which carries a real `period_month` date. A CSV parsed for
+// the current session only (parseAnyCSV's rows) has just a display-string
+// month label and can't feed this; that date is what makes real
+// seasonality detection possible, which a label like "Jan 24" can't do.
+const MONTH_NAMES = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 
 // Finds the longest run of consecutive same-direction moves ending at the
 // most recent value. length is the number of matching consecutive deltas —
@@ -1293,8 +1333,6 @@ export function detectSeasonality(snapshots) {
   if (stableAverages.length === 0) return [];
   const overallAvg = stableAverages.reduce((a, b) => a + b, 0) / stableAverages.length;
 
-  const MONTH_NAMES = ["January","February","March","April","May","June","July","August","September","October","November","December"];
-
   return Object.entries(byMonth)
     .filter(([, revs]) => revs.length >= 2)
     .map(([cm, revs]) => {
@@ -1303,6 +1341,44 @@ export function detectSeasonality(snapshots) {
       return { month: MONTH_NAMES[Number(cm)], avgDeltaPct: deltaPct, occurrences: revs.length };
     })
     .filter(m => Math.abs(m.avgDeltaPct) >= 15);
+}
+
+// Checks whether the LATEST row in a persisted, period_month-bearing
+// series falls on a calendar month with a real, detected seasonal
+// pattern — the single question computeMetrics needs answered to decide
+// whether to trust a raw month-over-month reading or ask for a
+// seasonally-adjusted one instead. Returns null when there isn't enough
+// history (same 13-month floor as detectSeasonality) or the latest month
+// isn't one of the flagged ones.
+export function detectCurrentMonthSeasonality(rows) {
+  if (!rows || rows.length < 13) return null;
+  const latest = rows[rows.length - 1];
+  if (!latest?.period_month) return null;
+  const seasonal = detectSeasonality(rows);
+  if (!seasonal || seasonal.length === 0) return null;
+  const latestMonthName = MONTH_NAMES[new Date(latest.period_month).getUTCMonth()];
+  return seasonal.find(s => s.month === latestMonthName) || null;
+}
+
+// Year-over-year growth rate for the latest month, used in place of a
+// month-over-month comparison when the latest month is a known seasonal
+// one. Requires the row exactly 12 positions back to genuinely be the
+// same calendar month a year earlier — a gap in the monthly series (a
+// month with zero transactions simply doesn't produce a row) would make
+// "12 rows back" the wrong comparison, so this verifies the actual
+// calendar distance rather than assuming an unbroken series.
+export function computeSeasonallyAdjustedVelocity(rows) {
+  if (!rows || rows.length < 13) return null;
+  const latest = rows[rows.length - 1];
+  const prior = rows[rows.length - 13];
+  if (!latest?.period_month || !prior?.period_month) return null;
+  const latestDate = new Date(latest.period_month);
+  const priorDate = new Date(prior.period_month);
+  const monthDiff = (latestDate.getUTCFullYear() - priorDate.getUTCFullYear()) * 12
+    + (latestDate.getUTCMonth() - priorDate.getUTCMonth());
+  if (monthDiff !== 12) return null;
+  if (!(prior.revenue > 0)) return null;
+  return ((latest.revenue - prior.revenue) / prior.revenue) * 100;
 }
 
 // Confidence scales with months of real history, not with how the current

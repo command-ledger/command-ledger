@@ -880,6 +880,7 @@ function Dashboard({ user, profile, onLogout, onUpgrade }) {
     hasConversionData, cashFlowPositive, dataConfidence, growth, risk, trends,
     hasCashData, hasUnitEconomicsData, runwayConfidence, breakEvenConfidence,
     proj90Confidence, hireReadyConfidence, ltvcacConfidence, growthConfidence,
+    seasonalPattern, trajectory, historicalConfidence, founderNarrative,
   } = computeMetrics(
     rows, { mRev, mExp, mCash, mCac, mLtv, mLeads, mClose }, mode,
     { lastTxnDate: history.length > 0 ? lastTxnDate : null, revenueConcentration: concentrationData }
@@ -1035,9 +1036,19 @@ function Dashboard({ user, profile, onLogout, onUpgrade }) {
           dataConfidence,
           growthScore:  growth.score.toFixed(0),
           growthLabel:  growth.label,
+          growthSeasonallyAdjusted: growth.seasonallyAdjusted,
           riskScore:    risk.score.toFixed(0),
           riskLabel:    risk.label,
           trends,
+          // Seasonal context: null unless the latest month is a real,
+          // repeating pattern (13+ months of history) — when present, the
+          // model must not read this month's dip/spike as a new problem.
+          seasonalPattern: seasonalPattern ? {
+            month: seasonalPattern.month,
+            avgDeltaPct: seasonalPattern.avgDeltaPct.toFixed(1),
+            occurrences: seasonalPattern.occurrences,
+          } : null,
+          founderNarrative: founderNarrative || null,
           confidence: {
             runway:    runwayConfidence,
             breakEven: breakEvenConfidence,
@@ -1436,9 +1447,11 @@ function Dashboard({ user, profile, onLogout, onUpgrade }) {
                   <div>
                     <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:22, color:growth.score>=60?C.green:growth.score>=40?C.amber:C.red, marginBottom:6 }}>{growth.label}</div>
                     <div style={{ fontSize:12, color:C.ink, lineHeight:1.7, fontFamily:"'Cormorant Garamond',serif" }}>
-                      {rows && rows.length>=3
-                        ? <>Trailing growth rate ({pc(growth.rate)}/mo), weighted with how consistently recent months grew ({Math.round(growth.consistency*100)}% of the last few were up).</>
-                        : <>Based on a single growth reading — connect 3+ months of data for a consistency-weighted score.</>}
+                      {growth.seasonallyAdjusted
+                        ? <>Compared to {seasonalPattern.month} a year ago ({pc(growth.rate)} year-over-year), not last month — {seasonalPattern.month} has run {Math.abs(seasonalPattern.avgDeltaPct).toFixed(0)}% {seasonalPattern.avgDeltaPct<0?"below":"above"} average for {seasonalPattern.occurrences} years running, so a plain month-over-month reading would call a normal season a decline.</>
+                        : rows && rows.length>=3
+                          ? <>Trailing growth rate ({pc(growth.rate)}/mo), weighted with how consistently recent months grew ({Math.round(growth.consistency*100)}% of the last few were up).</>
+                          : <>Based on a single growth reading — connect 3+ months of data for a consistency-weighted score.</>}
                     </div>
                     <ConfidenceLine c={growthConfidence}/>
                   </div>
@@ -1466,6 +1479,27 @@ function Dashboard({ user, profile, onLogout, onUpgrade }) {
                   {trends.map((t, i) => (
                     <div key={i} className={`d-alert ${t.direction==="improving"?"ok":"warn"}`}>{t.message}</div>
                   ))}
+                </div>
+              </div>
+            )}
+
+            {founderNarrative && (
+              <div>
+                <div className="card-sec">Business History</div>
+                <div className="card">
+                  <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:14, color:C.cream, lineHeight:1.7 }}>
+                    {founderNarrative}
+                  </div>
+                  {seasonalPattern && (
+                    <div style={{ fontSize:12, color:C.ink, lineHeight:1.6, marginTop:10, fontFamily:"'Cormorant Garamond',serif" }}>
+                      {seasonalPattern.month} has run {Math.abs(seasonalPattern.avgDeltaPct).toFixed(0)}% {seasonalPattern.avgDeltaPct<0?"below":"above"} your average for {seasonalPattern.occurrences} years running — a repeating seasonal pattern, not a new signal.
+                    </div>
+                  )}
+                  <ConfidenceLine c={{
+                    shown: true,
+                    level: { low:"low", medium:"moderate", high:"high", "very high":"high" }[historicalConfidence?.label] || "low",
+                    reason: historicalConfidence?.reason || "",
+                  }}/>
                 </div>
               </div>
             )}

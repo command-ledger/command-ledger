@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { fmt, pc, safe, detectExpenseCategory, parseAnyCSV, computeMetrics, trailingGrowthRate, computeGrowthScore, computeRiskScore, detectTrends, applyScenario, runScenario, computeHistoricalTrajectory, detectSeasonality, computeHistoricalConfidence, buildFounderNarrative, parseTransactions, normalizeDescription, dedupeHashInput, computeDedupeHash, aggregateTransactionsByMonth, computeConfidence, capSeverityForVolume, extractCounterparty, isAggregatorCounterparty, nameSimilarity, groupCounterparties, computeRevenueConcentration, classifyCadence, obligationConfidence, detectRecurringObligations, projectForwardCalendar, summarizeCalendarByWeek, computeForwardRunway, checkAffordability, detectMissedObligations, computeDirective, getDirectiveMetricValue, describeDirectiveOutcome } from "./financials.js";
+import { fmt, pc, safe, detectExpenseCategory, parseAnyCSV, computeMetrics, trailingGrowthRate, computeGrowthScore, computeRiskScore, detectTrends, applyScenario, runScenario, computeHistoricalTrajectory, detectSeasonality, computeHistoricalConfidence, buildFounderNarrative, parseTransactions, normalizeDescription, dedupeHashInput, computeDedupeHash, aggregateTransactionsByMonth, computeConfidence, capSeverityForVolume, extractCounterparty, isAggregatorCounterparty, nameSimilarity, groupCounterparties, computeRevenueConcentration, classifyCadence, obligationConfidence, detectRecurringObligations, projectForwardCalendar, summarizeCalendarByWeek, computeForwardRunway, checkAffordability, detectMissedObligations, computeDirective, getDirectiveMetricValue, describeDirectiveOutcome, detectCurrentMonthSeasonality, computeSeasonallyAdjustedVelocity } from "./financials.js";
 
 describe("fmt / pc / safe", () => {
   it("formats currency and percentages", () => {
@@ -1340,5 +1340,170 @@ describe("describeDirectiveOutcome", () => {
   it("falls back to pending for an unrecognized target metric even with an outcome value present", () => {
     const result = describeDirectiveOutcome({ target_metric: "unknown_thing", metric_at_issue: 1, outcome_metric: 2, issued_at: "2026-01-01" });
     expect(result.status).toBe("pending");
+  });
+});
+
+// 24 months: every month $50,000 except December, which drops to $35,000
+// both years — a real, repeating seasonal pattern, not a decline. Expenses
+// track proportionally so margin stays exactly flat throughout.
+function buildSeasonalHistory() {
+  const rows = [];
+  for (let y = 0; y < 2; y++) {
+    for (let mo = 0; mo < 12; mo++) {
+      const revenue = mo === 11 ? 35000 : 50000;
+      rows.push({
+        period_month: `${2024 + y}-${String(mo + 1).padStart(2, "0")}-01`,
+        month: `m${y}-${mo}`, revenue, expenses: Math.round(revenue * 0.6), cash: 80000,
+        cogs: 0, marketing: 0, payroll: 0, rent: 0, software: 0, leads: 0, closures: 0, cac: 0, ltv: 0,
+      });
+    }
+  }
+  return rows;
+}
+
+describe("detectCurrentMonthSeasonality", () => {
+  it("identifies the latest month as seasonal when it matches a detected pattern", () => {
+    const rows = buildSeasonalHistory(); // ends on December, year 2
+    const result = detectCurrentMonthSeasonality(rows);
+    expect(result).toMatchObject({ month: "December", occurrences: 2 });
+  });
+
+  it("returns null when the latest month is not one of the flagged months", () => {
+    const rows = buildSeasonalHistory().slice(0, -1); // ends on November instead
+    expect(detectCurrentMonthSeasonality(rows)).toBeNull();
+  });
+
+  it("returns null with fewer than 13 months of history", () => {
+    expect(detectCurrentMonthSeasonality(buildSeasonalHistory().slice(0, 12))).toBeNull();
+  });
+
+  it("returns null when rows don't carry a real period_month", () => {
+    const rows = buildSeasonalHistory().map(r => ({ ...r, period_month: undefined }));
+    expect(detectCurrentMonthSeasonality(rows)).toBeNull();
+  });
+});
+
+describe("computeSeasonallyAdjustedVelocity", () => {
+  it("computes true year-over-year growth for the latest month", () => {
+    const rows = buildSeasonalHistory(); // Dec year2 (35000) vs Dec year1 (35000)
+    expect(computeSeasonallyAdjustedVelocity(rows)).toBeCloseTo(0, 5);
+  });
+
+  it("reflects genuine year-over-year improvement, not the month-over-month dip", () => {
+    const rows = buildSeasonalHistory();
+    rows[rows.length - 1].revenue = 42000; // this December is up 20% on last December
+    expect(computeSeasonallyAdjustedVelocity(rows)).toBeCloseTo(20, 5);
+  });
+
+  it("returns null when the row 12 positions back isn't actually 12 calendar months earlier", () => {
+    const rows = buildSeasonalHistory();
+    // Remove a month strictly between the two reference points (index 11 =
+    // Dec 2024, index 23 = Dec 2025, the latest) — removing anything
+    // outside that window would shift both endpoints together and leave
+    // their 12-month distance intact, so it has to be one in between.
+    rows.splice(15, 1);
+    expect(computeSeasonallyAdjustedVelocity(rows)).toBeNull();
+  });
+
+  it("returns null with fewer than 13 months of history", () => {
+    expect(computeSeasonallyAdjustedVelocity(buildSeasonalHistory().slice(0, 12))).toBeNull();
+  });
+});
+
+describe("computeGrowthScore — seasonal override", () => {
+  it("uses the seasonal rate instead of the raw trailing month-over-month rate when provided", () => {
+    const rows = buildSeasonalHistory(); // raw MoM would be a steep November->December drop
+    const withoutOverride = computeGrowthScore(rows, -30);
+    const withOverride = computeGrowthScore(rows, -30, 0); // 0% YoY, the correct seasonal reading
+    expect(withoutOverride.label).toBe("Declining");
+    expect(withOverride.label).toBe("Flat");
+    expect(withOverride.seasonallyAdjusted).toBe(true);
+    expect(withoutOverride.seasonallyAdjusted).toBe(false);
+  });
+
+  it("does not compute trailing MoM consistency when a seasonal rate is applied", () => {
+    const rows = buildSeasonalHistory();
+    const g = computeGrowthScore(rows, -30, 0);
+    expect(g.consistency).toBe(0.5); // neutral, not derived from the seasonal-dip transition
+  });
+
+  it("ignores a non-finite override and falls back to the normal calculation", () => {
+    const rows = [{ revenue: 10000 }, { revenue: 10500 }, { revenue: 11000 }];
+    const normal = computeGrowthScore(rows, 10);
+    const withNullOverride = computeGrowthScore(rows, 10, null);
+    expect(withNullOverride).toEqual(normal);
+  });
+});
+
+describe("detectTrends — seasonal annotation", () => {
+  it("annotates a margin or burn trend fired for a known seasonal month, without suppressing it", () => {
+    const rows = buildSeasonalHistory();
+    const pattern = detectCurrentMonthSeasonality(rows);
+    const trends = detectTrends(rows, pattern);
+    const burnTrend = trends.find(t => t.type === "burn");
+    expect(burnTrend).toBeDefined();
+    expect(burnTrend.seasonallyAnnotated).toBe(true);
+    expect(burnTrend.message).toContain("recurring seasonal pattern for December");
+  });
+
+  it("does not annotate an expense-creep trend, since it isn't a consequence of revenue seasonality", () => {
+    const rows = buildSeasonalHistory().map((r, i) => ({ ...r, payroll: i === 23 ? r.expenses * 0.9 : r.expenses * 0.3 }));
+    const pattern = detectCurrentMonthSeasonality(rows);
+    const trends = detectTrends(rows, pattern);
+    const creep = trends.find(t => t.type === "expense_creep");
+    expect(creep).toBeDefined();
+    expect(creep.seasonallyAnnotated).toBeUndefined();
+  });
+
+  it("behaves exactly as before when no seasonal pattern is passed", () => {
+    const rows = buildSeasonalHistory();
+    const trends = detectTrends(rows);
+    expect(trends.every(t => !t.seasonallyAnnotated)).toBe(true);
+  });
+});
+
+describe("computeMetrics — seasonal wiring end-to-end", () => {
+  it("does not read a real seasonal December dip as a decline", () => {
+    const rows = buildSeasonalHistory();
+    const manual0 = { mRev:0, mExp:0, mCash:0, mCac:0, mLtv:0, mLeads:0, mClose:0 };
+    const m = computeMetrics(rows, manual0, "safe");
+    expect(m.seasonalPattern).toMatchObject({ month: "December" });
+    expect(m.growth.seasonallyAdjusted).toBe(true);
+    expect(m.growth.label).not.toBe("Declining");
+    // The underlying fact (lower dollar burn cushion this month) is still
+    // surfaced, just with context, not suppressed.
+    const burnTrend = m.trends.find(t => t.type === "burn");
+    expect(burnTrend?.seasonallyAnnotated).toBe(true);
+  });
+
+  it("still reads a genuine decline as Declining when no seasonal pattern applies", () => {
+    const rows = Array.from({ length: 6 }, (_, i) => ({
+      period_month: `2026-${String(i + 1).padStart(2, "0")}-01`, month: `m${i}`,
+      revenue: 50000 - i * 3000, expenses: 30000, cash: 40000,
+      cogs:0, marketing:0, payroll:0, rent:0, software:0, leads:0, closures:0, cac:0, ltv:0,
+    }));
+    const manual0 = { mRev:0, mExp:0, mCash:0, mCac:0, mLtv:0, mLeads:0, mClose:0 };
+    const m = computeMetrics(rows, manual0, "safe");
+    expect(m.seasonalPattern).toBeNull(); // under 13 months — too early to call anything seasonal
+    expect(m.growth.seasonallyAdjusted).toBe(false);
+    expect(m.growth.label).toBe("Declining");
+  });
+
+  it("exposes trajectory, historicalConfidence, and a founder narrative once persisted history exists", () => {
+    const rows = buildSeasonalHistory();
+    const manual0 = { mRev:0, mExp:0, mCash:0, mCac:0, mLtv:0, mLeads:0, mClose:0 };
+    const m = computeMetrics(rows, manual0, "safe");
+    expect(m.trajectory).not.toBeNull();
+    expect(m.historicalConfidence).toMatchObject({ label: "very high" }); // 24 months
+    expect(m.founderNarrative).toContain("40.0%"); // margin held flat throughout
+  });
+
+  it("leaves trajectory/historicalConfidence/founderNarrative null for ephemeral CSV rows with no period_month", () => {
+    const rows = [{ revenue: 50000, expenses: 30000, month: "Jan 26" }];
+    const manual0 = { mRev:0, mExp:0, mCash:0, mCac:0, mLtv:0, mLeads:0, mClose:0 };
+    const m = computeMetrics(rows, manual0, "safe");
+    expect(m.trajectory).toBeNull();
+    expect(m.historicalConfidence).toBeNull();
+    expect(m.founderNarrative).toBeNull();
   });
 });
