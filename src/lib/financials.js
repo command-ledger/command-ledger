@@ -1286,26 +1286,19 @@ export function computeHistoricalTrajectory(snapshots) {
   const revenueStreak = streakDirection(revenues);
   const burnStreak    = streakDirection(burns);
 
-  // Concentration trend: compare the average of the most recent third of
-  // history against the earliest third, rather than a full streak — with
-  // only month-level revenue data (no per-customer records), a coarser
-  // "is this getting worse or better over time" read is the honest limit
-  // of what this metric can claim.
-  const third = Math.max(1, Math.floor(snapshots.length / 3));
-  const concOf = arr => {
-    const tot = arr.reduce((s, x) => s + x.revenue, 0);
-    const max = Math.max(...arr.map(x => x.revenue), 1);
-    return tot > 0 ? (max / tot) * 100 : 0;
-  };
-  const earlyConc = concOf(snapshots.slice(0, third));
-  const recentConc = concOf(snapshots.slice(-third));
-
+  // No concentration trend here by design: computing it from month-level
+  // revenue alone (highest MONTH as % of a period's total) is exactly the
+  // metric that was retired elsewhere in this engine for measuring
+  // calendar-month arithmetic rather than real client-concentration risk.
+  // A genuine concentration trend needs a real history of
+  // computeRevenueConcentration() results over time, which requires
+  // per-transaction payer data this function is never given — it isn't
+  // fabricated here from data that can't support it.
   return {
     monthsOfHistory: snapshots.length,
     margin: { streak: marginStreak, current: margins[margins.length - 1], direction: marginStreak.direction === "up" ? "improving" : marginStreak.direction === "down" ? "declining" : "flat" },
     revenue: { streak: revenueStreak, current: revenues[revenues.length - 1], direction: revenueStreak.direction === "up" ? "growing" : revenueStreak.direction === "down" ? "shrinking" : "flat" },
     cashFlow: { streak: burnStreak, direction: burnStreak.direction === "up" ? "deteriorating" : burnStreak.direction === "down" ? "improving" : "flat" },
-    concentration: { early: earlyConc, recent: recentConc, direction: recentConc - earlyConc >= 5 ? "worsening" : earlyConc - recentConc >= 5 ? "improving" : "flat" },
   };
 }
 
@@ -1416,10 +1409,6 @@ export function buildFounderNarrative(trajectory, currentMargin) {
 
   if (trajectory.cashFlow.direction === "deteriorating" && trajectory.cashFlow.streak.length >= 2) {
     parts.push(`Net burn has worsened for ${trajectory.cashFlow.streak.length + 1} straight months — this is a trend, not a one-off.`);
-  }
-
-  if (trajectory.concentration.direction === "worsening") {
-    parts.push(`Revenue concentration has increased since earlier in your history.`);
   }
 
   return parts.join(" ");

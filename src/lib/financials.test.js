@@ -401,9 +401,13 @@ describe("computeHistoricalTrajectory", () => {
     expect(t.cashFlow.direction).toBe("improving");
   });
 
-  it("reads roughly flat concentration when growth is uniform across months", () => {
+  it("never claims a concentration trend — month-level revenue alone can't support one", () => {
+    // The old month-based concentration signal was retired elsewhere in
+    // this engine for measuring calendar-month arithmetic, not real
+    // client-concentration risk; computeHistoricalTrajectory doesn't
+    // fabricate it here either.
     const t = computeHistoricalTrajectory(snapshots);
-    expect(t.concentration.direction).toBe("flat");
+    expect(t.concentration).toBeUndefined();
   });
 
   it("breaks a streak the moment a month moves the other direction", () => {
