@@ -1465,7 +1465,7 @@ function Dashboard({ user, profile, onLogout, onUpgrade }) {
                   <div>
                     <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:22, color:risk.label==="Low"?C.green:risk.label==="Watch"?C.amber:C.red, marginBottom:6 }}>{risk.label}</div>
                     <div style={{ fontSize:12, color:C.ink, lineHeight:1.7, fontFamily:"'Cormorant Garamond',serif" }}>
-                      Weighted from runway, margin, revenue concentration, and LTV:CAC — each only counts when there's real data behind it.
+                      Weighted from runway, margin, your trend direction, revenue concentration, and LTV:CAC — each only counts when there's real data behind it. A business can look fine today and still score risk from a multi-month decline that hasn't crossed a threshold yet.
                     </div>
                   </div>
                 </div>
@@ -1971,7 +1971,7 @@ function MarketingSite({ onLogin, onPlanSelect, onTerms, onPrivacy }) {
 
   const features = [
     { num:"01", title:"AI Strategic Advisor",   desc:"Not a paragraph — a structured brief: what happened, why, the business impact, the risk level, the one action to take, and how confident to be in it. Built from your real numbers." },
-    { num:"02", title:"Risk Score",             desc:"A single number weighted from your actual runway, margin, revenue concentration, and unit economics — each only counts when there's real data behind it, so it never fakes a warning." },
+    { num:"02", title:"Risk Score",             desc:"A single number weighted from your actual runway, margin, trend direction, revenue concentration, and unit economics — each only counts when there's real data behind it, so it never fakes a warning." },
     { num:"03", title:"Growth Score",           desc:"Rewards a steady, consistent growth trend over one lucky month. Three good months in a row score higher than one great month between two bad ones, at the same average rate." },
     { num:"04", title:"Burn Runway Monitor",    desc:"Real net burn — expenses against revenue, not expenses alone — so a profitable month never gets mistaken for a business about to run out of cash." },
     { num:"05", title:"True Free Cash",         desc:"After tax obligations and safety buffer, what you actually own and can deploy. Most founders confuse revenue with available cash. This ends that confusion." },
@@ -2105,7 +2105,7 @@ function MarketingSite({ onLogin, onPlanSelect, onTerms, onPrivacy }) {
               },
               {
                 q: "Why is my Risk Score increasing?",
-                a: "The score is a weighted composite of four things: your runway, your margin, how concentrated your revenue is in a single period, and your LTV:CAC ratio — each one only counts when there's real data behind it. If it moved, one of those four moved; the dashboard shows which.",
+                a: "The score is a weighted composite of five things: your runway, your margin, whether your trend is declining, how concentrated your revenue is in one client, and your LTV:CAC ratio — each one only counts when there's real data behind it. If it moved, one of those five moved; the dashboard shows which.",
               },
               {
                 q: "Is my growth actually healthy?",

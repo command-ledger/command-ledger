@@ -267,6 +267,54 @@ describe("computeRiskScore", () => {
     expect(r.breakdown.concentrationRisk).toBe(0);
     expect(r.breakdown.unitEconRisk).toBe(0);
   });
+
+  it("raises risk from a declining margin trend even when every level-based signal still looks fine", () => {
+    // Healthy current levels (cash-flow positive, margin above threshold),
+    // but margin has been declining for months — the exact case Risk Score
+    // used to stay silent about until a threshold was finally crossed.
+    const trends = [{ type: "margin", direction: "declining", message: "..." }];
+    const r = computeRiskScore({ cashFlowPositive: true, burnMonths: 0, concentration: 0, concentrationReliable: false, ltvcac: 0, margin: 27, trends, growthScore: 35 });
+    expect(r.breakdown.trendRisk).toBe(70);
+    expect(r.score).toBeCloseTo(14, 1); // 70 * 0.2
+    expect(r.label).toBe("Low"); // moved off zero, but a single trend alone doesn't yet cross Watch
+  });
+
+  it("compounds a declining margin trend with a worsening burn trend", () => {
+    const trends = [
+      { type: "margin", direction: "declining", message: "..." },
+      { type: "burn", direction: "worsening", message: "..." },
+    ];
+    const r = computeRiskScore({ cashFlowPositive: true, burnMonths: 0, concentration: 0, concentrationReliable: false, ltvcac: 0, margin: 27, trends, growthScore: 35 });
+    expect(r.breakdown.trendRisk).toBe(100); // 70 + 30, capped
+    expect(r.score).toBeCloseTo(20, 1); // 100 * 0.2
+    expect(r.label).toBe("Watch"); // now crosses out of Low
+  });
+
+  it("excludes a trend already explained as seasonal from trend risk", () => {
+    const trends = [{ type: "margin", direction: "declining", message: "...", seasonallyAnnotated: true }];
+    const r = computeRiskScore({ cashFlowPositive: true, burnMonths: 0, concentration: 0, concentrationReliable: false, ltvcac: 0, margin: 40, trends, growthScore: 50 });
+    expect(r.breakdown.trendRisk).toBe(0);
+  });
+
+  it("never discounts risk for a flat or improving trend", () => {
+    const trends = [{ type: "margin", direction: "improving", message: "..." }];
+    const r = computeRiskScore({ cashFlowPositive: false, burnMonths: 2, concentration: 0, concentrationReliable: false, ltvcac: 0, margin: 10, trends, growthScore: 80 });
+    expect(r.breakdown.trendRisk).toBe(0);
+  });
+
+  it("gives some credit to a sharply negative growth score when there isn't enough history for a detectTrends signal", () => {
+    const r = computeRiskScore({ cashFlowPositive: true, burnMonths: 0, concentration: 0, concentrationReliable: false, ltvcac: 0, margin: 40, trends: [], growthScore: 10 });
+    expect(r.breakdown.trendRisk).toBe(20);
+  });
+
+  it("preserves the exact worst-case Critical threshold from runway and margin alone, with no trend data", () => {
+    // This must keep working exactly as before — runway (0.4) + margin
+    // (0.3) alone still reach the 70-point Critical threshold regardless
+    // of whether trend data is available.
+    const r = computeRiskScore({ cashFlowPositive: false, burnMonths: -0.159, concentration: 0, concentrationReliable: false, ltvcac: 0, margin: -4900 });
+    expect(r.score).toBeCloseTo(70, 1);
+    expect(r.label).toBe("Critical");
+  });
 });
 
 describe("detectTrends", () => {
@@ -1509,5 +1557,31 @@ describe("computeMetrics — seasonal wiring end-to-end", () => {
     expect(m.trajectory).toBeNull();
     expect(m.historicalConfidence).toBeNull();
     expect(m.founderNarrative).toBeNull();
+  });
+});
+
+describe("computeMetrics — Risk Score is now trend-aware end-to-end", () => {
+  it("elevates a 6-month clear-deterioration trend out of Low risk, even while every level-based signal still looks fine", () => {
+    // Same shape as the case that failed validation: revenue flat, expenses
+    // climbing steadily. Cash-flow positive throughout (no runway risk) and
+    // overall margin still above 15% (no margin-level risk) — Risk Score
+    // used to stay at 0 ("Low") for this entire scenario.
+    const rows = [
+      { revenue: 50000, expenses: 30000, cash: 60000, cogs:0, marketing:0, payroll:0, rent:0, software:0, leads:0, closures:0, cac:0, ltv:0 },
+      { revenue: 50000, expenses: 32000, cash: 58000, cogs:0, marketing:0, payroll:0, rent:0, software:0, leads:0, closures:0, cac:0, ltv:0 },
+      { revenue: 50000, expenses: 34500, cash: 54000, cogs:0, marketing:0, payroll:0, rent:0, software:0, leads:0, closures:0, cac:0, ltv:0 },
+      { revenue: 50000, expenses: 37500, cash: 48000, cogs:0, marketing:0, payroll:0, rent:0, software:0, leads:0, closures:0, cac:0, ltv:0 },
+      { revenue: 50000, expenses: 41000, cash: 40000, cogs:0, marketing:0, payroll:0, rent:0, software:0, leads:0, closures:0, cac:0, ltv:0 },
+      { revenue: 50000, expenses: 45000, cash: 30000, cogs:0, marketing:0, payroll:0, rent:0, software:0, leads:0, closures:0, cac:0, ltv:0 },
+    ];
+    const manual0 = { mRev:0, mExp:0, mCash:0, mCac:0, mLtv:0, mLeads:0, mClose:0 };
+    const m = computeMetrics(rows, manual0, "safe");
+    expect(m.cashFlowPositive).toBe(true);       // no runway risk
+    expect(m.margin).toBeGreaterThan(15);         // no margin-level risk either
+    expect(m.trends.some(t => t.type === "margin" && t.direction === "declining")).toBe(true);
+    expect(m.trends.some(t => t.type === "burn" && t.direction === "worsening")).toBe(true);
+    expect(m.risk.breakdown.trendRisk).toBe(100);
+    expect(m.risk.label).not.toBe("Low");
+    expect(m.risk.label).toBe("Watch");
   });
 });

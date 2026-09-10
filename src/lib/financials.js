@@ -919,14 +919,38 @@ export function computeGrowthScore(rows, singlePeriodVel, seasonalRate = null) {
   return { score, label, rate, consistency, seasonallyAdjusted: usingSeasonalRate };
 }
 
-// Risk Score (0-100, higher = riskier): a composite of four already-verified
-// signals, each contributing only when there's real data behind it — no
-// signal is penalized for being absent (consistent with how Sovereignty
-// Score and concentration reliability already treat missing data in this
-// engine). Weighted toward runway (0.4) since it's the most survival-
-// critical signal, then margin (0.3), then concentration and unit
-// economics (0.15 each).
-export function computeRiskScore({ cashFlowPositive, burnMonths, concentration, concentrationReliable, ltvcac, margin }) {
+// Trend risk: the other four signals below are all point-in-time levels —
+// a business can look fine by every one of them while actively getting
+// worse every month, and stay silent about it until an absolute threshold
+// is finally crossed. This reads the same detectTrends()/computeGrowthScore()
+// output already shown to the founder as "Trends Detected," so it never
+// invents a second opinion about direction. A trend already explained as
+// seasonal (seasonallyAnnotated) is excluded — an expected seasonal swing
+// isn't deterioration. Only ever adds risk for a declining direction;
+// flat or improving trends never earn a discount on the other signals.
+function computeTrendRisk(trends, growthScore) {
+  let risk = 0;
+  const marginTrend = trends?.find(t => t.type === "margin" && !t.seasonallyAnnotated);
+  const burnTrend = trends?.find(t => t.type === "burn" && !t.seasonallyAnnotated);
+  if (marginTrend?.direction === "declining") risk += 70;
+  if (burnTrend?.direction === "worsening") risk += 30;
+  // Covers the case detectTrends can't (under 3 months of history) — a
+  // sharply negative single-period growth reading still counts for
+  // something, just less than a confirmed multi-month trend does.
+  if (risk === 0 && typeof growthScore === "number" && growthScore < 30) risk += 20;
+  return Math.min(100, risk);
+}
+
+// Risk Score (0-100, higher = riskier): a composite of five already-
+// verified signals, each contributing only when there's real data behind
+// it — no signal is penalized for being absent (consistent with how
+// Sovereignty Score and concentration reliability already treat missing
+// data in this engine). Weighted toward runway (0.4) since it's the most
+// survival-critical signal, then margin (0.3) — together these two alone
+// already reach the "Critical" band at their worst, regardless of trend
+// data — then trend direction (0.2), then concentration and unit
+// economics (0.05 each).
+export function computeRiskScore({ cashFlowPositive, burnMonths, concentration, concentrationReliable, ltvcac, margin, trends, growthScore }) {
   const runwayRisk = cashFlowPositive ? 0
     : burnMonths >= 8 ? 0
     : burnMonths <= 0 ? 100
@@ -943,11 +967,13 @@ export function computeRiskScore({ cashFlowPositive, burnMonths, concentration, 
   const marginRisk = margin < 0 ? 100
     : Math.min(100, Math.max(0, ((15 - margin) / 15) * 100));
 
+  const trendRisk = computeTrendRisk(trends, growthScore);
+
   const score = Math.min(100, Math.max(0,
-    runwayRisk * 0.4 + concentrationRisk * 0.15 + unitEconRisk * 0.15 + marginRisk * 0.3
+    runwayRisk * 0.4 + concentrationRisk * 0.05 + unitEconRisk * 0.05 + marginRisk * 0.3 + trendRisk * 0.2
   ));
   const label = score >= 70 ? "Critical" : score >= 45 ? "Elevated" : score >= 20 ? "Watch" : "Low";
-  return { score, label, breakdown: { runwayRisk, concentrationRisk, unitEconRisk, marginRisk } };
+  return { score, label, breakdown: { runwayRisk, concentrationRisk, unitEconRisk, marginRisk, trendRisk } };
 }
 
 // Trend detection: compares the latest uploaded month against the average
@@ -1169,8 +1195,8 @@ export function computeMetrics(rows, manual, mode, context = {}) {
   const dataConfidence = !rows ? "low" : n >= 3 ? "high" : "medium";
 
   const growth = computeGrowthScore(rows, vel, seasonalAdjustedVel);
-  const risk = computeRiskScore({ cashFlowPositive, burnMonths, concentration, concentrationReliable, ltvcac, margin });
   const trends = detectTrends(rows, seasonalPattern);
+  const risk = computeRiskScore({ cashFlowPositive, burnMonths, concentration, concentrationReliable, ltvcac, margin, trends, growthScore: growth.score });
 
   // Long-run trajectory, seasonality, and a plain-language narrative —
   // same 13+/2+ month floors as the functions themselves. Every field
