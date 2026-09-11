@@ -59,6 +59,13 @@ body{background:#050709;color:#F4F7FF;font-family:'Syne',sans-serif;-webkit-font
 @keyframes dotPulse{0%,80%,100%{transform:scale(0.6);opacity:0.4}40%{transform:scale(1);opacity:1}}
 @keyframes spin{to{transform:rotate(360deg)}}
 @keyframes scrollLine{0%{transform:scaleY(0);transform-origin:top}50%{transform:scaleY(1);transform-origin:top}51%{transform-origin:bottom}100%{transform:scaleY(0);transform-origin:bottom}}
+@keyframes gridDrift{from{background-position:0 0}to{background-position:80px 80px}}
+.reveal{opacity:1;transform:none;}
+@media(prefers-reduced-motion:no-preference){
+  .reveal{opacity:0;transform:translateY(28px);transition:opacity 0.7s cubic-bezier(0.16,1,0.3,1),transform 0.7s cubic-bezier(0.16,1,0.3,1);}
+  .reveal.in{opacity:1;transform:translateY(0);}
+  .hero-grid{animation:gridDrift 44s linear infinite;}
+}
 .nav{position:fixed;top:0;left:0;right:0;z-index:300;height:64px;display:flex;align-items:center;justify-content:space-between;padding:0 48px;border-bottom:1px solid transparent;transition:all 0.4s;}
 .nav.scrolled{background:rgba(5,7,9,0.96);border-color:#161C2E;backdrop-filter:blur(24px);}
 .nav-logo{display:flex;align-items:center;gap:12px;cursor:pointer;}
@@ -70,6 +77,14 @@ body{background:#050709;color:#F4F7FF;font-family:'Syne',sans-serif;-webkit-font
 .nav-links a{font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:#8898B8;text-decoration:none;transition:color 0.2s;cursor:pointer;}
 .nav-links a:hover{color:#F0E8D8;}
 .nav-cta{display:flex;align-items:center;gap:10px;}
+.nav-burger{display:none;flex-direction:column;justify-content:center;gap:5px;width:36px;height:36px;background:transparent;border:1px solid transparent;cursor:pointer;padding:0;}
+.nav-burger span{width:20px;height:1.5px;background:#D8DADE;transition:transform 0.25s ease,opacity 0.25s ease;}
+.nav-burger.open span:nth-child(1){transform:translateY(6.5px) rotate(45deg);}
+.nav-burger.open span:nth-child(2){opacity:0;}
+.nav-burger.open span:nth-child(3){transform:translateY(-6.5px) rotate(-45deg);}
+.nav-mobile{position:fixed;top:64px;left:0;right:0;z-index:299;background:rgba(5,7,9,0.98);backdrop-filter:blur(24px);border-bottom:1px solid #161C2E;padding:8px 24px 20px;display:flex;flex-direction:column;animation:slideDown 0.25s ease both;}
+.nav-mobile a{font-size:13px;letter-spacing:0.1em;text-transform:uppercase;color:#8898B8;text-decoration:none;padding:16px 4px;border-bottom:1px solid #161C2E;cursor:pointer;}
+.nav-mobile a:hover{color:#F0E8D8;}
 .btn{font-family:'Syne',sans-serif;font-weight:700;cursor:pointer;border-radius:1px;transition:all 0.2s;letter-spacing:0.12em;text-transform:uppercase;border:none;}
 .btn-ghost{font-size:11px;padding:8px 20px;background:transparent;border:1px solid #161C2E!important;color:#8898B8;}
 .btn-ghost:hover{border-color:#D8DADE!important;color:#D8DADE;}
@@ -93,8 +108,12 @@ body{background:#050709;color:#F4F7FF;font-family:'Syne',sans-serif;-webkit-font
 .hero-title em{font-style:italic;color:#D8DADE;}
 .hero-sub{font-size:16px;line-height:1.75;color:#8898B8;max-width:480px;margin:0 0 40px;font-family:'Cormorant Garamond',serif;font-weight:300;animation:fadeUp 0.8s 0.2s ease both;}
 .hero-cta{display:flex;gap:16px;justify-content:flex-start;flex-wrap:wrap;animation:fadeUp 0.8s 0.3s ease both;}
+.hero-proof{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:28px;font-family:'JetBrains Mono',monospace;font-size:10.5px;letter-spacing:0.05em;color:#7A7E88;animation:fadeUp 0.8s 0.35s ease both;}
+.hero-proof-sep{color:#243050;}
 .hero-preview{position:relative;z-index:1;background:#0A0D14;border:1px solid #243050;box-shadow:0 24px 64px -24px rgba(0,0,0,0.6);animation:fadeUp 0.8s 0.4s ease both;}
 .hero-preview-bar{display:flex;align-items:center;gap:8px;padding:12px 16px;border-bottom:1px solid #161C2E;background:#0F1320;}
+.hero-preview-live{width:auto;height:auto;border-radius:0;background:transparent;margin-left:auto;display:flex;align-items:center;gap:6px;font-family:'JetBrains Mono',monospace;font-size:9px;letter-spacing:0.12em;text-transform:uppercase;color:#2ABF85;flex-shrink:0;}
+.hero-preview-live::before{content:'';width:5px;height:5px;border-radius:50%;background:#2ABF85;box-shadow:0 0 6px #2ABF85;animation:pulse 1.6s infinite;}
 .hero-preview-bar span{width:8px;height:8px;border-radius:50%;background:#243050;}
 .hero-preview-title{margin-left:8px;font-family:'JetBrains Mono',monospace;font-size:10px;color:#7A7E88;letter-spacing:0.04em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .hero-preview-body{padding:24px;min-height:280px;}
@@ -125,17 +144,19 @@ body{background:#050709;color:#F4F7FF;font-family:'Syne',sans-serif;-webkit-font
 .sec-title em{font-style:italic;color:#D8DADE;}
 .sec-body{font-size:15px;line-height:1.85;color:#8898B8;max-width:560px;font-family:'Cormorant Garamond',serif;margin:0 auto;text-align:center;}
 .feat-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:#161C2E;border:1px solid #161C2E;margin-top:64px;}
-.feat-card{background:#0A0D14;padding:40px 36px;transition:background 0.3s;position:relative;}
-.feat-card:hover{background:#0F1320;}
+.feat-card{background:#0A0D14;padding:40px 36px;transition:background 0.3s,transform 0.3s;position:relative;}
+.feat-card:hover{background:#0F1320;transform:translateY(-2px);}
 .feat-card::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:linear-gradient(to right,transparent,#5A5D64,transparent);opacity:0;transition:opacity 0.3s;}
 .feat-card:hover::before{opacity:1;}
+.feat-tag{display:inline-block;font-family:'JetBrains Mono',monospace;font-size:9px;letter-spacing:0.12em;text-transform:uppercase;color:#050709;background:#D8DADE;padding:3px 9px;margin-bottom:16px;}
 .feat-num{font-family:'JetBrains Mono',monospace;font-size:11px;color:#5A5D64;letter-spacing:0.1em;margin-bottom:24px;}
 .feat-title{font-family:'Cormorant Garamond',serif;font-size:22px;font-weight:500;color:#F0E8D8;margin-bottom:12px;}
 .feat-desc{font-size:13px;line-height:1.75;color:#8898B8;font-family:'Cormorant Garamond',serif;}
 .price-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:24px;margin-top:64px;max-width:1100px;margin-left:auto;margin-right:auto;}
-.price-card{background:#0A0D14;border:1px solid #161C2E;padding:36px 32px;position:relative;overflow:hidden;transition:transform 0.3s;}
+.price-card{background:#0A0D14;border:1px solid #161C2E;padding:36px 32px;position:relative;overflow:hidden;transition:transform 0.3s,box-shadow 0.3s;}
 .price-card:hover{transform:translateY(-4px);}
-.price-card.hot{border-color:#D8DADE;}
+.price-card.hot{border-color:#D8DADE;transform:scale(1.03);box-shadow:0 24px 64px -24px rgba(216,218,222,0.18);z-index:1;}
+.price-card.hot:hover{transform:scale(1.03) translateY(-4px);}
 .price-card.hot::after{content:'Most Popular';position:absolute;top:16px;right:16px;font-size:9px;letter-spacing:0.14em;text-transform:uppercase;color:#050709;background:#D8DADE;padding:4px 10px;font-weight:700;font-family:'Syne',sans-serif;}
 .price-card.soon{opacity:0.85;}
 .price-card.soon::after{content:'VIP — Coming Soon';position:absolute;top:16px;right:16px;font-size:9px;letter-spacing:0.14em;text-transform:uppercase;color:#D8DADE;background:transparent;border:1px solid #5A5D64;padding:4px 10px;font-weight:700;font-family:'Syne',sans-serif;}
@@ -149,6 +170,9 @@ body{background:#050709;color:#F4F7FF;font-family:'Syne',sans-serif;-webkit-font
 .price-list{list-style:none;margin-bottom:28px;}
 .price-list li{display:flex;align-items:flex-start;gap:10px;font-size:13px;color:#8898B8;margin-bottom:10px;font-family:'Cormorant Garamond',serif;line-height:1.5;}
 .price-list li::before{content:'---';color:#D8DADE;flex-shrink:0;font-family:'JetBrains Mono',monospace;font-size:11px;margin-top:2px;}
+.excel-grid{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:#161C2E;border:1px solid #161C2E;text-align:left;margin-bottom:64px;position:relative;}
+.excel-arrow{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:40px;height:40px;border-radius:50%;background:#050709;border:1px solid #5A5D64;display:flex;align-items:center;justify-content:center;font-family:'JetBrains Mono',monospace;font-size:16px;color:#D8DADE;z-index:2;}
+@media(max-width:720px){.excel-grid{grid-template-columns:1fr;}.excel-arrow{display:none;}}
 .cta-sec{padding:120px 48px;text-align:center;position:relative;overflow:hidden;border-top:1px solid #161C2E;}
 .cta-sec::before{content:'';position:absolute;inset:0;background:radial-gradient(ellipse 60% 60% at 50% 50%,rgba(216,218,222,0.07) 0%,transparent 70%);}
 .cta-title{font-family:'Cormorant Garamond',serif;font-size:clamp(40px,6vw,72px);font-weight:300;color:#F0E8D8;line-height:1.08;margin-bottom:20px;}
@@ -308,6 +332,8 @@ body{background:#050709;color:#F4F7FF;font-family:'Syne',sans-serif;-webkit-font
 .page-p{font-size:14px;line-height:1.85;color:#8898B8;font-family:'Cormorant Garamond',serif;margin-bottom:16px;}
 .page-back{display:inline-flex;align-items:center;gap:8px;font-size:11px;letter-spacing:0.1em;text-transform:uppercase;color:#8898B8;cursor:pointer;margin-bottom:40px;transition:color 0.2s;}
 .page-back:hover{color:#D8DADE;}
+.faq-item{outline:none;}
+.faq-item:focus-visible{outline:1px solid #5A5D64;outline-offset:6px;}
 @media(max-width:960px){
   .feat-grid,.price-grid,.kpi4,.kpi3,.g3{grid-template-columns:1fr 1fr;}
   .stats-bar{grid-template-columns:1fr;}
@@ -316,13 +342,16 @@ body{background:#050709;color:#F4F7FF;font-family:'Syne',sans-serif;-webkit-font
   .sidebar{display:none;}
   .topbar,.dash-body{grid-column:1;}
   .nav-links{display:none;}
+  .nav-burger{display:flex;}
   .nav,.hero,.sec,.cta-sec{padding-left:24px;padding-right:24px;}
   .footer{padding:32px 24px;}
   .hero{grid-template-columns:1fr;text-align:center;padding-top:120px;}
   .hero-copy{max-width:none;}
   .hero-sub{margin:0 auto 40px;}
-  .hero-cta{justify-content:center;}
+  .hero-cta,.hero-proof{justify-content:center;}
   .hero-preview{max-width:480px;margin:0 auto;width:100%;}
+  .price-card.hot{transform:none;box-shadow:none;}
+  .price-card.hot:hover{transform:translateY(-4px);}
 }
 @media(max-width:600px){
   .feat-grid,.price-grid,.kpi4,.kpi3,.g3{grid-template-columns:1fr;}
@@ -1837,11 +1866,19 @@ function LoginPage({ onBack }) {
 function FaqItem({ q, a }) {
   const [open, setOpen] = useState(false);
   return (
-    <div style={{
-      borderBottom: `1px solid ${C.border}`,
-      padding: "20px 0",
-      cursor: "pointer",
-    }} onClick={() => setOpen(!open)}>
+    <div
+      className="faq-item"
+      role="button"
+      tabIndex={0}
+      aria-expanded={open}
+      style={{
+        borderBottom: `1px solid ${C.border}`,
+        padding: "22px 0",
+        cursor: "pointer",
+      }}
+      onClick={() => setOpen(!open)}
+      onKeyDown={e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setOpen(o => !o); } }}
+    >
       <div style={{
         display: "flex",
         justifyContent: "space-between",
@@ -1931,6 +1968,7 @@ function HeroPreview() {
       <div className="hero-preview-bar">
         <span/><span/><span/>
         <div className="hero-preview-title">{rows ? label : "command-ledger.co — Command Center"}</div>
+        {rows && <div className="hero-preview-live">Live</div>}
       </div>
       <div className="hero-preview-body">
         {!rows ? (
@@ -1963,10 +2001,21 @@ function HeroPreview() {
 // ─── MARKETING SITE ───────────────────────────────────────────
 function MarketingSite({ onLogin, onPlanSelect, onTerms, onPrivacy }) {
   const [scrolled, setScrolled] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
   useEffect(() => {
     const h = () => setScrolled(window.scrollY > 20);
     window.addEventListener("scroll", h);
     return () => window.removeEventListener("scroll", h);
+  }, []);
+
+  useEffect(() => {
+    const els = document.querySelectorAll(".reveal");
+    if (!els.length) return;
+    const io = new IntersectionObserver((entries) => {
+      entries.forEach(e => { if (e.isIntersecting) { e.target.classList.add("in"); io.unobserve(e.target); } });
+    }, { threshold: 0.12, rootMargin: "0px 0px -40px 0px" });
+    els.forEach(el => io.observe(el));
+    return () => io.disconnect();
   }, []);
 
   const features = [
@@ -1991,10 +2040,23 @@ function MarketingSite({ onLogin, onPlanSelect, onTerms, onPrivacy }) {
           <li><a href="#pricing">Pricing</a></li>
         </ul>
         <div className="nav-cta">
+          <button
+            className={`nav-burger${menuOpen ? " open" : ""}`}
+            onClick={() => setMenuOpen(o => !o)}
+            aria-label="Toggle navigation menu"
+            aria-expanded={menuOpen}
+          ><span/><span/><span/></button>
           <button className="btn btn-ghost" onClick={onLogin}>Sign In</button>
           <button className="btn btn-gold" onClick={() => onPlanSelect("pro")}>Get Started</button>
         </div>
       </nav>
+      {menuOpen && (
+        <div className="nav-mobile">
+          <a href="#features" onClick={() => setMenuOpen(false)}>Product</a>
+          <a href="#trust" onClick={() => setMenuOpen(false)}>Why Command Ledger</a>
+          <a href="#pricing" onClick={() => setMenuOpen(false)}>Pricing</a>
+        </div>
+      )}
 
       <section className="hero">
         <div className="hero-bg"/><div className="hero-grid"/>
@@ -2006,21 +2068,33 @@ function MarketingSite({ onLogin, onPlanSelect, onTerms, onPrivacy }) {
             <button className="btn btn-lg btn-primary" onClick={() => onPlanSelect("pro")}>Get Started</button>
             <button className="btn btn-lg btn-outline" onClick={onLogin}>Sign In</button>
           </div>
+          <div className="hero-proof">
+            <span>Runs in your browser</span><span className="hero-proof-sep">·</span>
+            <span>Nothing uploaded</span><span className="hero-proof-sep">·</span>
+            <span>Real transactions, not guesses</span>
+          </div>
         </div>
         <HeroPreview/>
         <div className="hero-scroll"><div className="scroll-line"/>Scroll</div>
       </section>
+
+      <div className="stats-bar reveal">
+        <div className="stat"><div className="stat-n">6</div><div className="stat-l">Live Financial Signals</div></div>
+        <div className="stat"><div className="stat-n">0</div><div className="stat-l">Files Stored On Our Servers</div></div>
+        <div className="stat"><div className="stat-n">1</div><div className="stat-l">CSV To See Your Real Numbers</div></div>
+      </div>
 
       <section className="sec" id="trust" style={{ paddingTop:64, paddingBottom:64 }}>
         <div className="sec-eye">Trust</div>
         <h2 className="sec-title" style={{ fontSize:"clamp(28px,3.6vw,40px)" }}>Only claims we can<br/><em>actually stand behind</em></h2>
         <div className="feat-grid" style={{ marginTop:48 }}>
           {[
-            { title:"Data Processing", desc:"Your uploaded file is parsed in your browser using the same code shown above — it is never uploaded to our servers or permanently stored. Computed metrics are sent to Claude (Anthropic) only when you request an AI brief, and only as numbers, never as raw transaction data." },
-            { title:"Access Control", desc:"Your account is protected by Postgres row-level security, scoped to your own login — verified directly against the live database, not asserted in a policy document. Only the payment webhook, using a separate privileged key, can change your subscription status." },
-            { title:"Financial Transparency", desc:"Every metric — margin, runway, Risk Score, Growth Score — is derived from a published, testable formula, not a black-box model. Runway uses net burn, not gross expenses; scores only count a signal when there's real data behind it." },
+            { num:"01", title:"Data Processing", desc:"Your uploaded file is parsed in your browser using the same code shown above — it is never uploaded to our servers or permanently stored. Computed metrics are sent to Claude (Anthropic) only when you request an AI brief, and only as numbers, never as raw transaction data." },
+            { num:"02", title:"Access Control", desc:"Your account is protected by Postgres row-level security, scoped to your own login — verified directly against the live database, not asserted in a policy document. Only the payment webhook, using a separate privileged key, can change your subscription status." },
+            { num:"03", title:"Financial Transparency", desc:"Every metric — margin, runway, Risk Score, Growth Score — is derived from a published, testable formula, not a black-box model. Runway uses net burn, not gross expenses; scores only count a signal when there's real data behind it." },
           ].map((t, i) => (
-            <div className="feat-card" key={i}>
+            <div className="feat-card reveal" key={i} style={{ transitionDelay:`${i*70}ms` }}>
+              <div className="feat-num">// {t.num}</div>
               <h3 className="feat-title">{t.title}</h3>
               <p className="feat-desc">{t.desc}</p>
             </div>
@@ -2033,7 +2107,7 @@ function MarketingSite({ onLogin, onPlanSelect, onTerms, onPrivacy }) {
         <h2 className="sec-title" style={{ fontSize:"clamp(24px,3vw,32px)", marginBottom:24 }}>Built for founders who need<br/><em>financial clarity</em></h2>
         <div style={{ display:"flex", gap:12, flexWrap:"wrap", justifyContent:"center" }}>
           {["Agencies","SaaS","Consulting","Professional Services","E-commerce"].map((tag, i) => (
-            <div key={i} style={{ border:`1px solid ${C.border}`, padding:"10px 20px", fontSize:12, letterSpacing:"0.08em", textTransform:"uppercase", color:C.ink, fontFamily:"'JetBrains Mono',monospace" }}>{tag}</div>
+            <div key={i} className="reveal" style={{ transitionDelay:`${i*50}ms`, border:`1px solid ${C.border}`, padding:"10px 20px", fontSize:12, letterSpacing:"0.08em", textTransform:"uppercase", color:C.ink, fontFamily:"'JetBrains Mono',monospace" }}>{tag}</div>
           ))}
         </div>
       </div>
@@ -2044,7 +2118,12 @@ function MarketingSite({ onLogin, onPlanSelect, onTerms, onPrivacy }) {
         <p className="sec-body">Agencies, e-commerce, and SaaS businesses all face the same problem: revenue grows but financial clarity doesn't. Command Ledger is the system that fixes that.</p>
         <div className="feat-grid">
           {features.map((f, i) => (
-            <div className="feat-card" key={i}>
+            <div
+              className="feat-card reveal"
+              key={i}
+              style={{ transitionDelay:`${i*70}ms`, gridColumn: i===0 ? "span 2" : undefined }}
+            >
+              {i===0 && <div className="feat-tag">Core Engine</div>}
               <div className="feat-num">// {f.num}</div>
               <h3 className="feat-title">{f.title}</h3>
               <p className="feat-desc">{f.desc}</p>
@@ -2059,13 +2138,14 @@ function MarketingSite({ onLogin, onPlanSelect, onTerms, onPrivacy }) {
           <h2 className="sec-title">A spreadsheet shows numbers.<br/><em>This is what it means.</em></h2>
           <p className="sec-body" style={{ marginBottom:48 }}>Excel and QuickBooks store your data. Your accountant makes sure you're compliant. Neither tells you what changed and what to do about it. Here's the same numbers, both ways:</p>
 
-          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:1, background:C.border, border:`1px solid ${C.border}`, textAlign:"left", marginBottom:64 }}>
+          <div className="excel-grid reveal">
             <div style={{ background:C.surface, padding:"28px 32px" }}>
               <div style={{ fontSize:10, letterSpacing:"0.14em", textTransform:"uppercase", color:C.inkDim, fontWeight:600, marginBottom:16 }}>Raw Financial Data</div>
               <div style={{ fontFamily:"'JetBrains Mono',monospace", fontSize:13, color:C.ink, lineHeight:2.1 }}>
                 Revenue: R480,000<br/>Expenses: R390,000<br/>Profit: R90,000
               </div>
             </div>
+            <div className="excel-arrow">→</div>
             <div style={{ background:C.surfaceHigh, padding:"28px 32px", borderLeft:`1px solid ${C.gold}` }}>
               <div style={{ fontSize:10, letterSpacing:"0.14em", textTransform:"uppercase", color:C.gold, fontWeight:600, marginBottom:16 }}>Command Ledger Interpretation</div>
               <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:14.5, color:C.ink, lineHeight:1.8 }}>
@@ -2081,7 +2161,7 @@ function MarketingSite({ onLogin, onPlanSelect, onTerms, onPrivacy }) {
           <div className="sec-eye">How It Works</div>
           <h2 className="sec-title">Questions founders<br/><em>always ask</em></h2>
 
-          <div style={{ display:"flex", flexDirection:"column", gap:2, marginTop:40, textAlign:"left" }}>
+          <div className="reveal" style={{ display:"flex", flexDirection:"column", gap:2, marginTop:40, textAlign:"left" }}>
             {[
               {
                 q: "How does the AI advisor work?",
@@ -2143,10 +2223,10 @@ function MarketingSite({ onLogin, onPlanSelect, onTerms, onPrivacy }) {
             { key:"essentials", hot:false, soon:false },
             { key:"pro",        hot:true,  soon:false },
             { key:"elite",      hot:false, soon:true  },
-          ].map(p => {
+          ].map((p, i) => {
             const pl = PLANS[p.key];
             return (
-              <div key={p.key} className={`price-card${p.hot?" hot":""}${p.soon?" soon":""}`}>
+              <div key={p.key} className={`price-card reveal${p.hot?" hot":""}${p.soon?" soon":""}`} style={{ transitionDelay:`${i*70}ms` }}>
                 <div className="price-tier">{pl.name}</div>
                 <div className="price-tagline">{pl.tagline}</div>
                 {pl.setup ? (
@@ -2186,7 +2266,7 @@ function MarketingSite({ onLogin, onPlanSelect, onTerms, onPrivacy }) {
         </div>
       </section>
 
-      <section className="cta-sec">
+      <section className="cta-sec reveal">
         <div style={{ position:"relative", zIndex:1 }}>
           <div className="sec-eye">The Decision</div>
           <h2 className="cta-title">Know your numbers.<br/>Understand your risks.<br/><em>Make the next decision with evidence.</em></h2>
@@ -2194,6 +2274,11 @@ function MarketingSite({ onLogin, onPlanSelect, onTerms, onPrivacy }) {
             The hire you could not afford. The ad spend with no data behind it. The month you ran without knowing your runway. Command Ledger exists so those decisions never happen again.
           </p>
           <button className="btn btn-lg btn-primary" onClick={() => onPlanSelect("pro")}>Get Started</button>
+          <div className="hero-proof" style={{ justifyContent:"center", marginTop:24 }}>
+            <span>Runs in your browser</span><span className="hero-proof-sep">·</span>
+            <span>Nothing uploaded</span><span className="hero-proof-sep">·</span>
+            <span>No card required to try the live preview</span>
+          </div>
         </div>
       </section>
 
