@@ -2051,7 +2051,7 @@ function Dashboard({ user, profile, onLogout, onUpgrade }) {
                     <div style={{ fontSize:13, color:C.ink, fontFamily:"'Cormorant Garamond',serif", lineHeight:1.6, marginBottom:12 }}>
                       Direct access for capital decisions and growth strategy. Response within 4 hours.
                     </div>
-                    <button className="wa-btn" onClick={() => window.open("mailto:hello@commandledger.co?subject=Advisory%20support%20request","_blank")}>
+                    <button className="wa-btn" onClick={() => window.open("mailto:commandledger@gmail.com?subject=Advisory%20support%20request","_blank")}>
                       Email Advisory Support
                     </button>
                   </div>
@@ -2561,7 +2561,7 @@ function MarketingSite({ onLogin, onPlanSelect, onTerms, onPrivacy }) {
                 {p.soon ? (
                   <button
                     className="btn btn-full btn-outline"
-                    onClick={() => window.open("mailto:hello@commandledger.co?subject=Command%20Elite%20waitlist","_blank")}
+                    onClick={() => window.open("mailto:commandledger@gmail.com?subject=Command%20Elite%20waitlist","_blank")}
                   >
                     Join VIP Waitlist
                   </button>
@@ -2616,7 +2616,7 @@ function MarketingSite({ onLogin, onPlanSelect, onTerms, onPrivacy }) {
         </div>
         <div className="footer-copy">2026 Command Ledger - DigiBlueprint Financial Intelligence</div>
         <ul className="footer-links">
-          <li><a href="mailto:hello@commandledger.co">Contact</a></li>
+          <li><a href="mailto:commandledger@gmail.com">Contact</a></li>
         </ul>
       </footer>
     </>
@@ -2642,7 +2642,7 @@ function TermsPage({ onBack }) {
         <h2 className="page-h2">5. Disclaimer</h2>
         <p className="page-p">Command Ledger is for informational purposes only. This is not financial advice. Consult a qualified professional before major business decisions.</p>
         <h2 className="page-h2">6. Contact</h2>
-        <p className="page-p">hello@commandledger.co</p>
+        <p className="page-p">commandledger@gmail.com</p>
       </div>
     </div>
   );
@@ -2662,7 +2662,7 @@ function PrivacyPage({ onBack }) {
         <h2 className="page-h2">3. Security</h2>
         <p className="page-p">All data encrypted via SSL. Financial data processed in real time and not permanently stored. User accounts stored securely via Supabase.</p>
         <h2 className="page-h2">4. Contact</h2>
-        <p className="page-p">privacy@commandledger.co</p>
+        <p className="page-p">commandledger@gmail.com</p>
       </div>
     </div>
   );
