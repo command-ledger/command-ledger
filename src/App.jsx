@@ -787,6 +787,26 @@ function PayModal({ planKey, userEmail, userId, onClose, onSuccess }) {
   const [sdkReady, setSdkReady] = useState(false);
   const [sdkErr,   setSdkErr]   = useState("");
   const [done,     setDone]     = useState(false);
+  const dialogRef = useRef(null);
+
+  // onClose is passed as an inline arrow, so its identity changes on every
+  // parent render. Hold it in a ref so the effect below can mount exactly
+  // once and still call the current handler.
+  const onCloseRef = useRef(onClose);
+  useEffect(() => { onCloseRef.current = onClose; }, [onClose]);
+
+  // Escape closes the checkout dialog and focus moves into it on open, so a
+  // keyboard user is not left operating the page behind the overlay. This runs
+  // on mount only: re-focusing on every render would pull focus out of the
+  // PayPal field mid-entry. Focus is deliberately not trapped inside, because
+  // PayPal renders its button into a cross-origin iframe and cycling Tab
+  // across that boundary is unreliable.
+  useEffect(() => {
+    dialogRef.current?.focus();
+    const onKey = e => { if (e.key === "Escape") onCloseRef.current(); };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, []);
 
   useEffect(() => {
     rendered.current = false;
@@ -833,10 +853,10 @@ function PayModal({ planKey, userEmail, userId, onClose, onSuccess }) {
 
   return (
     <div className="overlay" onClick={e => e.target === e.currentTarget && onClose()}>
-      <div className="modal">
+      <div className="modal" role="dialog" aria-modal="true" aria-labelledby="pay-modal-title" tabIndex={-1} ref={dialogRef}>
         <div className="modal-head">
-          <div className="modal-title">{done ? "Subscription Active" : "Start Your Subscription"}</div>
-          <button className="modal-x" onClick={onClose}>x</button>
+          <div className="modal-title" id="pay-modal-title">{done ? "Subscription Active" : "Start Your Subscription"}</div>
+          <button className="modal-x" onClick={onClose} aria-label="Close">x</button>
         </div>
         <div className="modal-body">
           <div className="plan-badge">
@@ -897,6 +917,15 @@ function Dashboard({ user, profile, onLogout, onUpgrade }) {
   // Mobile-only: the sidebar (the app's only home for plan/sign-out) is
   // hidden below 960px, so those actions move into this topbar menu.
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
+
+  // Escape closes the mobile account menu. Without it the only way to dismiss
+  // the menu is clicking the backdrop, which a keyboard user cannot do.
+  useEffect(() => {
+    if (!accountMenuOpen) return;
+    const onKey = e => { if (e.key === "Escape") setAccountMenuOpen(false); };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [accountMenuOpen]);
   const [batches, setBatches] = useState([]);
   const [periodFilter, setPeriodFilter] = useState("12");
   const [historyLoading, setHistoryLoading] = useState(true);
@@ -1401,13 +1430,13 @@ function Dashboard({ user, profile, onLogout, onUpgrade }) {
                   {plan === "essentials" && (
                     <div className="dash-account-menu-item" style={{ color:C.gold }} role="menuitem" tabIndex={0}
                       onClick={() => { setAccountMenuOpen(false); onUpgrade(); }}
-                      onKeyDown={e => { if (e.key === "Enter") { setAccountMenuOpen(false); onUpgrade(); } }}>
+                      onKeyDown={e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setAccountMenuOpen(false); onUpgrade(); } }}>
                       Upgrade to Pro
                     </div>
                   )}
                   <div className="dash-account-menu-item" role="menuitem" tabIndex={0}
                     onClick={() => { setAccountMenuOpen(false); onLogout(); }}
-                    onKeyDown={e => { if (e.key === "Enter") { setAccountMenuOpen(false); onLogout(); } }}>
+                    onKeyDown={e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setAccountMenuOpen(false); onLogout(); } }}>
                     Sign Out
                   </div>
                 </div>
