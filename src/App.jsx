@@ -448,7 +448,39 @@ body{background:#050709;color:#F4F7FF;font-family:'Syne',sans-serif;-webkit-font
 @media(prefers-reduced-motion:reduce){
   .skel{animation:none;opacity:0.65;}
 }
+/* Focus indicators. Several controls are styled divs and spans that are
+   made keyboard-operable via clickableProps; without a visible ring a
+   keyboard user cannot tell where they are (WCAG 2.4.7). */
+:focus-visible{outline:2px solid #D8DADE;outline-offset:2px;}
+.sb-item:focus-visible{outline:2px solid #D8DADE;outline-offset:-2px;}
+.drop-zone:focus-visible{outline:2px solid #D8DADE;outline-offset:-3px;}
+.a-link:focus-visible,.page-back:focus-visible,.hero-preview-reset:focus-visible,.footer-links a:focus-visible,.nav-logo:focus-visible,.auth-logo-row:focus-visible{outline:2px solid #D8DADE;outline-offset:3px;}
+.sb-item[aria-disabled="true"]{cursor:default;}
+
 `;
+
+// ─── KEYBOARD-OPERABLE NON-BUTTON CONTROLS ──────────────────────
+// Several controls are styled divs/spans rather than <button> elements.
+// A bare onClick on a div is mouse-only: it is not focusable and Enter or
+// Space never reaches it, so keyboard and screen-reader users cannot use
+// the control at all (WCAG 2.1.1, Level A). Spread these props onto any
+// non-button element that carries an onClick so it becomes focusable and
+// responds to Enter and Space exactly as the click does.
+function clickableProps(fn, { label, disabled = false } = {}) {
+  if (disabled) return { "aria-disabled": true };
+  return {
+    role: "button",
+    tabIndex: 0,
+    "aria-label": label,
+    onClick: fn,
+    onKeyDown: e => {
+      if (e.key === "Enter" || e.key === " " || e.key === "Spacebar") {
+        e.preventDefault();
+        fn(e);
+      }
+    },
+  };
+}
 
 // ─── AI ADVISOR RECOMMENDATION ──────────────────────────────────
 // Renders the model's response as a structured executive recommendation —
@@ -702,7 +734,7 @@ function DataUpload({ onDataLoaded, hasData }) {
         onDragOver={e => { e.preventDefault(); setDrag(true); }}
         onDragLeave={() => setDrag(false)}
         onDrop={e => { e.preventDefault(); setDrag(false); handleFile(e.dataTransfer.files[0]); }}
-        onClick={() => fileRef.current?.click()}
+        {...clickableProps(() => fileRef.current?.click(), { label:"Choose a financial file to upload" })}
       >
         <input ref={fileRef} type="file" accept=".csv,.xlsx,.xls" style={{ display:"none" }} onChange={e => handleFile(e.target.files[0])}/>
         <div className="drop-zone-title">{parsing ? "Reading your file..." : "Drop your financial file here"}</div>
@@ -1306,7 +1338,8 @@ function Dashboard({ user, profile, onLogout, onUpgrade }) {
           <div className="sb-sec">Navigation</div>
           {navItems.map(n => (
             <div key={n.id} className={`sb-item${tab===n.id?" on":""}${n.locked?" locked":""}`}
-              onClick={() => !n.locked && setTab(n.id)}>
+              aria-current={tab===n.id ? "page" : undefined}
+              {...clickableProps(() => setTab(n.id), { disabled:n.locked })}>
               <span className="sb-icon" style={{ fontFamily:"'JetBrains Mono',monospace", fontSize:10, color:tab===n.id?C.gold:C.goldDim }}>#</span>
               {n.label}
               {n.locked && <span style={{ fontSize:10, marginLeft:"auto", opacity:0.5 }}>Pro+</span>}
@@ -1318,7 +1351,7 @@ function Dashboard({ user, profile, onLogout, onUpgrade }) {
             {PLANS[plan].name}
           </div>
           {plan === "essentials" && (
-            <div className="sb-item" style={{ color:C.gold }} onClick={onUpgrade}>
+            <div className="sb-item" style={{ color:C.gold }} {...clickableProps(onUpgrade)}>
               <span style={{ fontSize:10, marginRight:4, fontFamily:"'JetBrains Mono',monospace" }}>+</span>Upgrade to Pro
             </div>
           )}
@@ -1329,7 +1362,7 @@ function Dashboard({ user, profile, onLogout, onUpgrade }) {
             </div>
           )}
           <div className="sb-sec" style={{ marginTop:8 }}>Account</div>
-          <div className="sb-item" onClick={onLogout}>
+          <div className="sb-item" {...clickableProps(onLogout)}>
             <span style={{ fontSize:10, marginRight:4, color:C.inkDim, fontFamily:"'JetBrains Mono',monospace" }}>-</span>Sign Out
           </div>
         </nav>
@@ -2074,7 +2107,7 @@ function LoginPage({ onBack }) {
   return (
     <div className="auth-page">
       <div className="auth-card">
-        <div className="auth-logo-row" style={{ cursor:"pointer" }} onClick={onBack}>
+        <div className="auth-logo-row" style={{ cursor:"pointer" }} {...clickableProps(onBack, { label:"Back to Command Ledger home" })}>
           <div className="logomark">C</div>
           <div className="wordmark" style={{ fontSize:16 }}>Command Ledger</div>
         </div>
@@ -2103,10 +2136,10 @@ function LoginPage({ onBack }) {
             </svg>
             Continue with Google
           </button>
-          <div className="a-link" onClick={() => setMode(mode==="login"?"register":"login")}>
+          <div className="a-link" {...clickableProps(() => setMode(mode==="login"?"register":"login"))}>
             {mode==="login" ? <>New? <span>Create an account</span></> : <>Have an account? <span>Sign in</span></>}
           </div>
-          <div className="a-link" onClick={onBack} style={{ marginTop:8 }}><span>Back to site</span></div>
+          <div className="a-link" {...clickableProps(onBack)} style={{ marginTop:8 }}><span>Back to site</span></div>
         </form>
       </div>
     </div>
@@ -2127,7 +2160,7 @@ function FaqItem({ q, a }) {
         padding: "22px 0",
         cursor: "pointer",
       }}
-      onClick={() => setOpen(!open)}
+      onClick={() => setOpen(o => !o)}
       onKeyDown={e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setOpen(o => !o); } }}
     >
       <div style={{
@@ -2240,7 +2273,7 @@ function HeroPreview() {
             </div>
             <div className="hero-preview-note">
               {label.startsWith("Example") ? "Illustrative example data — not a real customer." : "Computed from your file, in this browser tab only."}
-              {" "}<span className="hero-preview-reset" onClick={() => { setRows(null); setLabel(""); }}>Try another file</span>
+              {" "}<span className="hero-preview-reset" {...clickableProps(() => { setRows(null); setLabel(""); })}>Try another file</span>
             </div>
           </>
         )}
@@ -2281,7 +2314,7 @@ function MarketingSite({ onLogin, onPlanSelect, onTerms, onPrivacy }) {
   return (
     <>
       <nav className={`nav${scrolled?" scrolled":""}`}>
-        <div className="nav-logo" onClick={() => window.scrollTo(0, 0)}>
+        <div className="nav-logo" {...clickableProps(() => window.scrollTo(0, 0), { label:"Back to top" })}>
           <div className="logomark">C</div>
           <div><div className="wordmark">Command Ledger</div><div className="wordmark-sub">Financial Intelligence</div></div>
         </div>
@@ -2547,8 +2580,8 @@ function MarketingSite({ onLogin, onPlanSelect, onTerms, onPrivacy }) {
             <div style={{ fontSize:10, letterSpacing:"0.14em", textTransform:"uppercase", color:C.gold, fontWeight:600, marginBottom:12 }}>Trust</div>
             <ul className="footer-links" style={{ flexDirection:"column", alignItems:"flex-start", gap:10 }}>
               <li><a href="#trust">Data Processing &amp; Security</a></li>
-              <li><a onClick={onPrivacy}>Privacy Policy</a></li>
-              <li><a onClick={onTerms}>Terms of Service</a></li>
+              <li><a {...clickableProps(onPrivacy)}>Privacy Policy</a></li>
+              <li><a {...clickableProps(onTerms)}>Terms of Service</a></li>
             </ul>
           </div>
         </div>
@@ -2566,7 +2599,7 @@ function TermsPage({ onBack }) {
   return (
     <div style={{ minHeight:"100vh" }}>
       <div className="page-wrap">
-        <div className="page-back" onClick={onBack}>Back</div>
+        <div className="page-back" {...clickableProps(onBack, { label:"Back to previous page" })}>Back</div>
         <h1 className="page-title">Terms of Service</h1>
         <div className="page-date">Last updated: June 2026</div>
         <h2 className="page-h2">1. Acceptance</h2>
@@ -2590,7 +2623,7 @@ function PrivacyPage({ onBack }) {
   return (
     <div style={{ minHeight:"100vh" }}>
       <div className="page-wrap">
-        <div className="page-back" onClick={onBack}>Back</div>
+        <div className="page-back" {...clickableProps(onBack, { label:"Back to previous page" })}>Back</div>
         <h1 className="page-title">Privacy Policy</h1>
         <div className="page-date">Last updated: June 2026</div>
         <h2 className="page-h2">1. What We Collect</h2>
@@ -2652,7 +2685,7 @@ function PaywallGate({ user, onSelectPlan, onLogout }) {
               );
             })}
           </div>
-          <div className="a-link" onClick={onLogout} style={{ marginTop:24 }}>
+          <div className="a-link" {...clickableProps(onLogout)} style={{ marginTop:24 }}>
             <span>Sign out</span>
           </div>
         </div>
