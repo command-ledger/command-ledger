@@ -1585,3 +1585,41 @@ describe("computeMetrics — Risk Score is now trend-aware end-to-end", () => {
     expect(m.risk.label).toBe("Watch");
   });
 });
+
+// ── Excel upload contract ────────────────────────────────────────
+// App.jsx reads an .xlsx workbook, takes the first sheet and converts it to
+// CSV with XLSX.utils.sheet_to_csv, then hands that text to the parsers. The
+// fixture below is verbatim sheet_to_csv output from xlsx 0.20.3, so this
+// pins the contract between SheetJS's CSV shape and our parsers without
+// importing the library into the test run.
+describe("Excel upload contract (sheet_to_csv output)", () => {
+  const SHEET_TO_CSV = [
+    "Date,Description,Amount",
+    "2026-01-05,ACME CORP INVOICE,5000",
+    "2026-01-08,AWS HOSTING,-240",
+    "2026-02-05,ACME CORP INVOICE,5000",
+    "2026-02-08,AWS HOSTING,-240",
+  ].join("\n");
+
+  it("aggregates sheet_to_csv output into monthly rows", () => {
+    const result = parseAnyCSV(SHEET_TO_CSV);
+    expect(result).not.toBeNull();
+    expect(result.rows.length).toBe(2);
+    expect(result.rows[0].revenue).toBe(5000);
+    expect(result.rows[0].expenses).toBe(240);
+    expect(result.rows[1].revenue).toBe(5000);
+    expect(result.rows[1].expenses).toBe(240);
+  });
+
+  it("emits one signed transaction per source row", () => {
+    const { transactions, mode } = parseTransactions(SHEET_TO_CSV);
+    expect(mode).toBe("bank");
+    expect(transactions.length).toBe(4);
+    expect(transactions.filter(t => t.amount > 0).length).toBe(2);
+    expect(transactions.filter(t => t.amount < 0).length).toBe(2);
+    expect(transactions.find(t => t.amount > 0).amount).toBe(5000);
+    expect(transactions.find(t => t.amount < 0).amount).toBe(-240);
+    // negative rows keep their sign and still categorise
+    expect(transactions.find(t => t.amount < 0).category).toBe("software");
+  });
+});
