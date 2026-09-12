@@ -334,15 +334,103 @@ body{background:#050709;color:#F4F7FF;font-family:'Syne',sans-serif;-webkit-font
 .page-back:hover{color:#D8DADE;}
 .faq-item{outline:none;}
 .faq-item:focus-visible{outline:1px solid #5A5D64;outline-offset:6px;}
+
+/* ── Severity language beyond colour: an explicit text tag rides with
+   every colour cue, so meaning survives greyscale/screenshot/colour-
+   blindness. Colour is styled inline per instance (reusing the same
+   {color, background} pattern already used by .ai-rec-chip), this class
+   only carries shape/type. ── */
+.severity-tag{display:inline-flex;align-items:center;gap:6px;font-family:'JetBrains Mono',monospace;font-size:9.5px;font-weight:700;letter-spacing:0.14em;text-transform:uppercase;padding:3px 9px;border-radius:2px;flex-shrink:0;}
+
+/* ── Hero metric: one KPI dominates, chosen by severity rather than
+   fixed by position — the primary metric changes when runway turns
+   critical. Supporting metrics stay in the ordinary .card treatment. ── */
+.kpi-hero-row{display:flex;flex-direction:column;gap:14px;}
+.kpi-hero-sub{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;align-items:stretch;}
+/* The supporting figures share a row three-up; Cormorant at 36px needs
+   ~275px for a value like "No burn", which a third of a narrow dashboard
+   column does not have. Scaling the figure down rather than letting it
+   overflow keeps it the most legible element in the card at every width. */
+.kpi-hero-sub .val{font-size:clamp(22px,2.4vw,36px);}
+.hero-metric{background:#0A0D14;border:1px solid #161C2E;padding:26px 28px;position:relative;overflow:hidden;display:flex;flex-direction:column;justify-content:center;}
+.hero-metric::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:var(--sev,#5A5D64);}
+.hero-metric-val{font-family:'Cormorant Garamond',serif;font-size:clamp(38px,4.2vw,56px);font-weight:300;line-height:1;letter-spacing:-0.01em;}
+.hero-metric-sub{margin-top:14px;font-size:13px;font-family:'Cormorant Garamond',serif;line-height:1.65;color:#8898B8;max-width:440px;}
+
+/* ── Trajectory: Growth Score + Trends + Business History as one
+   coherent "direction of travel" unit, not three scattered cards below
+   the fold — this is the product's differentiator, so it reads as one
+   deliberate section, not a leftover appendix. ── */
+.trajectory-zone{border:1px solid #161C2E;background:#0A0D14;position:relative;overflow:hidden;}
+.trajectory-zone::before{content:'';position:absolute;top:0;left:0;right:0;height:1px;background:linear-gradient(to right,transparent,rgba(216,218,222,0.18),transparent);}
+.trajectory-head{padding:16px 22px;border-bottom:1px solid #161C2E;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;}
+.trajectory-body{padding:22px;display:flex;flex-direction:column;gap:20px;}
+.trajectory-row{display:flex;gap:20px;align-items:flex-start;}
+.trajectory-row+.trajectory-row{padding-top:20px;border-top:1px solid #161C2E;}
+
+/* ── Data maturity: a single-period read must not look as confident as
+   a multi-period one. Dashed border + explicit label communicate "the
+   system cannot yet assess trajectory" before a founder trusts a number
+   that thin. ── */
+.data-thin{border:1px dashed #243050!important;}
+.data-thin-tag{display:inline-flex;align-items:center;gap:7px;font-family:'JetBrains Mono',monospace;font-size:9px;font-weight:700;letter-spacing:0.16em;text-transform:uppercase;color:#E8A020;margin-bottom:12px;}
+.data-thin-tag::before{content:'';width:5px;height:5px;background:#E8A020;flex-shrink:0;}
+
+/* ── Loading: skeleton placeholders hold the exact layout the real
+   content will occupy, so nothing jumps once data arrives, and the
+   founder sees "computing," never a frozen blank screen. ── */
+@keyframes skeletonPulse{0%,100%{opacity:0.45}50%{opacity:0.85}}
+.skel{background:#161C2E;border-radius:2px;animation:skeletonPulse 1.5s ease-in-out infinite;}
+
+/* ── Mobile dashboard navigation: the sidebar (the only nav) disappears
+   entirely below 960px with nothing replacing it. This fixed bottom tab
+   bar keeps every tab reachable without scrolling, and the account menu
+   moves sign-out/plan actions into the topbar instead of vanishing with
+   the sidebar. ── */
+.dash-tabbar{display:none;}
+.dash-tabbar-item{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;flex:1;padding:9px 4px calc(6px + env(safe-area-inset-bottom,0px));background:none;border:none;color:#7A7E88;font-family:'Syne',sans-serif;font-size:9.5px;font-weight:600;letter-spacing:0.03em;text-transform:uppercase;cursor:pointer;min-height:48px;}
+.dash-tabbar-item.on{color:#D8DADE;}
+.dash-tabbar-glyph{font-family:'JetBrains Mono',monospace;font-size:13px;line-height:1;}
+.dash-account-wrap{position:relative;display:none;}
+.dash-account-btn{width:40px;height:40px;border-radius:50%;background:rgba(216,218,222,0.12);border:1px solid #5A5D64;display:flex;align-items:center;justify-content:center;font-size:14px;color:#D8DADE;cursor:pointer;overflow:hidden;flex-shrink:0;padding:0;}
+.dash-account-btn img{width:100%;height:100%;object-fit:cover;border-radius:50%;}
+.dash-account-menu{position:absolute;top:44px;right:0;background:#0F1320;border:1px solid #243050;min-width:190px;z-index:250;box-shadow:0 16px 40px -12px rgba(0,0,0,0.6);animation:fadeIn 0.15s ease;}
+.dash-account-menu-item{padding:12px 16px;font-size:12px;color:#8898B8;cursor:pointer;border-bottom:1px solid #161C2E;}
+.dash-account-menu-item:last-child{border-bottom:none;}
+.dash-account-menu-item:hover{color:#F0E8D8;background:#0A0D14;}
+
 @media(max-width:960px){
   .feat-grid,.price-grid,.kpi4,.kpi3,.g3{grid-template-columns:1fr 1fr;}
   .stats-bar{grid-template-columns:1fr;}
   .g2,.g21,.input-grid{grid-template-columns:1fr;}
+  .kpi-hero-sub{grid-template-columns:1fr 1fr;}
+  .trajectory-row{flex-direction:column;gap:10px;}
   .dash{grid-template-columns:1fr;grid-template-rows:64px auto 1fr;}
   .sidebar{display:none;}
   .topbar,.dash-body{grid-column:1;}
+  .dash-tabbar{display:flex;position:fixed;bottom:0;left:0;right:0;z-index:250;background:rgba(10,13,20,0.98);backdrop-filter:blur(20px);border-top:1px solid #161C2E;}
+  .dash-account-wrap{display:block;}
+  /* A 1fr grid column resolves to minmax(auto, 1fr): any child that
+     cannot shrink forces the column — and therefore the whole dashboard
+     — wider than the phone. The topbar's breadcrumb + status badge +
+     mode pills did exactly that (410px column on a 390px screen).
+     min-width:0 lets the column shrink; the breadcrumb goes because the
+     bottom tab bar already shows which tab is current. */
+  .topbar,.dash-body{min-width:0;}
+  .topbar{padding:0 16px;gap:10px;}
+  .breadcrumb{display:none;}
+  .tb-right{min-width:0;gap:10px;}
+  .live-badge{min-width:0;overflow:hidden;}
+  .live-badge span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .dash-body{padding:20px 16px calc(64px + env(safe-area-inset-bottom,0px));}
   .nav-links{display:none;}
   .nav-burger{display:flex;}
+  /* Sign In + Get Started + the hamburger together overflow the nav at
+     phone widths (confirmed via live rendering — Sign In and part of Get
+     Started were clipped off the right edge at 390px). Sign In stays
+     reachable one scroll down in the hero's own CTA row, so the nav row
+     keeps a single primary action plus the menu toggle on mobile. */
+  .nav-cta .btn-ghost{display:none;}
   .nav,.hero,.sec,.cta-sec{padding-left:24px;padding-right:24px;}
   .footer{padding:32px 24px;}
   .hero{grid-template-columns:1fr;text-align:center;padding-top:120px;}
@@ -354,8 +442,11 @@ body{background:#050709;color:#F4F7FF;font-family:'Syne',sans-serif;-webkit-font
   .price-card.hot:hover{transform:translateY(-4px);}
 }
 @media(max-width:600px){
-  .feat-grid,.price-grid,.kpi4,.kpi3,.g3{grid-template-columns:1fr;}
+  .feat-grid,.price-grid,.kpi4,.kpi3,.g3,.kpi-hero-sub{grid-template-columns:1fr;}
   .hero-preview-kpis{grid-template-columns:1fr;}
+}
+@media(prefers-reduced-motion:reduce){
+  .skel{animation:none;opacity:0.65;}
 }
 `;
 
@@ -406,6 +497,50 @@ function ConfidenceLine({ c }) {
   return (
     <div style={{ fontSize:9, letterSpacing:"0.1em", textTransform:"uppercase", color:C.inkDim, fontWeight:600, marginTop:6, lineHeight:1.5 }}>
       {label} — {c.reason}
+    </div>
+  );
+}
+
+// ─── SEVERITY TAG ─────────────────────────────────────────────
+// Every colour-coded state carries an explicit text label riding with
+// it — colour alone fails accessibility and fails the instant someone
+// screenshots in greyscale. Reuses the {color, background} chip pattern
+// already established by .ai-rec-chip, so severity reads consistently
+// everywhere it appears.
+const SEVERITY_STYLE = {
+  critical: { text:"Critical", color:C.red },
+  warning:  { text:"Warning",  color:C.amber },
+  positive: { text:"Healthy",  color:C.green },
+  neutral:  { text:"Stable",   color:C.gold },
+};
+function SeverityTag({ level, label }) {
+  const s = SEVERITY_STYLE[level] || SEVERITY_STYLE.neutral;
+  return (
+    <span className="severity-tag" style={{ color:s.color, background:`${s.color}1F` }}>
+      {label || s.text}
+    </span>
+  );
+}
+
+// ─── LOADING SKELETONS ────────────────────────────────────────
+// Holds the exact shape of the content about to arrive, so nothing jumps
+// once real data lands — communicates "computing," never a frozen blank
+// screen, while file parsing / history load / AI generation are in flight.
+function SkeletonKPIRow() {
+  return (
+    <div className="kpi-hero-row" aria-busy="true" aria-label="Loading your financial position">
+      <div className="card" style={{ minHeight:150 }}>
+        <div className="skel" style={{ width:"38%", height:9, marginBottom:18 }}/>
+        <div className="skel" style={{ width:"64%", height:42, marginBottom:16 }}/>
+        <div className="skel" style={{ width:"46%", height:10 }}/>
+      </div>
+      {[0, 1].map(i => (
+        <div className="card" key={i} style={{ minHeight:150 }}>
+          <div className="skel" style={{ width:"58%", height:9, marginBottom:16 }}/>
+          <div className="skel" style={{ width:"62%", height:28, marginBottom:12 }}/>
+          <div className="skel" style={{ width:"42%", height:9 }}/>
+        </div>
+      ))}
     </div>
   );
 }
@@ -470,19 +605,27 @@ function BChart({ data }) {
 // The actual decision logic lives in computeDirective() (financials.js) —
 // shared with Dashboard's persistence path so what's rendered here and
 // what's written to the `directives` table can never drift apart.
+const DIRECTIVE_SEVERITY_TAG = { critical:"critical", warn:"warning", go:"positive", stable:"neutral" };
+
 function Directive({ metrics, concentration }) {
   const { margin, burnMonths, free, vel, conv, hireReady, ltvcac, n } = metrics;
   const d = computeDirective({ margin, burnMonths, free, vel, conv, hireReady, ltvcac, months: n, concentration });
   const { severity, wasCapped } = d;
   const uc = { critical:C.red, warn:C.amber, go:C.green, stable:C.gold }[severity];
+  // Critical calls get a heavier frame, not just a red hue — weight and
+  // border treatment carry severity too, so it survives greyscale.
+  const isCritical = severity === "critical";
 
   return (
-    <div className="directive-box" style={{ "--uc":uc }}>
+    <div className="directive-box" style={{ "--uc":uc, borderWidth:isCritical?2:1, borderColor:uc }}>
       <div style={{ position:"absolute", top:0, left:0, right:0, height:2, background:`linear-gradient(to right,transparent,${uc},transparent)` }}/>
-      <div style={{ fontSize:9, letterSpacing:"0.2em", textTransform:"uppercase", color:uc, fontWeight:600, marginBottom:14 }}>
-        This Week's Directive
+      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", gap:12, flexWrap:"wrap", marginBottom:14 }}>
+        <div style={{ fontSize:9, letterSpacing:"0.2em", textTransform:"uppercase", color:uc, fontWeight:600 }}>
+          This Week's Directive
+        </div>
+        <SeverityTag level={DIRECTIVE_SEVERITY_TAG[severity]}/>
       </div>
-      <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:20, color:C.cream, lineHeight:1.4, borderLeft:`3px solid ${uc}`, paddingLeft:16, marginBottom:10 }}>
+      <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:22, color:C.cream, lineHeight:1.35, borderLeft:`3px solid ${uc}`, paddingLeft:16, marginBottom:10 }}>
         {d.text}
       </div>
       <div style={{ fontSize:12, color:C.ink, lineHeight:1.7, fontFamily:"'Cormorant Garamond',serif", paddingLeft:16 }}>
@@ -719,6 +862,9 @@ function Dashboard({ user, profile, onLogout, onUpgrade }) {
   const [directives, setDirectives] = useState([]);
   const [directivesLoading, setDirectivesLoading] = useState(true);
   const [ackNote, setAckNote] = useState("");
+  // Mobile-only: the sidebar (the app's only home for plan/sign-out) is
+  // hidden below 960px, so those actions move into this topbar menu.
+  const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const [batches, setBatches] = useState([]);
   const [periodFilter, setPeriodFilter] = useState("12");
   const [historyLoading, setHistoryLoading] = useState(true);
@@ -1206,6 +1352,35 @@ function Dashboard({ user, profile, onLogout, onUpgrade }) {
             <button className={`mpill${mode==="safe"?" on":""}`} onClick={() => setMode("safe")}>Safe</button>
             <button className={`mpill${mode==="growth"?" on":""}`} onClick={() => setMode("growth")}>Growth</button>
           </div>
+          {/* Mobile only (see .dash-account-wrap) — the sidebar carrying
+              plan/upgrade/sign-out disappears below 960px, so those
+              actions live here instead of vanishing with it. */}
+          <div className="dash-account-wrap">
+            <button className="dash-account-btn" onClick={() => setAccountMenuOpen(o => !o)} aria-label="Account menu" aria-expanded={accountMenuOpen} aria-haspopup="true">
+              {userAvatar ? <img src={userAvatar} alt=""/> : userName[0]?.toUpperCase()}
+            </button>
+            {accountMenuOpen && (
+              <>
+                <div style={{ position:"fixed", inset:0, zIndex:240 }} onClick={() => setAccountMenuOpen(false)}/>
+                <div className="dash-account-menu" role="menu">
+                  <div className="dash-account-menu-item" style={{ cursor:"default", color:C.cream, fontWeight:600 }}>{userName}</div>
+                  <div className="dash-account-menu-item" style={{ cursor:"default", color: plan==="elite"?C.green:plan==="pro"?C.gold:C.blue }}>{PLANS[plan].name}</div>
+                  {plan === "essentials" && (
+                    <div className="dash-account-menu-item" style={{ color:C.gold }} role="menuitem" tabIndex={0}
+                      onClick={() => { setAccountMenuOpen(false); onUpgrade(); }}
+                      onKeyDown={e => { if (e.key === "Enter") { setAccountMenuOpen(false); onUpgrade(); } }}>
+                      Upgrade to Pro
+                    </div>
+                  )}
+                  <div className="dash-account-menu-item" role="menuitem" tabIndex={0}
+                    onClick={() => { setAccountMenuOpen(false); onLogout(); }}
+                    onKeyDown={e => { if (e.key === "Enter") { setAccountMenuOpen(false); onLogout(); } }}>
+                    Sign Out
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
         </div>
       </header>
 
@@ -1385,13 +1560,22 @@ function Dashboard({ user, profile, onLogout, onUpgrade }) {
               </div>
             )}
 
-            {historyLoading && !data ? (
-              <div className="d-alert info">Loading your financial history...</div>
-            ) : (
-              <div className={`d-alert ${alert.t}`}>{alert.msg}</div>
-            )}
-
+            {/* The directive is the single most valuable output in the
+                product — it renders first, before any other message, with
+                nothing competing in its visual zone. The generic status
+                banner below only appears when there's no directive to show
+                (no data connected yet), never alongside one. */}
             {hasData && <Directive metrics={metrics} concentration={concentrationData}/>}
+
+            {/* Only ever shown when there is nothing real to display yet:
+                the skeleton while history is still in flight, the status
+                banner once it has landed empty. A founder on manual entry
+                (or a fresh upload) has real numbers immediately, so
+                neither one may sit above their populated vitals. */}
+            {!hasData && (historyLoading
+              ? <SkeletonKPIRow/>
+              : <div className={`d-alert ${alert.t}`}>{alert.msg}</div>
+            )}
 
             {missedObligations.length > 0 && (
               <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
@@ -1419,36 +1603,154 @@ function Dashboard({ user, profile, onLogout, onUpgrade }) {
               </div>
             )}
 
-            <div>
-              <div className="card-sec">Core Vitals</div>
-              <div className="kpi4">
-                {[
-                  { lbl:"Monthly Revenue",  val:fmt(latest.revenue), col:"g",  d:`${pc(vel)} velocity`,     dt:vel>=0?"up":"dn" },
-                  { lbl:"Profit Margin",    val:pc(margin),          col:"gr", d:`${fmt(totPro)} net profit`, dt:margin>0?"up":"dn" },
-                  { lbl:"True Free Cash",   val:fmt(free),           col:free>=0?"g":"r", d:"After tax + safety", dt:free>=0?"up":"dn" },
-                  { lbl:"Burn Runway",      val:cashFlowPositive?"No burn":(runwayConfidence.shown && burnMonths>0)?`${safe(burnMonths).toFixed(1)}mo`:"---",
-                    col:cashFlowPositive?"gr":burnMonths>=6?"gr":burnMonths>=3?"a":"r",
-                    d:cashFlowPositive?"Cash flow positive":burnMonths>=6?"Safe":"Needs attention",
-                    dt:cashFlowPositive||burnMonths>=6?"up":"dn", conf:runwayConfidence },
-                ].map((m, i) => (
-                  <div key={i} className="card"
-                    onMouseEnter={e => e.currentTarget.style.transform = "translateY(-2px)"}
-                    onMouseLeave={e => e.currentTarget.style.transform = ""}
-                    style={{ transition:"transform 0.2s", cursor:"default" }}>
-                    <div className="card-lbl">{m.lbl}</div>
-                    <div className={`val ${m.col}`}>{m.val}</div>
-                    <div className={`delta ${m.dt}`}>{m.dt==="up"?"+":"-"} {m.d}</div>
-                    <ConfidenceLine c={m.conf}/>
+            {hasData && (() => {
+              // The primary KPI is chosen by severity, not fixed by
+              // position — when runway or free cash turns critical, that
+              // is what dominates the page instead of revenue.
+              const heroCandidates = {
+                free: { key:"free", lbl:"True Free Cash", val:fmt(free),
+                  sub:"Overhead exceeds liquidity after obligations. This is the number that matters right now, not revenue.",
+                  sev:"critical" },
+                runwayCrit: { key:"runway", lbl:"Burn Runway", val:`${safe(burnMonths).toFixed(1)} months`,
+                  sub:"Below the 3-month danger threshold. Protect cash immediately — this is the number that matters right now.",
+                  sev:"critical" },
+                runwayWarn: { key:"runway", lbl:"Burn Runway", val:`${safe(burnMonths).toFixed(1)} months`,
+                  sub:"Below the 6-month safety threshold — worth building back up before it needs full attention.",
+                  sev:"warning" },
+                revenue: { key:"revenue", lbl:"Monthly Revenue", val:fmt(latest.revenue),
+                  sub:`${pc(vel)} velocity month-over-month. Fundamentals are stable enough that revenue is the number to grow, not defend.`,
+                  sev:"positive" },
+              };
+              const hero = safe(free) < 0 ? heroCandidates.free
+                : (!cashFlowPositive && safe(burnMonths) > 0 && safe(burnMonths) < 3) ? heroCandidates.runwayCrit
+                : (!cashFlowPositive && safe(burnMonths) > 0 && safe(burnMonths) < 6) ? heroCandidates.runwayWarn
+                : heroCandidates.revenue;
+
+              const supporting = [
+                { key:"revenue", lbl:"Monthly Revenue",  val:fmt(latest.revenue), col:"g",  d:`${pc(vel)} velocity`,     dt:vel>=0?"up":"dn" },
+                { key:"margin",  lbl:"Profit Margin",    val:pc(margin),          col:"gr", d:`${fmt(totPro)} net profit`, dt:margin>0?"up":"dn" },
+                { key:"free",    lbl:"True Free Cash",   val:fmt(free),           col:free>=0?"g":"r", d:"After tax + safety", dt:free>=0?"up":"dn" },
+                { key:"runway",  lbl:"Burn Runway",      val:cashFlowPositive?"No burn":(runwayConfidence.shown && burnMonths>0)?`${safe(burnMonths).toFixed(1)}mo`:"---",
+                  col:cashFlowPositive?"gr":burnMonths>=6?"gr":burnMonths>=3?"a":"r",
+                  d:cashFlowPositive?"Cash flow positive":burnMonths>=6?"Safe":"Needs attention",
+                  dt:cashFlowPositive||burnMonths>=6?"up":"dn", conf:runwayConfidence },
+              ].filter(m => m.key !== hero.key);
+
+              // A founder with one month of data must not see the same
+              // confident presentation as one with eighteen — the dashed
+              // frame and explicit tag are the visible difference.
+              const isThinData = dataConfidence === "low";
+
+              return (
+                <div>
+                  <div className="card-sec">Core Vitals</div>
+                  {isThinData && (
+                    <div className="data-thin-tag">Early data — trajectory not yet assessable</div>
+                  )}
+                  <div className={`kpi-hero-row${isThinData ? " data-thin" : ""}`}>
+                    <div className="hero-metric" style={{ "--sev": SEVERITY_STYLE[hero.sev].color }}>
+                      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", gap:12, marginBottom:4 }}>
+                        <div className="card-lbl" style={{ marginBottom:0 }}>{hero.lbl}</div>
+                        <SeverityTag level={hero.sev}/>
+                      </div>
+                      <div className="hero-metric-val" style={{ color: SEVERITY_STYLE[hero.sev].color }}>{hero.val}</div>
+                      <div className="hero-metric-sub">{hero.sub}</div>
+                    </div>
+                    <div className="kpi-hero-sub">
+                      {supporting.map((m, i) => (
+                        <div key={i} className="card"
+                          onMouseEnter={e => e.currentTarget.style.transform = "translateY(-2px)"}
+                          onMouseLeave={e => e.currentTarget.style.transform = ""}
+                          style={{ transition:"transform 0.2s", cursor:"default" }}>
+                          <div className="card-lbl">{m.lbl}</div>
+                          <div className={`val ${m.col}`}>{m.val}</div>
+                          <div className={`delta ${m.dt}`}>{m.dt==="up"?"+":"-"} {m.d}</div>
+                          <ConfidenceLine c={m.conf}/>
+                        </div>
+                      ))}
+                    </div>
                   </div>
-                ))}
-              </div>
-              {showForwardRunway && (
-                <div className="d-alert warn" style={{ marginTop:12 }}>
-                  {cashFlowPositive ? `No burn on average — but ` : `${safe(burnMonths).toFixed(1)} months on average burn. `}
-                  {forwardRunway.monthsUntilCross.toFixed(1)} months against your known obligations (around {forwardRunway.crossDate}). The second is the real number.
+                  {showForwardRunway && (
+                    <div className="d-alert warn" style={{ marginTop:12 }}>
+                      {cashFlowPositive ? `No burn on average — but ` : `${safe(burnMonths).toFixed(1)} months on average burn. `}
+                      {forwardRunway.monthsUntilCross.toFixed(1)} months against your known obligations (around {forwardRunway.crossDate}). The second is the real number.
+                    </div>
+                  )}
                 </div>
-              )}
-            </div>
+              );
+            })()}
+
+            {/* Trajectory — Growth Score, Risk Score, detected trends, and
+                the long-run business narrative as one coherent "direction
+                of travel" unit. This is the product's differentiator over
+                a generic dashboard, so it reads as one deliberate section
+                immediately below the vitals, not three scattered cards
+                further down the page. */}
+            {hasData && (
+              <div className="trajectory-zone">
+                <div className="trajectory-head">
+                  <div className="card-sec" style={{ marginBottom:0 }}>Trajectory</div>
+                  <div style={{ display:"flex", gap:8 }}>
+                    <SeverityTag level={growth.score>=60?"positive":growth.score>=40?"warning":"critical"} label={growth.label}/>
+                    <SeverityTag level={risk.label==="Low"?"positive":risk.label==="Watch"?"warning":"critical"} label={risk.label}/>
+                  </div>
+                </div>
+                <div className="trajectory-body">
+                  <div className="trajectory-row">
+                    <Ring score={growth.score}/>
+                    <div style={{ flex:1, minWidth:0 }}>
+                      <div className="card-lbl">Growth Score</div>
+                      <div style={{ fontSize:12, color:C.ink, lineHeight:1.7, fontFamily:"'Cormorant Garamond',serif", marginTop:4 }}>
+                        {growth.seasonallyAdjusted
+                          ? <>Compared to {seasonalPattern.month} a year ago ({pc(growth.rate)} year-over-year), not last month — {seasonalPattern.month} has run {Math.abs(seasonalPattern.avgDeltaPct).toFixed(0)}% {seasonalPattern.avgDeltaPct<0?"below":"above"} average for {seasonalPattern.occurrences} years running, so a plain month-over-month reading would call a normal season a decline.</>
+                          : rows && rows.length>=3
+                            ? <>Trailing growth rate ({pc(growth.rate)}/mo), weighted with how consistently recent months grew ({Math.round(growth.consistency*100)}% of the last few were up).</>
+                            : <>Based on a single growth reading — connect 3+ months of data for a consistency-weighted score.</>}
+                      </div>
+                      <ConfidenceLine c={growthConfidence}/>
+                    </div>
+                  </div>
+
+                  <div className="trajectory-row">
+                    <Ring score={100-risk.score}/>
+                    <div style={{ flex:1, minWidth:0 }}>
+                      <div className="card-lbl">Risk Score</div>
+                      <div style={{ fontSize:12, color:C.ink, lineHeight:1.7, fontFamily:"'Cormorant Garamond',serif", marginTop:4 }}>
+                        Weighted from runway, margin, your trend direction, revenue concentration, and LTV:CAC — each only counts when there's real data behind it. A business can look fine today and still score risk from a multi-month decline that hasn't crossed a threshold yet.
+                      </div>
+                    </div>
+                  </div>
+
+                  {trends.length > 0 && (
+                    <div className="trajectory-row" style={{ flexDirection:"column", gap:10 }}>
+                      <div className="card-lbl">Trends Detected</div>
+                      {trends.map((t, i) => (
+                        <div key={i} className={`d-alert ${t.direction==="improving"?"ok":"warn"}`}>{t.message}</div>
+                      ))}
+                    </div>
+                  )}
+
+                  {founderNarrative && (
+                    <div className="trajectory-row" style={{ flexDirection:"column", gap:8 }}>
+                      <div className="card-lbl">Business History</div>
+                      <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:14, color:C.cream, lineHeight:1.7 }}>
+                        {founderNarrative}
+                      </div>
+                      {seasonalPattern && (
+                        <div style={{ fontSize:12, color:C.ink, lineHeight:1.6, fontFamily:"'Cormorant Garamond',serif" }}>
+                          {seasonalPattern.month} has run {Math.abs(seasonalPattern.avgDeltaPct).toFixed(0)}% {seasonalPattern.avgDeltaPct<0?"below":"above"} your average for {seasonalPattern.occurrences} years running — a repeating seasonal pattern, not a new signal.
+                        </div>
+                      )}
+                      <ConfidenceLine c={{
+                        shown: true,
+                        level: { low:"low", medium:"moderate", high:"high", "very high":"high" }[historicalConfidence?.label] || "low",
+                        reason: historicalConfidence?.reason || "",
+                      }}/>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
 
             <div className="g2">
               <div className="card"><div className="card-sec">Revenue vs Expenses</div><BChart data={rows}/></div>
@@ -1467,71 +1769,6 @@ function Dashboard({ user, profile, onLogout, onUpgrade }) {
                 </div>
               </div>
             </div>
-
-            <div className="g2">
-              <div className="card">
-                <div className="card-sec">Growth Score</div>
-                <div style={{ display:"flex", gap:20, alignItems:"center" }}>
-                  <Ring score={growth.score}/>
-                  <div>
-                    <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:22, color:growth.score>=60?C.green:growth.score>=40?C.amber:C.red, marginBottom:6 }}>{growth.label}</div>
-                    <div style={{ fontSize:12, color:C.ink, lineHeight:1.7, fontFamily:"'Cormorant Garamond',serif" }}>
-                      {growth.seasonallyAdjusted
-                        ? <>Compared to {seasonalPattern.month} a year ago ({pc(growth.rate)} year-over-year), not last month — {seasonalPattern.month} has run {Math.abs(seasonalPattern.avgDeltaPct).toFixed(0)}% {seasonalPattern.avgDeltaPct<0?"below":"above"} average for {seasonalPattern.occurrences} years running, so a plain month-over-month reading would call a normal season a decline.</>
-                        : rows && rows.length>=3
-                          ? <>Trailing growth rate ({pc(growth.rate)}/mo), weighted with how consistently recent months grew ({Math.round(growth.consistency*100)}% of the last few were up).</>
-                          : <>Based on a single growth reading — connect 3+ months of data for a consistency-weighted score.</>}
-                    </div>
-                    <ConfidenceLine c={growthConfidence}/>
-                  </div>
-                </div>
-              </div>
-              <div className="card">
-                <div className="card-sec">Risk Score</div>
-                <div style={{ display:"flex", gap:20, alignItems:"center" }}>
-                  {/* Ring fills as things get safer, not as risk rises — risk.score itself is 0=safe/100=risky */}
-                  <Ring score={100-risk.score}/>
-                  <div>
-                    <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:22, color:risk.label==="Low"?C.green:risk.label==="Watch"?C.amber:C.red, marginBottom:6 }}>{risk.label}</div>
-                    <div style={{ fontSize:12, color:C.ink, lineHeight:1.7, fontFamily:"'Cormorant Garamond',serif" }}>
-                      Weighted from runway, margin, your trend direction, revenue concentration, and LTV:CAC — each only counts when there's real data behind it. A business can look fine today and still score risk from a multi-month decline that hasn't crossed a threshold yet.
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {trends.length > 0 && (
-              <div>
-                <div className="card-sec">Trends Detected</div>
-                <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
-                  {trends.map((t, i) => (
-                    <div key={i} className={`d-alert ${t.direction==="improving"?"ok":"warn"}`}>{t.message}</div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {founderNarrative && (
-              <div>
-                <div className="card-sec">Business History</div>
-                <div className="card">
-                  <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:14, color:C.cream, lineHeight:1.7 }}>
-                    {founderNarrative}
-                  </div>
-                  {seasonalPattern && (
-                    <div style={{ fontSize:12, color:C.ink, lineHeight:1.6, marginTop:10, fontFamily:"'Cormorant Garamond',serif" }}>
-                      {seasonalPattern.month} has run {Math.abs(seasonalPattern.avgDeltaPct).toFixed(0)}% {seasonalPattern.avgDeltaPct<0?"below":"above"} your average for {seasonalPattern.occurrences} years running — a repeating seasonal pattern, not a new signal.
-                    </div>
-                  )}
-                  <ConfidenceLine c={{
-                    shown: true,
-                    level: { low:"low", medium:"moderate", high:"high", "very high":"high" }[historicalConfidence?.label] || "low",
-                    reason: historicalConfidence?.reason || "",
-                  }}/>
-                </div>
-              </div>
-            )}
 
             <div>
               <div className="card-sec">Business Intelligence</div>
@@ -1774,6 +2011,20 @@ function Dashboard({ user, profile, onLogout, onUpgrade }) {
           </>
         )}
       </main>
+
+      {/* Mobile only (see .dash-tabbar) — the sidebar is the app's only
+          navigation and disappears entirely below 960px with nothing
+          replacing it; this keeps every tab reachable without scrolling. */}
+      <nav className="dash-tabbar">
+        {navItems.map(n => (
+          <button key={n.id} className={`dash-tabbar-item${tab===n.id?" on":""}`}
+            onClick={() => !n.locked && setTab(n.id)} disabled={n.locked}
+            aria-current={tab===n.id ? "page" : undefined}>
+            <span className="dash-tabbar-glyph">#</span>
+            {n.label}
+          </button>
+        ))}
+      </nav>
     </div>
   );
 }
