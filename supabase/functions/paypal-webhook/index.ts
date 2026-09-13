@@ -22,6 +22,7 @@ declare module "https://deno.land/std@0.168.0/http/server.ts" {
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts"
 import { createClient } from "jsr:@supabase/supabase-js@2"
 import { planKeyForId } from "../_shared/paypal-plans.ts"
+import { verifyDiagnosticCapture } from "../_shared/one-time-products.ts"
 
 declare const Deno: {
   env: {
@@ -123,6 +124,46 @@ async function setProfile(
   }
 }
 
+// Records a one-time Financial Diagnostic payment from its capture event. The
+// buyer's browser normally records it through diagnostic-order, but a browser
+// closed between paying and that call returning would otherwise leave money
+// received with no record. Idempotent: an order already completed or under
+// review is left alone. A database failure throws, so PayPal redelivers.
+// deno-lint-ignore no-explicit-any
+async function reconcileDiagnosticCapture(orderId: string, capture: any) {
+  const { data: row, error } = await supabase
+    .from("diagnostic_orders")
+    .select("id, status, user_id")
+    .eq("paypal_order_id", orderId)
+    .maybeSingle()
+  if (error) throw new Error(`diagnostic_orders lookup failed: ${error.message}`)
+  if (!row) {
+    console.warn("Capture for an order this app did not create; not a diagnostic.", { orderId })
+    return
+  }
+  if (row.status === "completed" || row.status === "review") return
+
+  const verdict = verifyDiagnosticCapture(capture, row.user_id ?? undefined)
+  if (verdict.ok) {
+    const { error: updErr } = await supabase.from("diagnostic_orders").update({
+      status: verdict.state,
+      paypal_capture_id: verdict.captureId,
+      completed_at: verdict.state === "completed" ? new Date().toISOString() : null,
+    }).eq("id", row.id)
+    if (updErr) throw new Error(`diagnostic_orders update failed: ${updErr.message}`)
+    return
+  }
+  if (verdict.state === "review") {
+    console.error("Diagnostic capture needs review.", { orderId, reason: verdict.reason })
+    const { error: revErr } = await supabase.from("diagnostic_orders").update({
+      status: "review",
+      review_reason: verdict.reason,
+      paypal_capture_id: verdict.captureId,
+    }).eq("id", row.id)
+    if (revErr) throw new Error(`diagnostic_orders review update failed: ${revErr.message}`)
+  }
+}
+
 serve(async (req: Request) => {
   if (req.method !== "POST") {
     return new Response("Method not allowed", { status: 405 })
@@ -170,7 +211,14 @@ serve(async (req: Request) => {
       case "PAYMENT.SALE.COMPLETED":
       case "PAYMENT.CAPTURE.COMPLETED": {
         const subscriptionId = resource.billing_agreement_id || resource.supplementary_data?.related_ids?.subscription_id
-        if (!subscriptionId) break
+        if (!subscriptionId) {
+          // No subscription behind it: a one-time order capture.
+          const orderId = resource.supplementary_data?.related_ids?.order_id
+          if (event.event_type === "PAYMENT.CAPTURE.COMPLETED" && orderId) {
+            await reconcileDiagnosticCapture(orderId, resource)
+          }
+          break
+        }
         const sub = await fetchSubscription(subscriptionId, accessToken)
         const userId = sub?.custom_id
         const planKey = planKeyForId(sub?.plan_id)

@@ -44,8 +44,10 @@ const PLANS = {
   },
 };
 
-// Sold on a call rather than through checkout: a one-time engagement needs
-// PayPal's Orders API, which is not wired, and this converts in conversation.
+// Bought through DiagnosticModal. The price shown here is display only: the
+// charge is set on the server by the diagnostic-order Edge Function, from
+// supabase/functions/_shared/one-time-products.ts, and the modal refuses to
+// show PayPal unless the server's amount equals this one.
 const DIAGNOSTIC = {
   name:"Financial Diagnostic", usd:750,
   tagline:"One-time. Send twelve months of exports, receive the full analysis and a written findings memo.",
@@ -195,6 +197,8 @@ body{background:#050709;color:#F4F7FF;font-family:'Syne',sans-serif;-webkit-font
 .price-diag-name{font-size:11px;letter-spacing:0.16em;text-transform:uppercase;color:#D8DADE;font-weight:600;margin-bottom:8px;}
 .price-diag-body{font-family:'Cormorant Garamond',serif;font-size:14px;color:#8898B8;line-height:1.6;}
 .price-diag-note{font-size:11px;color:#7A7E88;margin-top:8px;font-family:'JetBrains Mono',monospace;}
+.btn-link{background:none;border:0;padding:0;margin:0;font:inherit;color:#D8DADE;text-decoration:underline;text-underline-offset:3px;cursor:pointer;}
+.btn-link:hover{color:#EDEEF1;}
 .price-divider{height:1px;background:#161C2E;margin-bottom:24px;}
 .price-list{list-style:none;margin-bottom:28px;}
 .price-list li{display:flex;align-items:flex-start;gap:10px;font-size:13px;color:#8898B8;margin-bottom:10px;font-family:'Cormorant Garamond',serif;line-height:1.5;}
@@ -969,8 +973,207 @@ function PayModal({ planKey, userEmail, userId, onClose, onSuccess }) {
   );
 }
 
+// ─── FINANCIAL DIAGNOSTIC CHECKOUT ────────────────────────────
+// A one-time PayPal order, not a subscription. The order is created on the
+// server at the server's price, and captured on the server, which checks the
+// amount, currency and payer before recording it (diagnostic-order).
+//
+// Every outcome tells the buyer plainly whether money moved. The one that must
+// never happen is telling a buyer "not charged" when they were: they pay again
+// and are charged twice. So a capture that cannot be confirmed says "do not pay
+// again", never "failed".
+const DIAGNOSTIC_OUTCOME = {
+  completed: {
+    title: "Payment received",
+    body: "Next, email your last twelve months of bank or accounting exports. You will receive the full analysis and a written findings memo.",
+    action: "Email your exports",
+  },
+  pending: {
+    title: "Payment processing",
+    body: "PayPal is still clearing your payment. You will receive a PayPal receipt when it completes. You do not need to pay again.",
+    action: "Email us",
+  },
+  review: {
+    title: "Payment received, confirming",
+    body: "We received your payment and need to confirm its details before starting. We will email you. Please do not pay again.",
+    action: "Email us",
+  },
+  uncertain: {
+    title: "We could not confirm your payment",
+    body: "Your payment may have gone through. Please do not pay again. Email us and we will check it for you.",
+    action: "Email us",
+  },
+};
+
+function DiagnosticModal({ onClose }) {
+  // phase: creating | ready | capturing | unavailable | failed | completed | pending | review | uncertain
+  const [phase, setPhase] = useState("creating");
+  const [order, setOrder] = useState(null);
+  const [sdkReady, setSdkReady] = useState(false);
+  const btnRef    = useRef(null);
+  const rendered  = useRef(false);
+  const dialogRef = useRef(null);
+  const phaseRef  = useRef(phase);
+  useEffect(() => { phaseRef.current = phase; }, [phase]);
+
+  // Closing while a capture is in flight would hide its result, and a buyer who
+  // sees nothing assumes it failed. Every close path waits it out.
+  const onCloseRef = useRef(onClose);
+  useEffect(() => { onCloseRef.current = onClose; }, [onClose]);
+  const requestClose = () => { if (phaseRef.current !== "capturing") onCloseRef.current(); };
+
+  useEffect(() => {
+    dialogRef.current?.focus();
+    const onKey = e => { if (e.key === "Escape") requestClose(); };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, []);
+
+  // The server creates the order and sets its amount. PayPal is shown only if
+  // that amount is the one this page advertises.
+  useEffect(() => {
+    let cancelled = false;
+    supabase.functions.invoke("diagnostic-order", { body: { action: "create" } })
+      .then(({ data, error }) => {
+        if (cancelled) return;
+        if (!error && data?.orderId && data.amountUsd === DIAGNOSTIC.usd && data.currency === "USD") {
+          setOrder(data);
+          setPhase("ready");
+        } else {
+          console.warn("Diagnostic checkout unavailable:", error || data);
+          setPhase("unavailable");
+        }
+      })
+      .catch(err => { if (!cancelled) { console.warn("Diagnostic checkout unavailable:", err); setPhase("unavailable"); } });
+    return () => { cancelled = true; };
+  }, []);
+
+  // Loaded under its own namespace so it cannot clobber the subscription SDK
+  // that PayModal loads as window.paypal with intent=subscription.
+  useEffect(() => {
+    if (phase !== "ready" || sdkReady) return;
+    if (window.paypalOrders) { setSdkReady(true); return; }
+    document.getElementById("pp-sdk-orders")?.remove();
+    const s = document.createElement("script");
+    s.id  = "pp-sdk-orders";
+    s.src = `https://www.paypal.com/sdk/js?client-id=${PAYPAL_CLIENT_ID}&intent=capture&currency=USD`;
+    s.setAttribute("data-namespace", "paypalOrders");
+    s.onload  = () => setSdkReady(true);
+    s.onerror = () => setPhase("unavailable");
+    document.head.appendChild(s);
+  }, [phase, sdkReady]);
+
+  useEffect(() => {
+    if (phase !== "ready" || !sdkReady || !order || !btnRef.current || rendered.current) return;
+    if (!window.paypalOrders) { setPhase("unavailable"); return; }
+    rendered.current = true;
+    btnRef.current.innerHTML = "";
+
+    window.paypalOrders.Buttons({
+      style: { color:"gold", shape:"rect", label:"pay", layout:"vertical" },
+      // The order already exists, created on the server at the server's price.
+      createOrder: () => order.orderId,
+      onApprove: async (_data, actions) => {
+        setPhase("capturing");
+        try {
+          const { data, error } = await supabase.functions.invoke("diagnostic-order", {
+            body: { action: "capture", orderId: order.orderId },
+          });
+          if (error) throw error;
+          if (data?.state === "not_captured") {
+            // A declined card: PayPal lets the buyer choose another funding
+            // source on the same order. Nothing was charged.
+            if (data.issue === "INSTRUMENT_DECLINED") { setPhase("ready"); return actions.restart(); }
+            setPhase("failed");
+            return;
+          }
+          setPhase(DIAGNOSTIC_OUTCOME[data?.state] ? data.state : "uncertain");
+        } catch (err) {
+          console.error("Diagnostic capture could not be confirmed:", err);
+          setPhase("uncertain");
+        }
+      },
+      // Capture happens only in onApprove, on the server. A PayPal error before
+      // then means this app never captured anything.
+      onError: err => { console.error("PayPal error:", err); setPhase("failed"); },
+    }).render(btnRef.current).catch(err => {
+      console.error("PayPal buttons could not render:", err);
+      setPhase("unavailable");
+    });
+  }, [phase, sdkReady, order]);
+
+  const outcome = DIAGNOSTIC_OUTCOME[phase];
+  const emailSubject = phase === "completed" ? "Financial Diagnostic exports" : "Financial Diagnostic payment";
+
+  return (
+    <div className="overlay" onClick={e => e.target === e.currentTarget && requestClose()}>
+      <div className="modal" role="dialog" aria-modal="true" aria-labelledby="diag-modal-title" tabIndex={-1} ref={dialogRef}>
+        <div className="modal-head">
+          <div className="modal-title" id="diag-modal-title">{outcome ? outcome.title : DIAGNOSTIC.name}</div>
+          <button className="modal-x" onClick={requestClose} aria-label="Close" disabled={phase === "capturing"}>x</button>
+        </div>
+        <div className="modal-body">
+          {outcome ? (
+            <div style={{ textAlign:"center", padding:"12px 0" }} role="status">
+              <div style={{ fontSize:14, color:C.ink, fontFamily:"'Cormorant Garamond',serif", lineHeight:1.7, marginBottom:24 }}>
+                {outcome.body}
+              </div>
+              <button
+                className="btn btn-full btn-primary"
+                onClick={() => window.open(`mailto:commandledger@gmail.com?subject=${encodeURIComponent(emailSubject)}`,"_blank")}
+              >
+                {outcome.action}
+              </button>
+              {phase === "completed" && (
+                <div className="price-diag-note" style={{ marginTop:14 }}>{DIAGNOSTIC.note}</div>
+              )}
+            </div>
+          ) : (
+            <>
+              <div className="plan-badge">
+                <div className="plan-badge-name">{DIAGNOSTIC.name}</div>
+                <div className="plan-badge-price">${DIAGNOSTIC.usd.toLocaleString()} <span style={{ fontSize:14, color:C.inkDim }}>once</span></div>
+                <div className="plan-badge-sub">{DIAGNOSTIC.tagline}</div>
+              </div>
+
+              {phase === "creating" && (
+                <div className="pay-status"><span className="spinner" style={{ display:"inline-block", marginBottom:8 }}/><br/>Preparing your order...</div>
+              )}
+              {(phase === "unavailable" || phase === "failed") && (
+                <>
+                  <div className="pay-err" role="alert">
+                    {phase === "failed"
+                      ? "The payment did not go through. Nothing was charged."
+                      : "Online payment is not available right now. Nothing has been charged."}
+                  </div>
+                  <button
+                    className="btn btn-full btn-primary"
+                    style={{ marginTop:16 }}
+                    onClick={() => window.open("mailto:commandledger@gmail.com?subject=Financial%20Diagnostic","_blank")}
+                  >
+                    Email to arrange payment
+                  </button>
+                </>
+              )}
+              {phase === "capturing" && (
+                <div className="pay-status" role="status"><span className="spinner" style={{ display:"inline-block", marginBottom:8 }}/><br/>Confirming your payment. Please keep this window open.</div>
+              )}
+              {/* Stays mounted while capturing: a declined card restarts on
+                  these same buttons, which would be gone if unmounted. */}
+              <div ref={btnRef} hidden={phase !== "ready"} style={{ minHeight: phase === "ready" && sdkReady ? 50 : 0 }}/>
+              {phase === "ready" && sdkReady && (
+                <div className="modal-secure">Paid once through PayPal. Not a subscription.</div>
+              )}
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── DASHBOARD ────────────────────────────────────────────────
-function Dashboard({ user, profile, onLogout, onUpgrade }) {
+function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic }) {
   const [tab,  setTab]  = useState("overview");
   const [mode, setMode] = useState("safe");
   const [data, setData] = useState(null);
@@ -2109,6 +2312,10 @@ function Dashboard({ user, profile, onLogout, onUpgrade }) {
                 <div className="nudge-title">You have the system. Command Advisory adds the person who reads it with you.</div>
                 <div className="nudge-sub">Done-for-you data configuration, a monthly 1:1 call, a written board report every month, and a direct advisory line with priority response. Six seats, because one person delivers it.</div>
                 <button className="btn btn-lg btn-primary" onClick={onUpgrade}>Add Command Advisory</button>
+                <div className="price-diag-note" style={{ marginTop:14 }}>
+                  Or start with a one-time Financial Diagnostic, ${DIAGNOSTIC.usd.toLocaleString()}, credited in full to your first Advisory month.{" "}
+                  <button className="btn-link" onClick={onBuyDiagnostic}>Buy the diagnostic</button>
+                </div>
               </div>
             )}
 
@@ -2642,9 +2849,9 @@ function MarketingSite({ onLogin, onPlanSelect, onTerms, onPrivacy }) {
           <button
             className="btn btn-outline"
             style={{ whiteSpace:"nowrap" }}
-            onClick={() => window.open("mailto:commandledger@gmail.com?subject=Financial%20Diagnostic","_blank")}
+            onClick={() => onPlanSelect("diagnostic")}
           >
-            Request a diagnostic
+            Buy the diagnostic
           </button>
         </div>
       </section>
@@ -2784,6 +2991,26 @@ function PaywallGate({ user, onSelectPlan, onLogout }) {
               );
             })}
           </div>
+          <div style={{
+            marginTop:14,
+            background:C.surfaceHigh,
+            border:`1px solid ${C.border}`,
+            padding:"18px 20px",
+            display:"flex",
+            justifyContent:"space-between",
+            alignItems:"center",
+            gap:16,
+          }}>
+            <div>
+              <div style={{ fontSize:10, letterSpacing:"0.16em", textTransform:"uppercase", color:C.gold, fontWeight:600, marginBottom:4 }}>{DIAGNOSTIC.name}</div>
+              <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:22, color:C.cream }}>
+                ${DIAGNOSTIC.usd.toLocaleString()} <span style={{ fontSize:12, color:C.inkDim }}>once, not a subscription</span>
+              </div>
+            </div>
+            <button className="btn btn-outline" style={{ padding:"10px 22px", fontSize:11, whiteSpace:"nowrap" }} onClick={() => onSelectPlan("diagnostic")}>
+              Buy once
+            </button>
+          </div>
           <div className="a-link" {...clickableProps(onLogout)} style={{ marginTop:24 }}>
             <span>Sign out</span>
           </div>
@@ -2877,7 +3104,10 @@ export default function App() {
   return (
     <>
       <style>{CSS}</style>
-      {payModal && user && (
+      {payModal === "diagnostic" && user && (
+        <DiagnosticModal onClose={() => setPayModal(null)}/>
+      )}
+      {payModal && payModal !== "diagnostic" && user && (
         <PayModal planKey={payModal} userEmail={user.email} userId={user.id} onClose={() => setPayModal(null)} onSuccess={handlePaySuccess}/>
       )}
       {appState==="marketing" && (
@@ -2893,6 +3123,7 @@ export default function App() {
             profile={profile}
             onLogout={async () => { await supabase.auth.signOut(); }}
             onUpgrade={() => { if (resolvePlanKey(profile.plan) === "software") setPayModal("advisory"); }}
+            onBuyDiagnostic={() => setPayModal("diagnostic")}
           />
         ) : (
           <PaywallGate
