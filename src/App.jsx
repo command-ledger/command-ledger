@@ -9,28 +9,14 @@ const supabase = createClient(
 );
 
 const PAYPAL_CLIENT_ID = import.meta.env.VITE_PAYPAL_CLIENT_ID;
-// Each PayPal plan id is stored with the USD price that plan was created
-// with. PayPal holds the authoritative amount; this app only renders a number
-// beside it. checkoutBlockReason() refuses to open checkout unless the two
-// agree, so a price change here can never silently charge the old amount.
-// After creating a plan in PayPal, paste its id AND the price you created it
-// at, and keep PLAN_ID_TO_KEY in supabase/functions/paypal-webhook in sync.
-const PAYPAL_PLANS = {
-  software: { id: null, priceUsd: null },
-  advisory: { id: null, priceUsd: null },
-};
-
-// Subscriptions sold under the previous three-tier pricing. Kept so an
-// existing subscriber's renewal webhook still resolves to an entitlement —
-// mapped by what they bought, not by what they paid.
-const RETIRED_PAYPAL_PLANS = {
-  "P-1NE00583S5561651HNITP2ZI": { key: "software", priceUsd: 1250, name: "Command Essentials" },
-  "P-7M170334YK027974RNITP7NY": { key: "advisory", priceUsd: 2475, name: "Command Pro" },
-};
+// PayPal plan ids are not held in the browser. They live in
+// supabase/functions/_shared/paypal-plans.ts, shared by the webhook that grants
+// access and by plan-pricing, which reads each plan's live terms from PayPal
+// before checkout is allowed to open. See checkoutBlockReason().
 
 const PLANS = {
   software: {
-    name:"Command Ledger", usd:99, annualUsd:990, period:"per month",
+    name:"Command Ledger", usd:99, annualUsd:990, interval:"MONTH", period:"per month",
     tagline:"The system. Your numbers, read correctly, every week.",
     features:[
       "On-demand AI strategic brief",
@@ -45,7 +31,7 @@ const PLANS = {
     ],
   },
   advisory: {
-    name:"Command Advisory", usd:3000, period:"per month", seats:6,
+    name:"Command Advisory", usd:3000, interval:"MONTH", period:"per month", seats:6,
     tagline:"The system, plus the person who reads it with you.",
     features:[
       "Everything in Command Ledger",
@@ -825,19 +811,22 @@ function DataUpload({ onDataLoaded, hasData }) {
 }
 
 // ─── PAY MODAL ────────────────────────────────────────────────
-const CHECKOUT_BLOCK_MESSAGE = {
-  not_configured:  "Checkout for this plan is not live yet. No PayPal plan has been created at this price.",
-  price_mismatch:  "Checkout is paused: the PayPal plan for this tier was created at a different price than the one shown here. It would charge the wrong amount.",
-  price_unverified:"Checkout is paused: the price of this tier's PayPal plan has not been recorded, so it cannot be confirmed against the price shown.",
-  unknown_plan:    "That plan does not exist.",
-};
+// A customer sees the same neutral message whatever blocked checkout. The
+// specific reason is logged for us; it is not something to make a buyer
+// doubt the product over.
+const CHECKOUT_UNAVAILABLE = "Online checkout for this plan is not open right now. Nothing has been charged.";
 
 function PayModal({ planKey, userEmail, userId, onClose, onSuccess }) {
   const plan = planOf(planKey);
   const resolvedKey = resolvePlanKey(planKey);
-  // Refuses to charge when the displayed price and the PayPal plan's own price
-  // disagree. A visible failure is the cheap outcome; a wrong charge is not.
-  const blockReason = checkoutBlockReason(plan, PAYPAL_PLANS[resolvedKey]);
+  // What PayPal will actually bill for this plan, read live by the plan-pricing
+  // Edge Function. Checkout stays closed until that arrives and every charge,
+  // starting with the first, agrees with the price on this page. A visible
+  // refusal is the cheap outcome; a wrong charge is not.
+  const [verified,  setVerified]  = useState(null);
+  const [verifying, setVerifying] = useState(true);
+  const blockReason = verifying ? null : checkoutBlockReason(plan, verified);
+  const canCheckout = !verifying && !blockReason;
   const btnRef   = useRef(null);
   const rendered = useRef(false);
   const [sdkReady, setSdkReady] = useState(false);
@@ -865,7 +854,21 @@ function PayModal({ planKey, userEmail, userId, onClose, onSuccess }) {
   }, []);
 
   useEffect(() => {
-    if (blockReason) return;
+    let cancelled = false;
+    setVerifying(true);
+    supabase.functions.invoke("plan-pricing", { body: { planKey: resolvedKey } })
+      .then(({ data, error }) => { if (!cancelled) setVerified(error ? null : data); })
+      .catch(() => { if (!cancelled) setVerified(null); })
+      .finally(() => { if (!cancelled) setVerifying(false); });
+    return () => { cancelled = true; };
+  }, [resolvedKey]);
+
+  useEffect(() => {
+    if (blockReason) console.warn("Checkout blocked:", blockReason, verified);
+  }, [blockReason, verified]);
+
+  useEffect(() => {
+    if (!canCheckout) return;
     rendered.current = false;
     const old = document.getElementById("pp-sdk");
     if (old) old.remove();
@@ -878,10 +881,10 @@ function PayModal({ planKey, userEmail, userId, onClose, onSuccess }) {
     s.onload  = () => setSdkReady(true);
     s.onerror = () => setSdkErr("PayPal failed to load. Check your internet connection.");
     document.head.appendChild(s);
-  }, [planKey, blockReason]);
+  }, [planKey, canCheckout]);
 
   useEffect(() => {
-    if (blockReason) return;
+    if (!canCheckout) return;
     if (!sdkReady || !btnRef.current || rendered.current) return;
     if (!window.paypal) { setSdkErr("PayPal SDK unavailable."); return; }
     rendered.current = true;
@@ -891,7 +894,7 @@ function PayModal({ planKey, userEmail, userId, onClose, onSuccess }) {
       style: { color:"gold", shape:"rect", label:"subscribe", layout:"vertical" },
       createSubscription: (_d, actions) =>
         actions.subscription.create({
-          plan_id:   PAYPAL_PLANS[resolvedKey].id,
+          plan_id:   verified.planId,
           custom_id: userId,
         }),
       onApprove: async () => {
@@ -907,7 +910,7 @@ function PayModal({ planKey, userEmail, userId, onClose, onSuccess }) {
     }).render(btnRef.current).catch(e => {
       setSdkErr(`PayPal could not render. Ensure your Plan IDs match your PayPal environment. Error: ${e.message}`);
     });
-  }, [sdkReady]);
+  }, [sdkReady, canCheckout]);
 
   return (
     <div className="overlay" onClick={e => e.target === e.currentTarget && onClose()}>
@@ -933,11 +936,13 @@ function PayModal({ planKey, userEmail, userId, onClose, onSuccess }) {
               </div>
               <button className="btn btn-full btn-primary" onClick={onClose}>Enter Dashboard</button>
             </div>
+          ) : verifying ? (
+            <div className="pay-status"><span className="spinner" style={{ display:"inline-block", marginBottom:8 }}/><br/>Confirming the price with PayPal...</div>
           ) : blockReason ? (
             <>
-              <div className="pay-err">{CHECKOUT_BLOCK_MESSAGE[blockReason] || CHECKOUT_BLOCK_MESSAGE.not_configured}</div>
+              <div className="pay-err">{CHECKOUT_UNAVAILABLE}</div>
               <div style={{ fontSize:13, color:C.ink, fontFamily:"'Cormorant Garamond',serif", lineHeight:1.7, margin:"16px 0 20px" }}>
-                Nothing has been charged. Email us and we will set your subscription up directly.
+                Email us and we will set your subscription up directly.
               </div>
               <button
                 className="btn btn-full btn-primary"
@@ -2609,7 +2614,7 @@ function MarketingSite({ onLogin, onPlanSelect, onTerms, onPrivacy }) {
                 <div className="price-usd"><sup>$</sup>{pl.usd.toLocaleString()}</div>
                 <div className="price-period">{pl.period}</div>
                 {pl.annualUsd && (
-                  <div className="price-note">or ${pl.annualUsd.toLocaleString()} a year — two months free</div>
+                  <div className="price-note">Annual ${pl.annualUsd.toLocaleString()}, two months free — arranged by email</div>
                 )}
                 {pl.seats && (
                   <div className="price-note">{pl.seats} seats total</div>
@@ -2806,7 +2811,13 @@ export default function App() {
           plan:  null,
           updated_at: new Date().toISOString(),
         };
-        const { data: created } = await supabase.from("profiles").upsert(np).select().single();
+        const { data: created, error: createErr } = await supabase.from("profiles").upsert(np).select().single();
+        // This error used to be discarded. The upsert was being rejected for a
+        // column the table did not have, the fallback below hid it, and no
+        // profile row was ever created — silently, for every new user. The
+        // fallback is still safe (plan is null, so it can never grant access),
+        // but the failure must be visible.
+        if (createErr) console.error("Profile create failed:", createErr);
         data = created || np;
       } else if (error) {
         throw error;

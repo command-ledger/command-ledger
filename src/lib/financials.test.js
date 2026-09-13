@@ -1625,36 +1625,64 @@ describe("Excel upload contract (sheet_to_csv output)", () => {
 });
 
 // ── Checkout price integrity ─────────────────────────────────────
-// The one bug class here that costs real money: the page showing one price
-// while PayPal charges another. These pin the gate shut.
+// The one bug class here that costs real money: the page promising one charge
+// while PayPal bills another. LIVE_SOFTWARE and LIVE_ADVISORY are the exact
+// plan summaries plan-pricing returned from live PayPal on 2026-09-13.
 describe("checkoutBlockReason", () => {
-  const plan = { usd: 99 };
+  const software = { usd: 99, interval: "MONTH" };
+  const advisory = { usd: 3000, interval: "MONTH" };
+  const LIVE_SOFTWARE = { planKey:"software", planId:"P-8CD25808KD889454JNKS7S7I", name:"Command Essentials", status:"ACTIVE", amount:99, currency:"USD", intervalUnit:"MONTH", intervalCount:1, hasTrial:false, trials:[], setupFee:0 };
+  const LIVE_ADVISORY = { planKey:"advisory", planId:"P-7M170334YK027974RNITP7NY", name:"Command Pro", status:"ACTIVE", amount:3000, currency:"USD", intervalUnit:"MONTH", intervalCount:1, hasTrial:true, trials:[{ amount:1950, currency:"USD", intervalUnit:"MONTH", intervalCount:1, totalCycles:1 }], setupFee:0 };
+  const clean = over => ({ ...LIVE_SOFTWARE, ...over });
 
-  it("allows checkout only when the PayPal plan price matches the displayed price", () => {
-    expect(checkoutBlockReason(plan, { id: "P-ABC", priceUsd: 99 })).toBeNull();
+  it("opens checkout for the live software plan, whose terms match the page exactly", () => {
+    expect(checkoutBlockReason(software, LIVE_SOFTWARE)).toBeNull();
   });
 
-  it("blocks when the PayPal plan charges a different amount than displayed", () => {
-    expect(checkoutBlockReason(plan, { id: "P-ABC", priceUsd: 1250 })).toBe("price_mismatch");
-    expect(checkoutBlockReason(plan, { id: "P-ABC", priceUsd: 98 })).toBe("price_mismatch");
+  it("keeps the live advisory plan closed: its $1,950 trial month means the first charge is not the $3,000 shown", () => {
+    expect(checkoutBlockReason(advisory, LIVE_ADVISORY)).toBe("first_charge_differs");
   });
 
-  it("blocks when no PayPal plan has been created yet", () => {
-    expect(checkoutBlockReason(plan, { id: null, priceUsd: null })).toBe("not_configured");
-    expect(checkoutBlockReason(plan, undefined)).toBe("not_configured");
+  it("opens advisory as soon as the trial is removed in PayPal, with no code change", () => {
+    expect(checkoutBlockReason(advisory, { ...LIVE_ADVISORY, hasTrial:false, trials:[] })).toBeNull();
   });
 
-  it("blocks when a plan id exists but its price was never recorded", () => {
-    expect(checkoutBlockReason(plan, { id: "P-ABC" })).toBe("price_unverified");
-    expect(checkoutBlockReason(plan, { id: "P-ABC", priceUsd: "99" })).toBe("price_unverified");
+  it("blocks when PayPal bills a different recurring price than displayed", () => {
+    expect(checkoutBlockReason(software, clean({ amount: 1250 }))).toBe("price_mismatch");
+    expect(checkoutBlockReason(software, clean({ amount: 98.99 }))).toBe("price_mismatch");
+  });
+
+  it("reports a wrong recurring price ahead of a trial, since it is the larger error", () => {
+    expect(checkoutBlockReason(advisory, { ...LIVE_ADVISORY, amount: 2475 })).toBe("price_mismatch");
+  });
+
+  it("blocks a setup fee, and a setup fee that could not be read", () => {
+    expect(checkoutBlockReason(software, clean({ setupFee: 50 }))).toBe("first_charge_differs");
+    expect(checkoutBlockReason(software, clean({ setupFee: null }))).toBe("first_charge_differs");
+  });
+
+  it("blocks a trial reported only through the trials array, including a free one", () => {
+    expect(checkoutBlockReason(software, clean({ hasTrial:false, trials:[{ amount:0 }] }))).toBe("first_charge_differs");
+  });
+
+  it("blocks a plan billed in another currency or on another interval", () => {
+    expect(checkoutBlockReason(software, clean({ currency: "ZAR" }))).toBe("currency_mismatch");
+    expect(checkoutBlockReason(software, clean({ intervalUnit: "YEAR" }))).toBe("interval_mismatch");
+    expect(checkoutBlockReason(software, clean({ intervalCount: 3 }))).toBe("interval_mismatch");
+  });
+
+  it("blocks a plan that is not active in PayPal", () => {
+    expect(checkoutBlockReason(software, clean({ status: "INACTIVE" }))).toBe("plan_inactive");
+  });
+
+  it("blocks when PayPal could not be read, or returned no usable price", () => {
+    expect(checkoutBlockReason(software, null)).toBe("not_configured");
+    expect(checkoutBlockReason(software, { error: "paypal_lookup_failed" })).toBe("not_configured");
+    expect(checkoutBlockReason(software, clean({ amount: null }))).toBe("price_unverified");
   });
 
   it("blocks an unknown or malformed plan", () => {
-    expect(checkoutBlockReason(null, { id: "P-ABC", priceUsd: 99 })).toBe("unknown_plan");
-    expect(checkoutBlockReason({}, { id: "P-ABC", priceUsd: 99 })).toBe("unknown_plan");
-  });
-
-  it("treats a zero price as a real price, not a missing one", () => {
-    expect(checkoutBlockReason({ usd: 0 }, { id: "P-ABC", priceUsd: 0 })).toBeNull();
+    expect(checkoutBlockReason(null, LIVE_SOFTWARE)).toBe("unknown_plan");
+    expect(checkoutBlockReason({}, LIVE_SOFTWARE)).toBe("unknown_plan");
   });
 });

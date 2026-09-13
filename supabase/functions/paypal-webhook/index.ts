@@ -21,6 +21,7 @@ declare module "https://deno.land/std@0.168.0/http/server.ts" {
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts"
 import { createClient } from "jsr:@supabase/supabase-js@2"
+import { planKeyForId } from "../_shared/paypal-plans.ts"
 
 declare const Deno: {
   env: {
@@ -37,21 +38,10 @@ const PAYPAL_WEBHOOK_ID = Deno.env.get("PAYPAL_WEBHOOK_ID")
 // requests verified against the wrong PayPal environment.
 const PAYPAL_API_BASE = Deno.env.get("PAYPAL_API_BASE") || "https://api-m.sandbox.paypal.com"
 
-// Must stay in sync with PAYPAL_PLANS in src/App.jsx.
-//
-// The two P- ids below were sold under the retired three-tier pricing. They
-// stay mapped so an existing subscriber's renewal still resolves to an
-// entitlement, mapped by what they bought rather than what they paid:
-// Command Essentials was software only, Command Pro included the advisory
-// call. Do not remove them until those subscriptions are gone.
-//
-// New plan ids go here as they are created in PayPal. An unmapped plan_id is
-// logged and grants nothing, which is the correct failure: a subscription
-// whose tier cannot be identified must not silently confer access.
-const PLAN_ID_TO_KEY: Record<string, string> = {
-  "P-1NE00583S5561651HNITP2ZI": "software",
-  "P-7M170334YK027974RNITP7NY": "advisory",
-}
+// Plan id -> entitlement lives in ../_shared/paypal-plans.ts, shared with
+// plan-pricing. An unmapped plan_id grants nothing, which is the correct
+// failure: a subscription whose tier cannot be identified must not silently
+// confer access.
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
 
@@ -108,12 +98,29 @@ async function fetchSubscription(subscriptionId: string, accessToken: string) {
   return await res.json()
 }
 
-async function setProfile(userId: string, fields: { plan?: string | null; status: string }) {
-  const { error } = await supabase
+// requireRow is set for events that grant access. An update that matches no
+// row returns no error, so without this check a paying subscriber whose profile
+// row does not exist yet would be acknowledged with 200 and PayPal would stop
+// retrying — charged, and never granted access. Throwing instead returns 500,
+// and PayPal redelivers the event until the row exists (the app creates it on
+// the subscriber's next sign-in). Revocations do not set it: with no row there
+// is nothing to revoke, and retrying would only add noise.
+async function setProfile(
+  userId: string,
+  fields: { plan?: string | null; status: string },
+  { requireRow = false }: { requireRow?: boolean } = {},
+) {
+  const { data, error } = await supabase
     .from("profiles")
     .update({ ...fields, updated_at: new Date().toISOString() })
     .eq("id", userId)
+    .select("id")
   if (error) throw new Error(`Supabase profile update failed: ${error.message}`)
+  if (!data || data.length === 0) {
+    const msg = `No profile row for user ${userId}; ${fields.status} not applied.`
+    if (requireRow) throw new Error(msg)
+    console.warn(msg)
+  }
 }
 
 serve(async (req: Request) => {
@@ -148,12 +155,12 @@ serve(async (req: Request) => {
       // subscription is actually live — the correct signal to grant access.
       case "BILLING.SUBSCRIPTION.ACTIVATED": {
         const userId = resource.custom_id
-        const planKey = PLAN_ID_TO_KEY[resource.plan_id]
+        const planKey = planKeyForId(resource.plan_id)
         if (!userId || !planKey) {
           console.error("Activation event missing userId/planKey mapping.", { plan_id: resource.plan_id, custom_id: resource.custom_id })
           break
         }
-        await setProfile(userId, { plan: planKey, status: "active" })
+        await setProfile(userId, { plan: planKey, status: "active" }, { requireRow: true })
         break
       }
 
@@ -166,8 +173,8 @@ serve(async (req: Request) => {
         if (!subscriptionId) break
         const sub = await fetchSubscription(subscriptionId, accessToken)
         const userId = sub?.custom_id
-        const planKey = sub?.plan_id ? PLAN_ID_TO_KEY[sub.plan_id] : undefined
-        if (userId && planKey) await setProfile(userId, { plan: planKey, status: "active" })
+        const planKey = planKeyForId(sub?.plan_id)
+        if (userId && planKey) await setProfile(userId, { plan: planKey, status: "active" }, { requireRow: true })
         break
       }
 

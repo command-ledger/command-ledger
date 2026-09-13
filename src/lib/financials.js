@@ -1569,21 +1569,31 @@ export function describeDirectiveOutcome(directive) {
 }
 
 // ─── CHECKOUT PRICE INTEGRITY ───────────────────────────────────
-// PayPal holds the authoritative amount for a subscription: the price lives
-// on the PayPal plan, and this app only renders a number next to it. If the
-// two ever disagree, the page is lying to the customer about what their card
-// will be charged, and a subscription must not be created.
+// PayPal holds the authoritative terms of a subscription: the price, currency
+// and billing interval live on the PayPal plan, and this app only renders a
+// number beside it. If the two disagree, the page is misstating what the
+// customer's card will be charged, and a subscription must not be created.
 //
-// Every PayPal plan id is therefore stored alongside the USD price that plan
-// was created with, and checkout is gated on the two agreeing. A missing id
-// or a stale price blocks the button instead of silently charging the wrong
-// amount — the failure is visible and safe rather than financial.
+// `verified` is the plan summary returned by the plan-pricing Edge Function,
+// read live from PayPal at checkout time — not a price typed into the code,
+// which could go stale the moment someone edits the plan in PayPal.
+//
+// The rule: checkout opens only when every charge, starting with the first,
+// equals the price on the page. A trial cycle or a setup fee makes the first
+// charge differ, so either one blocks, even when it favours the customer.
+// Checks run from the most serious disagreement to the least, so a wrong
+// recurring price is reported ahead of a trial.
 //
 // Returns null when checkout is safe, otherwise a machine-readable reason.
-export function checkoutBlockReason(plan, paypalEntry) {
+export function checkoutBlockReason(plan, verified) {
   if (!plan || typeof plan.usd !== "number") return "unknown_plan";
-  if (!paypalEntry || !paypalEntry.id) return "not_configured";
-  if (typeof paypalEntry.priceUsd !== "number") return "price_unverified";
-  if (paypalEntry.priceUsd !== plan.usd) return "price_mismatch";
+  if (!verified || !verified.planId) return "not_configured";
+  if (verified.status !== "ACTIVE") return "plan_inactive";
+  if (verified.currency !== "USD") return "currency_mismatch";
+  if (verified.intervalUnit !== (plan.interval || "MONTH") || verified.intervalCount !== 1) return "interval_mismatch";
+  if (typeof verified.amount !== "number" || !Number.isFinite(verified.amount)) return "price_unverified";
+  if (verified.amount !== plan.usd) return "price_mismatch";
+  const hasTrial = verified.hasTrial === true || (Array.isArray(verified.trials) && verified.trials.length > 0);
+  if (hasTrial || verified.setupFee !== 0) return "first_charge_differs";
   return null;
 }
