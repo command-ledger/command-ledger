@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { createClient } from "@supabase/supabase-js";
-import { fmt, pc, safe, parseAnyCSV, computeMetrics, runScenario, parseTransactions, computeDedupeHash, aggregateTransactionsByMonth, computeRevenueConcentration, detectRecurringObligations, computeForwardRunway, checkAffordability, detectMissedObligations, projectForwardCalendar, summarizeCalendarByWeek, computeDirective, getDirectiveMetricValue, describeDirectiveOutcome } from "./lib/financials.js";
+import { fmt, pc, safe, parseAnyCSV, computeMetrics, runScenario, parseTransactions, computeDedupeHash, aggregateTransactionsByMonth, computeRevenueConcentration, detectRecurringObligations, computeForwardRunway, checkAffordability, detectMissedObligations, projectForwardCalendar, summarizeCalendarByWeek, computeDirective, getDirectiveMetricValue, describeDirectiveOutcome, checkoutBlockReason } from "./lib/financials.js";
 
 const supabase = createClient(
   import.meta.env.VITE_SUPABASE_URL,
@@ -9,30 +9,69 @@ const supabase = createClient(
 );
 
 const PAYPAL_CLIENT_ID = import.meta.env.VITE_PAYPAL_CLIENT_ID;
+// Each PayPal plan id is stored with the USD price that plan was created
+// with. PayPal holds the authoritative amount; this app only renders a number
+// beside it. checkoutBlockReason() refuses to open checkout unless the two
+// agree, so a price change here can never silently charge the old amount.
+// After creating a plan in PayPal, paste its id AND the price you created it
+// at, and keep PLAN_ID_TO_KEY in supabase/functions/paypal-webhook in sync.
 const PAYPAL_PLANS = {
-  essentials: "P-1NE00583S5561651HNITP2ZI",
-  pro:        "P-7M170334YK027974RNITP7NY",
-  elite:      null,
+  software: { id: null, priceUsd: null },
+  advisory: { id: null, priceUsd: null },
+};
+
+// Subscriptions sold under the previous three-tier pricing. Kept so an
+// existing subscriber's renewal webhook still resolves to an entitlement —
+// mapped by what they bought, not by what they paid.
+const RETIRED_PAYPAL_PLANS = {
+  "P-1NE00583S5561651HNITP2ZI": { key: "software", priceUsd: 1250, name: "Command Essentials" },
+  "P-7M170334YK027974RNITP7NY": { key: "advisory", priceUsd: 2475, name: "Command Pro" },
 };
 
 const PLANS = {
-  essentials: {
-    name:"Command Essentials", usd:1250, zar:22500, period:"per month",
-    tagline:"Full intelligence. The complete financial command system.",
-    features:["Weekly AI strategic brief","Burn runway monitor","Capital allocator","Break-even calculator","Hire readiness indicator","90-day cash projection","LTV:CAC ratio analysis","Revenue concentration risk","CSV, Excel and live sheet sync"],
+  software: {
+    name:"Command Ledger", usd:99, annualUsd:990, period:"per month",
+    tagline:"The system. Your numbers, read correctly, every week.",
+    features:[
+      "On-demand AI strategic brief",
+      "Runway to a date, not a month count",
+      "Recurring commitment detection",
+      "Revenue concentration by client",
+      "Break-even and 90-day cash projection",
+      "Hire affordability, checked against committed costs",
+      "Confidence scoring on every metric",
+      "Decision log with outcome tracking",
+      "CSV, Excel and live sheet sync",
+    ],
   },
-  pro: {
-    name:"Command Pro", usd:2475, zar:44550, period:"per month",
-    tagline:"Command. Everything in Essentials, plus a CFO beside you.",
-    features:["Everything in Essentials","Done-for-you data configuration","Monthly 1:1 advisory call","Monthly written board report","Direct advisory line (email)","Priority 4-hour response SLA"],
-  },
-  elite: {
-    name:"Command Elite", usd:3000, zar:54000, setup:7000, period:"setup + $3,000/mo",
-    tagline:"VIP. White-glove financial command for market leaders.",
-    comingSoon:true,
-    features:["Everything in Pro","Dedicated account strategist","Custom AI model tuning on your data","Quarterly strategy session with founder","Direct line to founder (Khayelihle)","White-label option for agencies"],
+  advisory: {
+    name:"Command Advisory", usd:3000, period:"per month", seats:6,
+    tagline:"The system, plus the person who reads it with you.",
+    features:[
+      "Everything in Command Ledger",
+      "Done-for-you data configuration",
+      "Monthly 1:1 advisory call",
+      "Monthly written board report",
+      "Direct advisory line (email)",
+      "Priority 4-hour response",
+    ],
   },
 };
+
+// Sold on a call rather than through checkout: a one-time engagement needs
+// PayPal's Orders API, which is not wired, and this converts in conversation.
+const DIAGNOSTIC = {
+  name:"Financial Diagnostic", usd:750,
+  tagline:"One-time. Send twelve months of exports, receive the full analysis and a written findings memo.",
+  note:"Credited in full against your first month of Command Advisory.",
+};
+
+// Profiles created under the old pricing still hold these values, and the
+// webhook may still write them for a renewing legacy subscription. Resolving
+// them here keeps PLANS[plan] from being undefined and crashing the dashboard.
+const LEGACY_PLAN_KEYS = { essentials:"software", pro:"advisory", elite:"advisory" };
+const resolvePlanKey = (key) => (key && PLANS[key]) ? key : (LEGACY_PLAN_KEYS[key] || "software");
+const planOf = (key) => PLANS[resolvePlanKey(key)];
 
 const C = {
   bg:"#050709",surface:"#0A0D14",surfaceHigh:"#0F1320",
@@ -157,15 +196,19 @@ body{background:#050709;color:#F4F7FF;font-family:'Syne',sans-serif;-webkit-font
 .price-card:hover{transform:translateY(-4px);}
 .price-card.hot{border-color:#D8DADE;transform:scale(1.03);box-shadow:0 24px 64px -24px rgba(216,218,222,0.18);z-index:1;}
 .price-card.hot:hover{transform:scale(1.03) translateY(-4px);}
-.price-card.hot::after{content:'Most Popular';position:absolute;top:16px;right:16px;font-size:9px;letter-spacing:0.14em;text-transform:uppercase;color:#050709;background:#D8DADE;padding:4px 10px;font-weight:700;font-family:'Syne',sans-serif;}
-.price-card.soon{opacity:0.85;}
-.price-card.soon::after{content:'VIP — Coming Soon';position:absolute;top:16px;right:16px;font-size:9px;letter-spacing:0.14em;text-transform:uppercase;color:#D8DADE;background:transparent;border:1px solid #5A5D64;padding:4px 10px;font-weight:700;font-family:'Syne',sans-serif;}
+.price-card.hot::after{content:'6 Seats';position:absolute;top:16px;right:16px;font-size:9px;letter-spacing:0.14em;text-transform:uppercase;color:#050709;background:#D8DADE;padding:4px 10px;font-weight:700;font-family:'Syne',sans-serif;}
 .price-tier{font-size:10px;letter-spacing:0.2em;text-transform:uppercase;color:#D8DADE;font-weight:600;margin-bottom:8px;}
 .price-tagline{font-family:'Cormorant Garamond',serif;font-size:13px;color:#8898B8;margin-bottom:16px;font-style:italic;}
 .price-usd{font-family:'Cormorant Garamond',serif;font-size:52px;font-weight:300;color:#F0E8D8;line-height:1;}
 .price-usd sup{font-size:22px;vertical-align:top;margin-top:10px;display:inline-block;}
 .price-zar{font-size:12px;color:#5A5D64;margin:4px 0;font-family:'JetBrains Mono',monospace;}
-.price-period{font-size:12px;color:#8898B8;margin-bottom:28px;font-family:'Cormorant Garamond',serif;}
+.price-period{font-size:12px;color:#8898B8;margin-bottom:12px;font-family:'Cormorant Garamond',serif;}
+.price-grid-two{grid-template-columns:repeat(2,1fr);max-width:760px;}
+.price-note{font-size:11px;color:#7A7E88;margin-bottom:6px;font-family:'JetBrains Mono',monospace;letter-spacing:0.02em;}
+.price-diag{max-width:760px;margin:28px auto 0;background:#0A0D14;border:1px solid #161C2E;padding:26px 30px;display:flex;align-items:center;justify-content:space-between;gap:28px;text-align:left;}
+.price-diag-name{font-size:11px;letter-spacing:0.16em;text-transform:uppercase;color:#D8DADE;font-weight:600;margin-bottom:8px;}
+.price-diag-body{font-family:'Cormorant Garamond',serif;font-size:14px;color:#8898B8;line-height:1.6;}
+.price-diag-note{font-size:11px;color:#7A7E88;margin-top:8px;font-family:'JetBrains Mono',monospace;}
 .price-divider{height:1px;background:#161C2E;margin-bottom:24px;}
 .price-list{list-style:none;margin-bottom:28px;}
 .price-list li{display:flex;align-items:flex-start;gap:10px;font-size:13px;color:#8898B8;margin-bottom:10px;font-family:'Cormorant Garamond',serif;line-height:1.5;}
@@ -443,6 +486,8 @@ body{background:#050709;color:#F4F7FF;font-family:'Syne',sans-serif;-webkit-font
 }
 @media(max-width:600px){
   .feat-grid,.price-grid,.kpi4,.kpi3,.g3,.kpi-hero-sub{grid-template-columns:1fr;}
+  .price-diag{flex-direction:column;align-items:flex-start;gap:18px;padding:22px;}
+  .price-diag .btn{width:100%;}
   .hero-preview-kpis{grid-template-columns:1fr;}
 }
 @media(prefers-reduced-motion:reduce){
@@ -780,8 +825,19 @@ function DataUpload({ onDataLoaded, hasData }) {
 }
 
 // ─── PAY MODAL ────────────────────────────────────────────────
+const CHECKOUT_BLOCK_MESSAGE = {
+  not_configured:  "Checkout for this plan is not live yet. No PayPal plan has been created at this price.",
+  price_mismatch:  "Checkout is paused: the PayPal plan for this tier was created at a different price than the one shown here. It would charge the wrong amount.",
+  price_unverified:"Checkout is paused: the price of this tier's PayPal plan has not been recorded, so it cannot be confirmed against the price shown.",
+  unknown_plan:    "That plan does not exist.",
+};
+
 function PayModal({ planKey, userEmail, userId, onClose, onSuccess }) {
-  const plan = PLANS[planKey];
+  const plan = planOf(planKey);
+  const resolvedKey = resolvePlanKey(planKey);
+  // Refuses to charge when the displayed price and the PayPal plan's own price
+  // disagree. A visible failure is the cheap outcome; a wrong charge is not.
+  const blockReason = checkoutBlockReason(plan, PAYPAL_PLANS[resolvedKey]);
   const btnRef   = useRef(null);
   const rendered = useRef(false);
   const [sdkReady, setSdkReady] = useState(false);
@@ -809,6 +865,7 @@ function PayModal({ planKey, userEmail, userId, onClose, onSuccess }) {
   }, []);
 
   useEffect(() => {
+    if (blockReason) return;
     rendered.current = false;
     const old = document.getElementById("pp-sdk");
     if (old) old.remove();
@@ -821,9 +878,10 @@ function PayModal({ planKey, userEmail, userId, onClose, onSuccess }) {
     s.onload  = () => setSdkReady(true);
     s.onerror = () => setSdkErr("PayPal failed to load. Check your internet connection.");
     document.head.appendChild(s);
-  }, [planKey]);
+  }, [planKey, blockReason]);
 
   useEffect(() => {
+    if (blockReason) return;
     if (!sdkReady || !btnRef.current || rendered.current) return;
     if (!window.paypal) { setSdkErr("PayPal SDK unavailable."); return; }
     rendered.current = true;
@@ -833,7 +891,7 @@ function PayModal({ planKey, userEmail, userId, onClose, onSuccess }) {
       style: { color:"gold", shape:"rect", label:"subscribe", layout:"vertical" },
       createSubscription: (_d, actions) =>
         actions.subscription.create({
-          plan_id:   PAYPAL_PLANS[planKey],
+          plan_id:   PAYPAL_PLANS[resolvedKey].id,
           custom_id: userId,
         }),
       onApprove: async () => {
@@ -875,6 +933,19 @@ function PayModal({ planKey, userEmail, userId, onClose, onSuccess }) {
               </div>
               <button className="btn btn-full btn-primary" onClick={onClose}>Enter Dashboard</button>
             </div>
+          ) : blockReason ? (
+            <>
+              <div className="pay-err">{CHECKOUT_BLOCK_MESSAGE[blockReason] || CHECKOUT_BLOCK_MESSAGE.not_configured}</div>
+              <div style={{ fontSize:13, color:C.ink, fontFamily:"'Cormorant Garamond',serif", lineHeight:1.7, margin:"16px 0 20px" }}>
+                Nothing has been charged. Email us and we will set your subscription up directly.
+              </div>
+              <button
+                className="btn btn-full btn-primary"
+                onClick={() => window.open(`mailto:commandledger@gmail.com?subject=${encodeURIComponent(plan.name + " subscription")}`,"_blank")}
+              >
+                Email to subscribe
+              </button>
+            </>
           ) : (
             <>
               {!sdkReady && !sdkErr && (
@@ -950,7 +1021,7 @@ function Dashboard({ user, profile, onLogout, onUpgrade }) {
   const [scHire,   setScHire]   = useState(0);
   const [scCash,   setScCash]   = useState(0);
 
-  const plan = profile?.plan || "essentials";
+  const plan = resolvePlanKey(profile?.plan);
   const userName  = profile?.name || user?.user_metadata?.full_name || user?.email?.split("@")[0] || "Founder";
   const userAvatar = user?.user_metadata?.avatar_url;
 
@@ -1375,19 +1446,13 @@ function Dashboard({ user, profile, onLogout, onUpgrade }) {
             </div>
           ))}
           <div className="sb-sec" style={{ marginTop:8 }}>Plan</div>
-          <div className="sb-item" style={{ color:plan==="elite"?C.green:plan==="pro"?C.gold:C.blue, cursor:"default" }}>
+          <div className="sb-item" style={{ color:plan==="advisory"?C.gold:C.blue, cursor:"default" }}>
             <span style={{ fontSize:10, marginRight:4, fontFamily:"'JetBrains Mono',monospace" }}>-</span>
             {PLANS[plan].name}
           </div>
-          {plan === "essentials" && (
+          {plan === "software" && (
             <div className="sb-item" style={{ color:C.gold }} {...clickableProps(onUpgrade)}>
-              <span style={{ fontSize:10, marginRight:4, fontFamily:"'JetBrains Mono',monospace" }}>+</span>Upgrade to Pro
-            </div>
-          )}
-          {plan === "pro" && (
-            <div className="sb-item locked">
-              <span style={{ fontSize:10, marginRight:4, fontFamily:"'JetBrains Mono',monospace" }}>+</span>Elite VIP
-              <span style={{ fontSize:10, marginLeft:"auto", opacity:0.5 }}>Soon</span>
+              <span style={{ fontSize:10, marginRight:4, fontFamily:"'JetBrains Mono',monospace" }}>+</span>Add Advisory
             </div>
           )}
           <div className="sb-sec" style={{ marginTop:8 }}>Account</div>
@@ -1426,12 +1491,12 @@ function Dashboard({ user, profile, onLogout, onUpgrade }) {
                 <div style={{ position:"fixed", inset:0, zIndex:240 }} onClick={() => setAccountMenuOpen(false)}/>
                 <div className="dash-account-menu" role="menu">
                   <div className="dash-account-menu-item" style={{ cursor:"default", color:C.cream, fontWeight:600 }}>{userName}</div>
-                  <div className="dash-account-menu-item" style={{ cursor:"default", color: plan==="elite"?C.green:plan==="pro"?C.gold:C.blue }}>{PLANS[plan].name}</div>
-                  {plan === "essentials" && (
+                  <div className="dash-account-menu-item" style={{ cursor:"default", color: plan==="advisory"?C.gold:C.blue }}>{PLANS[plan].name}</div>
+                  {plan === "software" && (
                     <div className="dash-account-menu-item" style={{ color:C.gold }} role="menuitem" tabIndex={0}
                       onClick={() => { setAccountMenuOpen(false); onUpgrade(); }}
                       onKeyDown={e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setAccountMenuOpen(false); onUpgrade(); } }}>
-                      Upgrade to Pro
+                      Add Advisory
                     </div>
                   )}
                   <div className="dash-account-menu-item" role="menuitem" tabIndex={0}
@@ -2034,15 +2099,15 @@ function Dashboard({ user, profile, onLogout, onUpgrade }) {
               </div>
             </div>
 
-            {plan === "essentials" && (
+            {plan === "software" && (
               <div className="nudge">
-                <div className="nudge-title">You have the intelligence. Command Pro adds the team behind it.</div>
-                <div className="nudge-sub">Command Pro adds done-for-you data configuration, a monthly 1:1 advisory call, a written board report every month, and a direct advisory line with priority response.</div>
-                <button className="btn btn-lg btn-primary" onClick={onUpgrade}>Upgrade to Command Pro</button>
+                <div className="nudge-title">You have the system. Command Advisory adds the person who reads it with you.</div>
+                <div className="nudge-sub">Done-for-you data configuration, a monthly 1:1 call, a written board report every month, and a direct advisory line with priority response. Six seats, because one person delivers it.</div>
+                <button className="btn btn-lg btn-primary" onClick={onUpgrade}>Add Command Advisory</button>
               </div>
             )}
 
-            {(plan === "pro" || plan === "elite") && (
+            {plan === "advisory" && (
               <div className="card">
                 <div className="card-sec">Direct Access</div>
                 <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:16 }}>
@@ -2360,7 +2425,7 @@ function MarketingSite({ onLogin, onPlanSelect, onTerms, onPrivacy }) {
             aria-expanded={menuOpen}
           ><span/><span/><span/></button>
           <button className="btn btn-ghost" onClick={onLogin}>Sign In</button>
-          <button className="btn btn-gold" onClick={() => onPlanSelect("pro")}>Get Started</button>
+          <button className="btn btn-gold" onClick={() => onPlanSelect("software")}>Get Started</button>
         </div>
       </nav>
       {menuOpen && (
@@ -2378,7 +2443,7 @@ function MarketingSite({ onLogin, onPlanSelect, onTerms, onPrivacy }) {
           <h1 className="hero-title">You are making money.<br/>You still don't know if you're safe.<br/><em>Here's exactly why.</em></h1>
           <p className="hero-sub">Real-time financial intelligence: upload one bank or QuickBooks export and see your real runway, your true margin, your Risk Score, and the one move to make this week — computed from your actual transactions, processed in your browser, never stored on our servers.</p>
           <div className="hero-cta">
-            <button className="btn btn-lg btn-primary" onClick={() => onPlanSelect("pro")}>Get Started</button>
+            <button className="btn btn-lg btn-primary" onClick={() => onPlanSelect("software")}>Get Started</button>
             <button className="btn btn-lg btn-outline" onClick={onLogin}>Sign In</button>
           </div>
           <div className="hero-proof">
@@ -2529,53 +2594,53 @@ function MarketingSite({ onLogin, onPlanSelect, onTerms, onPrivacy }) {
 
       <section className="sec" id="pricing" style={{ background:C.surfaceHigh, borderTop:`1px solid ${C.border}`, borderBottom:`1px solid ${C.border}` }}>
         <div className="sec-eye">Pricing</div>
-        <h2 className="sec-title">Three tiers.<br/><em>One mission.</em></h2>
-        <p className="sec-body">Clarity. Direction. Command. Every tier is a deeper level of financial intelligence.</p>
-        <div className="price-grid">
+        <h2 className="sec-title">Two ways in.<br/><em>One system.</em></h2>
+        <p className="sec-body">The system runs on its own. Advisory adds the person who reads it with you — six seats, because one person delivers it.</p>
+        <div className="price-grid price-grid-two">
           {[
-            { key:"essentials", hot:false, soon:false },
-            { key:"pro",        hot:true,  soon:false },
-            { key:"elite",      hot:false, soon:true  },
+            { key:"software", hot:false },
+            { key:"advisory", hot:true  },
           ].map((p, i) => {
             const pl = PLANS[p.key];
             return (
-              <div key={p.key} className={`price-card reveal${p.hot?" hot":""}${p.soon?" soon":""}`} style={{ transitionDelay:`${i*70}ms` }}>
+              <div key={p.key} className={`price-card reveal${p.hot?" hot":""}`} style={{ transitionDelay:`${i*70}ms` }}>
                 <div className="price-tier">{pl.name}</div>
                 <div className="price-tagline">{pl.tagline}</div>
-                {pl.setup ? (
-                  <>
-                    <div className="price-usd"><sup>$</sup>{pl.setup.toLocaleString()}</div>
-                    <div className="price-zar">setup, then ${pl.usd.toLocaleString()}/mo (approx. R{pl.zar.toLocaleString()})</div>
-                  </>
-                ) : (
-                  <>
-                    <div className="price-usd"><sup>$</sup>{pl.usd.toLocaleString()}</div>
-                    <div className="price-zar">approx. R{pl.zar.toLocaleString()} ZAR</div>
-                  </>
-                )}
+                <div className="price-usd"><sup>$</sup>{pl.usd.toLocaleString()}</div>
                 <div className="price-period">{pl.period}</div>
+                {pl.annualUsd && (
+                  <div className="price-note">or ${pl.annualUsd.toLocaleString()} a year — two months free</div>
+                )}
+                {pl.seats && (
+                  <div className="price-note">{pl.seats} seats total</div>
+                )}
                 <div className="price-divider"/>
                 <ul className="price-list">
                   {pl.features.map((f, i) => <li key={i}>{f}</li>)}
                 </ul>
-                {p.soon ? (
-                  <button
-                    className="btn btn-full btn-outline"
-                    onClick={() => window.open("mailto:commandledger@gmail.com?subject=Command%20Elite%20waitlist","_blank")}
-                  >
-                    Join VIP Waitlist
-                  </button>
-                ) : (
-                  <button
-                    className={`btn btn-full${p.hot?" btn-primary":" btn-outline"}`}
-                    onClick={() => onPlanSelect(p.key)}
-                  >
-                    Get Started
-                  </button>
-                )}
+                <button
+                  className={`btn btn-full${p.hot?" btn-primary":" btn-outline"}`}
+                  onClick={() => onPlanSelect(p.key)}
+                >
+                  {p.hot ? "Request a seat" : "Get Started"}
+                </button>
               </div>
             );
           })}
+        </div>
+        <div className="price-diag reveal">
+          <div>
+            <div className="price-diag-name">{DIAGNOSTIC.name} — ${DIAGNOSTIC.usd.toLocaleString()} once</div>
+            <div className="price-diag-body">{DIAGNOSTIC.tagline}</div>
+            <div className="price-diag-note">{DIAGNOSTIC.note}</div>
+          </div>
+          <button
+            className="btn btn-outline"
+            style={{ whiteSpace:"nowrap" }}
+            onClick={() => window.open("mailto:commandledger@gmail.com?subject=Financial%20Diagnostic","_blank")}
+          >
+            Request a diagnostic
+          </button>
         </div>
       </section>
 
@@ -2586,7 +2651,7 @@ function MarketingSite({ onLogin, onPlanSelect, onTerms, onPrivacy }) {
           <p className="sec-body" style={{ marginTop:20, marginBottom:48 }}>
             The hire you could not afford. The ad spend with no data behind it. The month you ran without knowing your runway. Command Ledger exists so those decisions never happen again.
           </p>
-          <button className="btn btn-lg btn-primary" onClick={() => onPlanSelect("pro")}>Get Started</button>
+          <button className="btn btn-lg btn-primary" onClick={() => onPlanSelect("software")}>Get Started</button>
           <div className="hero-proof" style={{ justifyContent:"center", marginTop:24 }}>
             <span>Runs in your browser</span><span className="hero-proof-sep">·</span>
             <span>Nothing uploaded</span><span className="hero-proof-sep">·</span>
@@ -2636,9 +2701,9 @@ function TermsPage({ onBack }) {
         <h2 className="page-h2">2. Service</h2>
         <p className="page-p">Command Ledger provides AI-powered financial intelligence for founders and business owners, including analytics, capital allocation tools, and AI-generated strategic recommendations.</p>
         <h2 className="page-h2">3. Payment</h2>
-        <p className="page-p">Subscriptions are billed monthly via PayPal. Subscriptions auto-renew unless cancelled at least 7 days before the renewal date.</p>
+        <p className="page-p">Subscriptions are billed via PayPal, monthly or annually depending on the term selected, and auto-renew unless cancelled at least 7 days before the renewal date. The Financial Diagnostic is a one-time charge, not a subscription.</p>
         <h2 className="page-h2">4. Refunds</h2>
-        <p className="page-p">7-day refund on monthly subscriptions for first-time subscribers. Elite setup fees are non-refundable once configuration has begun.</p>
+        <p className="page-p">7-day refund on monthly subscriptions for first-time subscribers. Annual subscriptions may be refunded pro rata within 30 days. The Financial Diagnostic is non-refundable once analysis has begun; where it is credited against a first month of Command Advisory, that credit is forfeited if the subscription is refunded.</p>
         <h2 className="page-h2">5. Disclaimer</h2>
         <p className="page-p">Command Ledger is for informational purposes only. This is not financial advice. Consult a qualified professional before major business decisions.</p>
         <h2 className="page-h2">6. Contact</h2>
@@ -2687,8 +2752,8 @@ function PaywallGate({ user, onSelectPlan, onLogout }) {
         <div className="auth-form">
           <div style={{ display:"flex", flexDirection:"column", gap:14 }}>
             {[
-              { key:"essentials", hot:false },
-              { key:"pro",        hot:true  },
+              { key:"software", hot:false },
+              { key:"advisory", hot:true  },
             ].map(p => {
               const pl = PLANS[p.key];
               return (
@@ -2816,7 +2881,7 @@ export default function App() {
             user={user}
             profile={profile}
             onLogout={async () => { await supabase.auth.signOut(); }}
-            onUpgrade={() => { if (profile.plan === "essentials") setPayModal("pro"); }}
+            onUpgrade={() => { if (resolvePlanKey(profile.plan) === "software") setPayModal("advisory"); }}
           />
         ) : (
           <PaywallGate

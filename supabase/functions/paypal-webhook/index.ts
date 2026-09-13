@@ -38,9 +38,19 @@ const PAYPAL_WEBHOOK_ID = Deno.env.get("PAYPAL_WEBHOOK_ID")
 const PAYPAL_API_BASE = Deno.env.get("PAYPAL_API_BASE") || "https://api-m.sandbox.paypal.com"
 
 // Must stay in sync with PAYPAL_PLANS in src/App.jsx.
+//
+// The two P- ids below were sold under the retired three-tier pricing. They
+// stay mapped so an existing subscriber's renewal still resolves to an
+// entitlement, mapped by what they bought rather than what they paid:
+// Command Essentials was software only, Command Pro included the advisory
+// call. Do not remove them until those subscriptions are gone.
+//
+// New plan ids go here as they are created in PayPal. An unmapped plan_id is
+// logged and grants nothing, which is the correct failure: a subscription
+// whose tier cannot be identified must not silently confer access.
 const PLAN_ID_TO_KEY: Record<string, string> = {
-  "P-1NE00583S5561651HNITP2ZI": "essentials",
-  "P-7M170334YK027974RNITP7NY": "pro",
+  "P-1NE00583S5561651HNITP2ZI": "software",
+  "P-7M170334YK027974RNITP7NY": "advisory",
 }
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)

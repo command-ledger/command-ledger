@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { fmt, pc, safe, detectExpenseCategory, parseAnyCSV, computeMetrics, trailingGrowthRate, computeGrowthScore, computeRiskScore, detectTrends, applyScenario, runScenario, computeHistoricalTrajectory, detectSeasonality, computeHistoricalConfidence, buildFounderNarrative, parseTransactions, normalizeDescription, dedupeHashInput, computeDedupeHash, aggregateTransactionsByMonth, computeConfidence, capSeverityForVolume, extractCounterparty, isAggregatorCounterparty, nameSimilarity, groupCounterparties, computeRevenueConcentration, classifyCadence, obligationConfidence, detectRecurringObligations, projectForwardCalendar, summarizeCalendarByWeek, computeForwardRunway, checkAffordability, detectMissedObligations, computeDirective, getDirectiveMetricValue, describeDirectiveOutcome, detectCurrentMonthSeasonality, computeSeasonallyAdjustedVelocity } from "./financials.js";
+import { fmt, pc, safe, detectExpenseCategory, parseAnyCSV, computeMetrics, trailingGrowthRate, computeGrowthScore, computeRiskScore, detectTrends, applyScenario, runScenario, computeHistoricalTrajectory, detectSeasonality, computeHistoricalConfidence, buildFounderNarrative, parseTransactions, normalizeDescription, dedupeHashInput, computeDedupeHash, aggregateTransactionsByMonth, computeConfidence, capSeverityForVolume, extractCounterparty, isAggregatorCounterparty, nameSimilarity, groupCounterparties, computeRevenueConcentration, classifyCadence, obligationConfidence, detectRecurringObligations, projectForwardCalendar, summarizeCalendarByWeek, computeForwardRunway, checkAffordability, detectMissedObligations, computeDirective, getDirectiveMetricValue, describeDirectiveOutcome, detectCurrentMonthSeasonality, computeSeasonallyAdjustedVelocity, checkoutBlockReason } from "./financials.js";
 
 describe("fmt / pc / safe", () => {
   it("formats currency and percentages", () => {
@@ -1621,5 +1621,40 @@ describe("Excel upload contract (sheet_to_csv output)", () => {
     expect(transactions.find(t => t.amount < 0).amount).toBe(-240);
     // negative rows keep their sign and still categorise
     expect(transactions.find(t => t.amount < 0).category).toBe("software");
+  });
+});
+
+// ── Checkout price integrity ─────────────────────────────────────
+// The one bug class here that costs real money: the page showing one price
+// while PayPal charges another. These pin the gate shut.
+describe("checkoutBlockReason", () => {
+  const plan = { usd: 99 };
+
+  it("allows checkout only when the PayPal plan price matches the displayed price", () => {
+    expect(checkoutBlockReason(plan, { id: "P-ABC", priceUsd: 99 })).toBeNull();
+  });
+
+  it("blocks when the PayPal plan charges a different amount than displayed", () => {
+    expect(checkoutBlockReason(plan, { id: "P-ABC", priceUsd: 1250 })).toBe("price_mismatch");
+    expect(checkoutBlockReason(plan, { id: "P-ABC", priceUsd: 98 })).toBe("price_mismatch");
+  });
+
+  it("blocks when no PayPal plan has been created yet", () => {
+    expect(checkoutBlockReason(plan, { id: null, priceUsd: null })).toBe("not_configured");
+    expect(checkoutBlockReason(plan, undefined)).toBe("not_configured");
+  });
+
+  it("blocks when a plan id exists but its price was never recorded", () => {
+    expect(checkoutBlockReason(plan, { id: "P-ABC" })).toBe("price_unverified");
+    expect(checkoutBlockReason(plan, { id: "P-ABC", priceUsd: "99" })).toBe("price_unverified");
+  });
+
+  it("blocks an unknown or malformed plan", () => {
+    expect(checkoutBlockReason(null, { id: "P-ABC", priceUsd: 99 })).toBe("unknown_plan");
+    expect(checkoutBlockReason({}, { id: "P-ABC", priceUsd: 99 })).toBe("unknown_plan");
+  });
+
+  it("treats a zero price as a real price, not a missing one", () => {
+    expect(checkoutBlockReason({ usd: 0 }, { id: "P-ABC", priceUsd: 0 })).toBeNull();
   });
 });

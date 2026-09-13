@@ -1567,3 +1567,23 @@ export function describeDirectiveOutcome(directive) {
       : `${meta.label} moved from ${meta.fmt(before)} to ${meta.fmt(after)}.`,
   };
 }
+
+// ─── CHECKOUT PRICE INTEGRITY ───────────────────────────────────
+// PayPal holds the authoritative amount for a subscription: the price lives
+// on the PayPal plan, and this app only renders a number next to it. If the
+// two ever disagree, the page is lying to the customer about what their card
+// will be charged, and a subscription must not be created.
+//
+// Every PayPal plan id is therefore stored alongside the USD price that plan
+// was created with, and checkout is gated on the two agreeing. A missing id
+// or a stale price blocks the button instead of silently charging the wrong
+// amount — the failure is visible and safe rather than financial.
+//
+// Returns null when checkout is safe, otherwise a machine-readable reason.
+export function checkoutBlockReason(plan, paypalEntry) {
+  if (!plan || typeof plan.usd !== "number") return "unknown_plan";
+  if (!paypalEntry || !paypalEntry.id) return "not_configured";
+  if (typeof paypalEntry.priceUsd !== "number") return "price_unverified";
+  if (paypalEntry.priceUsd !== plan.usd) return "price_mismatch";
+  return null;
+}
