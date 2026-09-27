@@ -1,3 +1,3 @@
 User-agent: *
 Allow: /
-Sitemap: https://commandledger.com/sitemap.xml
+Sitemap: https://www.commandledger.com/sitemap.xml
