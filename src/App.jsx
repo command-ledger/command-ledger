@@ -2693,14 +2693,14 @@ function MarketingSite({ onLogin, onPlanSelect, onTerms, onPrivacy }) {
         <div className="hero-copy">
           <div className="eyebrow"><span className="eyebrow-dot"/>For Founders Past $50K/Month Who've Outgrown a Spreadsheet</div>
           <h1 className="hero-title">You are making money.<br/>You still don't know if you're safe.<br/><em>Here's exactly why.</em></h1>
-          <p className="hero-sub">Real-time financial intelligence: upload one bank or QuickBooks export and see your real runway, your true margin, your Risk Score, and the one move to make this week — computed from your actual transactions, processed in your browser, never stored on our servers.</p>
+          <p className="hero-sub">Real-time financial intelligence: upload one bank or QuickBooks export and see your real runway, your true margin, your Risk Score, and the one move to make this week — computed from your actual transactions. Try it on this page first: the preview runs entirely in your browser and uploads nothing.</p>
           <div className="hero-cta">
             <button className="btn btn-lg btn-primary" onClick={() => onPlanSelect("software")}>Get Started</button>
             <button className="btn btn-lg btn-outline" onClick={onLogin}>Sign In</button>
           </div>
           <div className="hero-proof">
-            <span>Runs in your browser</span><span className="hero-proof-sep">·</span>
-            <span>Nothing uploaded</span><span className="hero-proof-sep">·</span>
+            <span>Preview runs in your browser</span><span className="hero-proof-sep">·</span>
+            <span>Your data, visible to your login only</span><span className="hero-proof-sep">·</span>
             <span>Real transactions, not guesses</span>
           </div>
         </div>
@@ -2710,7 +2710,7 @@ function MarketingSite({ onLogin, onPlanSelect, onTerms, onPrivacy }) {
 
       <div className="stats-bar reveal">
         <div className="stat"><div className="stat-n">6</div><div className="stat-l">Live Financial Signals</div></div>
-        <div className="stat"><div className="stat-n">0</div><div className="stat-l">Files Stored On Our Servers</div></div>
+        <div className="stat"><div className="stat-n">1</div><div className="stat-l">Login That Can See Your Data</div></div>
         <div className="stat"><div className="stat-n">1</div><div className="stat-l">CSV To See Your Real Numbers</div></div>
       </div>
 
@@ -2719,7 +2719,7 @@ function MarketingSite({ onLogin, onPlanSelect, onTerms, onPrivacy }) {
         <h2 className="sec-title" style={{ fontSize:"clamp(28px,3.6vw,40px)" }}>Only claims we can<br/><em>actually stand behind</em></h2>
         <div className="feat-grid" style={{ marginTop:48 }}>
           {[
-            { num:"01", title:"Data Processing", desc:"Your uploaded file is parsed in your browser using the same code shown above — it is never uploaded to our servers or permanently stored. Computed metrics are sent to Claude (Anthropic) only when you request an AI brief, and only as numbers, never as raw transaction data." },
+            { num:"01", title:"Data Processing", desc:"The preview above parses your file in your browser and uploads nothing. In your account, the transactions you upload are saved to your private history so trends, obligations and outcomes can be tracked month to month; the file itself is not kept, and deleting an upload deletes every transaction it added. An AI brief, only when you request one, sends Claude (Anthropic) your computed metrics, the names of your largest payers and recurring costs, and any notes you left on past directives, never your transaction list." },
             { num:"02", title:"Access Control", desc:"Your account is protected by Postgres row-level security, scoped to your own login — verified directly against the live database, not asserted in a policy document. Only the payment webhook, using a separate privileged key, can change your subscription status." },
             { num:"03", title:"Financial Transparency", desc:"Every metric — margin, runway, Risk Score, Growth Score — is derived from a published, testable formula, not a black-box model. Runway uses net burn, not gross expenses; scores only count a signal when there's real data behind it." },
           ].map((t, i) => (
@@ -2905,8 +2905,8 @@ function MarketingSite({ onLogin, onPlanSelect, onTerms, onPrivacy }) {
           </p>
           <button className="btn btn-lg btn-primary" onClick={() => onPlanSelect("software")}>Get Started</button>
           <div className="hero-proof" style={{ justifyContent:"center", marginTop:24 }}>
-            <span>Runs in your browser</span><span className="hero-proof-sep">·</span>
-            <span>Nothing uploaded</span><span className="hero-proof-sep">·</span>
+            <span>Preview runs in your browser</span><span className="hero-proof-sep">·</span>
+            <span>Your data, visible to your login only</span><span className="hero-proof-sep">·</span>
             <span>No card required to try the live preview</span>
           </div>
         </div>
@@ -2977,7 +2977,7 @@ function PrivacyPage({ onBack }) {
         <h2 className="page-h2">2. How We Use It</h2>
         <p className="page-p">To provide the Service, process payments, deliver AI analysis, and send account updates. We do not sell your data.</p>
         <h2 className="page-h2">3. Security</h2>
-        <p className="page-p">All data encrypted via SSL. Financial data processed in real time and not permanently stored. User accounts stored securely via Supabase.</p>
+        <p className="page-p">All data encrypted in transit via SSL. Transactions you upload to your account are stored in your private history with Supabase, readable only by your login, so your metrics can track change over time; the uploaded file itself is not kept. Deleting an upload from Upload History permanently deletes every transaction it added. The free preview on the home page runs in your browser and stores nothing. User accounts are stored securely via Supabase.</p>
         <h2 className="page-h2">4. Contact</h2>
         <p className="page-p">commandledger@gmail.com</p>
       </div>
