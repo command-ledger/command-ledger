@@ -23,6 +23,7 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts"
 import { createClient } from "jsr:@supabase/supabase-js@2"
 import { planKeyForId } from "../_shared/paypal-plans.ts"
 import { verifyDiagnosticCapture } from "../_shared/one-time-products.ts"
+import { decideGrant, decideEnd, type EntitlementDecision } from "../_shared/subscription-entitlement.ts"
 
 declare const Deno: {
   env: {
@@ -108,7 +109,7 @@ async function fetchSubscription(subscriptionId: string, accessToken: string) {
 // is nothing to revoke, and retrying would only add noise.
 async function setProfile(
   userId: string,
-  fields: { plan?: string | null; status: string },
+  fields: { plan?: string | null; status: string; paypal_subscription_id?: string },
   { requireRow = false }: { requireRow?: boolean } = {},
 ) {
   const { data, error } = await supabase
@@ -121,6 +122,44 @@ async function setProfile(
     const msg = `No profile row for user ${userId}; ${fields.status} not applied.`
     if (requireRow) throw new Error(msg)
     console.warn(msg)
+  }
+}
+
+// The subscription id that grants this profile's plan, or null when none is on
+// file (or there is no row — a grant then fails in setProfile and is retried).
+async function subscriptionOnFile(userId: string): Promise<string | null> {
+  const { data, error } = await supabase
+    .from("profiles")
+    .select("paypal_subscription_id")
+    .eq("id", userId)
+    .maybeSingle()
+  if (error) throw new Error(`Supabase profile read failed: ${error.message}`)
+  return data?.paypal_subscription_id ?? null
+}
+
+// Applies a grant event for subscription `sub` (PayPal's subscription object)
+// according to decideGrant(). Every outcome other than a plain grant is
+// logged, because two live subscriptions mean a customer is being billed twice
+// and someone has to cancel one by hand.
+// deno-lint-ignore no-explicit-any
+async function applyGrant(userId: string, sub: any, accessToken: string) {
+  const event = { id: sub.id, planKey: planKeyForId(sub.plan_id), createTime: sub.create_time }
+  const onFile = await subscriptionOnFile(userId)
+  let stored = null
+  if (onFile && onFile !== sub.id) {
+    const s = await fetchSubscription(onFile, accessToken)
+    stored = s ? { id: onFile, status: s.status, createTime: s.create_time } : null
+  }
+  const decision: EntitlementDecision = decideGrant(event, onFile, stored)
+  if ("duplicateOf" in decision && decision.duplicateOf) {
+    console.error("Customer has two live subscriptions; cancel the older one in PayPal.", {
+      userId, keep: decision.kind === "grant" ? sub.id : onFile, cancel: decision.duplicateOf,
+    })
+  }
+  if (decision.kind === "grant") {
+    await setProfile(userId, { plan: decision.planKey, status: "active", paypal_subscription_id: decision.subscriptionId }, { requireRow: true })
+  } else if (decision.kind === "ignore") {
+    console.warn("Grant event not applied.", { userId, subscription: sub.id, reason: decision.reason })
   }
 }
 
@@ -201,7 +240,7 @@ serve(async (req: Request) => {
           console.error("Activation event missing userId/planKey mapping.", { plan_id: resource.plan_id, custom_id: resource.custom_id })
           break
         }
-        await setProfile(userId, { plan: planKey, status: "active" }, { requireRow: true })
+        await applyGrant(userId, resource, accessToken)
         break
       }
 
@@ -222,18 +261,26 @@ serve(async (req: Request) => {
         const sub = await fetchSubscription(subscriptionId, accessToken)
         const userId = sub?.custom_id
         const planKey = planKeyForId(sub?.plan_id)
-        if (userId && planKey) await setProfile(userId, { plan: planKey, status: "active" }, { requireRow: true })
+        if (userId && planKey) await applyGrant(userId, sub, accessToken)
         break
       }
 
+      // Only the subscription on file can end or suspend access; a
+      // superseded subscription ending must not remove access another one
+      // is paying for.
       case "BILLING.SUBSCRIPTION.CANCELLED":
       case "BILLING.SUBSCRIPTION.EXPIRED": {
         const userId = resource.custom_id
         if (userId) {
-          await setProfile(userId, {
-            plan: null,
-            status: event.event_type === "BILLING.SUBSCRIPTION.EXPIRED" ? "expired" : "canceled",
-          })
+          const decision = decideEnd("revoke", resource.id, await subscriptionOnFile(userId))
+          if (decision.kind === "revoke") {
+            await setProfile(userId, {
+              plan: null,
+              status: event.event_type === "BILLING.SUBSCRIPTION.EXPIRED" ? "expired" : "canceled",
+            })
+          } else {
+            console.warn("End event not applied: not the subscription on file.", { userId, subscription: resource.id })
+          }
         }
         break
       }
@@ -243,7 +290,11 @@ serve(async (req: Request) => {
       // will restore "active" status if the subscription recovers.
       case "BILLING.SUBSCRIPTION.SUSPENDED": {
         const userId = resource.custom_id
-        if (userId) await setProfile(userId, { status: "suspended" })
+        if (userId) {
+          const decision = decideEnd("suspend", resource.id, await subscriptionOnFile(userId))
+          if (decision.kind === "suspend") await setProfile(userId, { status: "suspended" })
+          else console.warn("Suspend event not applied.", { userId, subscription: resource.id })
+        }
         break
       }
 

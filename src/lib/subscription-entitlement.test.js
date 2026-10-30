@@ -1,0 +1,62 @@
+import { describe, it, expect } from "vitest";
+import { decideGrant, decideEnd } from "../../supabase/functions/_shared/subscription-entitlement.ts";
+
+// Imports the module paypal-webhook runs, not a copy, so a change to which
+// subscription controls access has to get past these first.
+
+const software = { id: "I-SOFTWARE", planKey: "software", createTime: "2026-01-05T10:00:00Z" };
+const advisory = { id: "I-ADVISORY", planKey: "advisory", createTime: "2026-03-02T10:00:00Z" };
+const live = sub => ({ id: sub.id, status: "ACTIVE", createTime: sub.createTime });
+
+describe("decideGrant", () => {
+  it("grants a first subscription and records it", () => {
+    expect(decideGrant(software, null, null)).toEqual({ kind: "grant", planKey: "software", subscriptionId: "I-SOFTWARE" });
+  });
+
+  it("keeps granting renewals of the subscription on file", () => {
+    expect(decideGrant(advisory, "I-ADVISORY", null).kind).toBe("grant");
+  });
+
+  it("grants nothing for an unmapped plan", () => {
+    expect(decideGrant({ ...software, planKey: undefined }, null, null).kind).toBe("ignore");
+  });
+
+  it("moves access to an upgrade and flags the older subscription still billing", () => {
+    const d = decideGrant(advisory, "I-SOFTWARE", live(software));
+    expect(d).toEqual({ kind: "grant", planKey: "advisory", subscriptionId: "I-ADVISORY", duplicateOf: "I-SOFTWARE" });
+  });
+
+  it("does not let the old subscription's renewal downgrade an upgraded customer", () => {
+    const d = decideGrant(software, "I-ADVISORY", live(advisory));
+    expect(d.kind).toBe("ignore");
+    expect(d.duplicateOf).toBe("I-SOFTWARE");
+  });
+
+  it("lets a new subscription replace one that has ended", () => {
+    const d = decideGrant(software, "I-ADVISORY", { ...live(advisory), status: "CANCELLED" });
+    expect(d).toEqual({ kind: "grant", planKey: "software", subscriptionId: "I-SOFTWARE" });
+  });
+
+  it("throws, so PayPal retries, when the subscription on file cannot be read", () => {
+    expect(() => decideGrant(advisory, "I-SOFTWARE", null)).toThrow();
+  });
+
+  it("never grants a subscription whose age cannot be compared over a live one", () => {
+    expect(decideGrant({ ...advisory, createTime: null }, "I-SOFTWARE", live(software)).kind).toBe("ignore");
+  });
+});
+
+describe("decideEnd", () => {
+  it("revokes when the subscription on file is cancelled", () => {
+    expect(decideEnd("revoke", "I-ADVISORY", "I-ADVISORY")).toEqual({ kind: "revoke" });
+  });
+
+  it("ignores the cancellation of a superseded subscription", () => {
+    expect(decideEnd("revoke", "I-SOFTWARE", "I-ADVISORY").kind).toBe("ignore");
+    expect(decideEnd("suspend", "I-SOFTWARE", "I-ADVISORY").kind).toBe("ignore");
+  });
+
+  it("applies the event to a profile with nothing on file, as before", () => {
+    expect(decideEnd("revoke", "I-SOFTWARE", null)).toEqual({ kind: "revoke" });
+  });
+});

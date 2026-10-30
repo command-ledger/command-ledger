@@ -950,8 +950,11 @@ function computeTrendRisk(trends, growthScore) {
 // already reach the "Critical" band at their worst, regardless of trend
 // data — then trend direction (0.2), then concentration and unit
 // economics (0.05 each).
-export function computeRiskScore({ cashFlowPositive, burnMonths, concentration, concentrationReliable, ltvcac, margin, trends, growthScore }) {
-  const runwayRisk = cashFlowPositive ? 0
+// `runwayKnown` is false when no cash balance exists to measure runway
+// against. burnMonths is then meaningless (not short), so runway scores no
+// risk — the same rule as every other missing input here.
+export function computeRiskScore({ cashFlowPositive, burnMonths, runwayKnown = true, concentration, concentrationReliable, ltvcac, margin, trends, growthScore }) {
+  const runwayRisk = cashFlowPositive || !runwayKnown ? 0
     : burnMonths >= 8 ? 0
     : burnMonths <= 0 ? 100
     : Math.min(100, Math.max(0, ((8 - burnMonths) / 8) * 100));
@@ -1153,8 +1156,11 @@ export function computeMetrics(rows, manual, mode, context = {}) {
     ? Math.min(100, Math.max(0, (margin * 0.6) + (Math.min(conv, 100) * 0.4)))
     : Math.min(100, Math.max(0, margin));
   const sovLbl    = sov >= 75 ? "Sovereign" : sov >= 50 ? "Stabilizing" : sov >= 30 ? "Defensive" : "Critical";
-  const taxV      = totPro * tr;
-  const safV      = totPro * sr;
+  // Reserves are set aside out of profit. A loss owes no tax and funds no
+  // buffer, so both are zero then and True Free Cash is the full loss —
+  // reserving a negative amount used to report only half of it.
+  const taxV      = Math.max(0, totPro) * tr;
+  const safV      = Math.max(0, totPro) * sr;
   const free      = totPro - taxV - safV;
   const avgExp     = totExp / Math.max(n, 1);
   const avgRev     = totRev / Math.max(n, 1);
@@ -1164,7 +1170,11 @@ export function computeMetrics(rows, manual, mode, context = {}) {
   // revenue already covers expenses there's no burn to measure against.
   const netBurn        = avgExp - avgRev;
   const cashFlowPositive = hasData && netBurn <= 0;
-  const burnMonths = netBurn > 0 ? (activeCash + safV) / netBurn : 0;
+  // The mode's safety share is held back from one month's burn. It used to
+  // be taken from the whole period's loss, so the same cash and burn read
+  // as a shorter runway the longer the selected history — and went negative
+  // ("---", maximum risk) on a long enough one.
+  const burnMonths = netBurn > 0 ? (activeCash - netBurn * sr) / netBurn : 0;
   const hireReady  = free > 25000 * 6;
   // Real revenue concentration (by paying counterparty, not by calendar
   // month — a single highest MONTH is mechanically ~100% of a 1-month
@@ -1196,7 +1206,7 @@ export function computeMetrics(rows, manual, mode, context = {}) {
 
   const growth = computeGrowthScore(rows, vel, seasonalAdjustedVel);
   const trends = detectTrends(rows, seasonalPattern);
-  const risk = computeRiskScore({ cashFlowPositive, burnMonths, concentration, concentrationReliable, ltvcac, margin, trends, growthScore: growth.score });
+  const risk = computeRiskScore({ cashFlowPositive, burnMonths, runwayKnown: activeCash > 0, concentration, concentrationReliable, ltvcac, margin, trends, growthScore: growth.score });
 
   // Long-run trajectory, seasonality, and a plain-language narrative —
   // same 13+/2+ month floors as the functions themselves. Every field

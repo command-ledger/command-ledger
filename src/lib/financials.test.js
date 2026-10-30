@@ -84,9 +84,24 @@ describe("computeMetrics — manual entry", () => {
     const burning = { mRev: 30000, mExp: 40000, mCash: 100000, mCac: 0, mLtv: 0, mLeads: 0, mClose: 0 };
     const m = computeMetrics(null, burning, "safe");
     const netBurn = 40000 - 30000; // 10000
-    const safetyBuffer = (30000 - 40000) * 0.20; // totPro * sr, safe mode
+    const safetyBuffer = netBurn * 0.20; // one month's burn * sr, safe mode
     expect(m.cashFlowPositive).toBe(false);
-    expect(m.burnMonths).toBeCloseTo((100000 + safetyBuffer) / netBurn, 5); // 9.8 months
+    expect(m.burnMonths).toBeCloseTo((100000 - safetyBuffer) / netBurn, 5); // 9.8 months
+  });
+
+  it("reserves nothing out of a loss, so True Free Cash is the whole loss", () => {
+    const burning = { mRev: 30000, mExp: 40000, mCash: 100000, mCac: 0, mLtv: 0, mLeads: 0, mClose: 0 };
+    const m = computeMetrics(null, burning, "safe");
+    expect(m.taxV).toBe(0);
+    expect(m.safV).toBe(0);
+    expect(m.free).toBeCloseTo(-10000, 5); // not -5000, which reserving 50% of a negative profit produced
+  });
+
+  it("scores no runway risk for a burning company that has not entered a cash balance", () => {
+    const noCash = { mRev: 30000, mExp: 40000, mCash: 0, mCac: 0, mLtv: 0, mLeads: 0, mClose: 0 };
+    const m = computeMetrics(null, noCash, "safe");
+    expect(m.runwayConfidence.shown).toBe(false);
+    expect(m.risk.breakdown.runwayRisk).toBe(0); // unknown runway is missing data, not zero runway
   });
 
   it("scores the Sovereignty Score on margin alone when there's no conversion data, instead of capping it at 60", () => {
@@ -154,6 +169,15 @@ describe("computeMetrics — uploaded CSV rows", () => {
     const m = computeMetrics(rows, manual, "safe", { revenueConcentration });
     expect(m.concentration).toBe(0);
     expect(m.concentrationReliable).toBe(false);
+  });
+
+  it("reports the same runway for the same cash and burn whatever the history length", () => {
+    // $10k/month net burn every month, $60k in the bank at the end.
+    const burnRow = { revenue: 20000, expenses: 30000, cash: 60000, cogs: 0, marketing: 0, leads: 0, closures: 0, cac: 0, ltv: 0 };
+    const threeMonths = computeMetrics([burnRow, burnRow, burnRow], manual, "safe");
+    const fortyEight  = computeMetrics(Array(48).fill(burnRow), manual, "safe");
+    expect(threeMonths.burnMonths).toBeCloseTo(5.8, 5); // (60000 - 10000*0.2) / 10000
+    expect(fortyEight.burnMonths).toBeCloseTo(5.8, 5);  // was negative: 20% of a $480k cumulative loss outweighed the cash
   });
 
   it("has medium data confidence for a short uploaded history, and high confidence at 3+ months", () => {

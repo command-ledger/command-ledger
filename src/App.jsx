@@ -298,6 +298,11 @@ body{background:#050709;color:#F4F7FF;font-family:'Syne',sans-serif;-webkit-font
 .d-alert.ok{background:rgba(42,191,133,0.1);border-color:#2ABF85;color:#80C8A8;}
 .d-alert.warn{background:rgba(232,160,32,0.1);border-color:#E8A020;color:#C89050;}
 .d-alert.info{background:rgba(74,124,247,0.1);border-color:#4A7CF7;color:#80A0E8;}
+/* Post-checkout activation notice. Fixed above every screen, because the
+   buyer may be on the paywall or the dashboard when it matters. */
+.activation-banner{position:fixed;top:0;left:0;right:0;z-index:400;display:flex;align-items:center;justify-content:center;gap:12px;padding:12px 16px;background:#1A1608;border-bottom:1px solid #E8A020;color:#E8D6B0;font-size:12.5px;line-height:1.5;}
+.activation-banner a{color:#E8A020;}
+@media(max-width:600px){.activation-banner{flex-direction:column;align-items:flex-start;}}
 .trend-bar{height:4px;border-radius:1px;overflow:hidden;background:#161C2E;margin-top:8px;}
 .trend-fill{height:100%;border-radius:1px;transition:width 0.8s ease;}
 .alloc-row{display:flex;align-items:center;gap:12px;padding:11px 0;border-bottom:1px solid #161C2E;}
@@ -642,17 +647,22 @@ function BChart({ data }) {
       Connect data to see your revenue trend.
     </div>
   );
-  const maxV = Math.max(...data.map(d => d.revenue), 1);
+  // Both series share one scale. Scaling to revenue alone drew any month
+  // whose expenses beat revenue taller than the chart — the exact month that
+  // most needs reading correctly.
+  const maxV = Math.max(...data.map(d => Math.max(d.revenue || 0, d.expenses || 0)), 1);
   return (
     <div>
-      <div style={{ display:"flex", alignItems:"flex-end", gap:6, height:140 }}>
+      <div style={{ display:"flex", alignItems:"flex-end", gap:6, height:140 }} role="img"
+        aria-label={`Revenue and expenses by month. Latest, ${data[data.length-1].month}: revenue ${fmt(data[data.length-1].revenue)}, expenses ${fmt(data[data.length-1].expenses)}.`}>
         {data.map((d, i) => (
-          <div key={i} style={{ flex:1, display:"flex", flexDirection:"column", alignItems:"center", gap:4, height:"100%", justifyContent:"flex-end" }}>
+          <div key={i} title={`${d.month}: revenue ${fmt(d.revenue)}, expenses ${fmt(d.expenses)}`}
+            style={{ flex:1, minWidth:0, display:"flex", flexDirection:"column", alignItems:"center", gap:4, height:"100%", justifyContent:"flex-end" }}>
             <div style={{ display:"flex", gap:2, alignItems:"flex-end", height:120, width:"100%", justifyContent:"center" }}>
               <div style={{ width:"46%", borderRadius:"1px 1px 0 0", minHeight:3, height:`${(d.revenue/maxV)*110}px`, background:`linear-gradient(to top,${C.blue},rgba(74,124,247,0.4))` }}/>
               <div style={{ width:"46%", borderRadius:"1px 1px 0 0", minHeight:3, height:`${(d.expenses/maxV)*110}px`, background:`linear-gradient(to top,rgba(232,72,85,0.7),rgba(232,72,85,0.2))` }}/>
             </div>
-            <span style={{ fontSize:9, color:C.inkDim, fontFamily:"'JetBrains Mono',monospace" }}>{d.month}</span>
+            <span style={{ fontSize:9, color:C.inkDim, fontFamily:"'JetBrains Mono',monospace", whiteSpace:"nowrap", overflow:"hidden", maxWidth:"100%" }}>{data.length > 12 && i % 2 ? "" : d.month}</span>
           </div>
         ))}
       </div>
@@ -780,7 +790,7 @@ function DataUpload({ onDataLoaded, hasData }) {
         {parsing && <div style={{ marginTop:16, display:"flex", justifyContent:"center" }}><span className="spinner"/></div>}
       </div>
 
-      <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:10 }}>
+      <div className="g3" style={{ gap:10 }}>
         {[
           { name:"QuickBooks", hint:"Reports > Export to Excel or CSV" },
           { name:"Xero",       hint:"Reports > Export as CSV" },
@@ -1193,6 +1203,13 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic }) {
   const [directives, setDirectives] = useState([]);
   const [directivesLoading, setDirectivesLoading] = useState(true);
   const [ackNote, setAckNote] = useState("");
+  // A failed load leaves `directives` empty, which the persistence effect
+  // below would read as "nothing issued yet" and insert a duplicate of the
+  // directive already on file. It holds off while this is set.
+  const [directivesError, setDirectivesError] = useState(false);
+  // One place for a save/delete that failed, so a click that did nothing
+  // says so instead of looking like it worked.
+  const [actionErr, setActionErr] = useState("");
   // Mobile-only: the sidebar (the app's only home for plan/sign-out) is
   // hidden below 960px, so those actions move into this topbar menu.
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
@@ -1267,7 +1284,8 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic }) {
 
   const loadBatches = useCallback(async () => {
     const { data: rows, error } = await supabase.from("upload_batches").select("*").order("uploaded_at", { ascending: false });
-    if (!error) setBatches(rows || []);
+    if (error) { console.error("Failed to load upload history:", error); setActionErr("Your upload history could not be loaded. Refresh to try again."); return; }
+    setBatches(rows || []);
   }, []);
 
   // Recurring-obligation detection always runs over the founder's FULL
@@ -1280,7 +1298,10 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic }) {
       if (error) throw error;
       const detected = detectRecurringObligations(txns || []);
 
-      const { data: existing } = await supabase.from("recurring_obligations").select("normalized_key, active");
+      // If this read fails, every obligation the founder marked as ended
+      // would look unseen and be upserted back to active — so it must throw.
+      const { data: existing, error: existingErr } = await supabase.from("recurring_obligations").select("normalized_key, active");
+      if (existingErr) throw existingErr;
       const existingActiveByKey = {};
       (existing || []).forEach(e => { existingActiveByKey[e.normalized_key] = e.active; });
 
@@ -1293,7 +1314,8 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic }) {
         active: existingActiveByKey[o.normalized_key] === false ? false : o.active,
       }));
       if (rows.length > 0) {
-        await supabase.from("recurring_obligations").upsert(rows, { onConflict: "user_id,normalized_key" });
+        const { error: upsertErr } = await supabase.from("recurring_obligations").upsert(rows, { onConflict: "user_id,normalized_key" });
+        if (upsertErr) throw upsertErr;
       }
 
       const { data: persisted, error: persistErr } = await supabase.from("recurring_obligations").select("*").order("typical_amount", { ascending: false });
@@ -1307,23 +1329,25 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic }) {
 
   const setObligationActive = async (id, active) => {
     const { error } = await supabase.from("recurring_obligations").update({ active }).eq("id", id);
-    if (!error) setObligations(obs => obs.map(o => o.id === id ? { ...o, active } : o));
+    if (error) { console.error("Failed to update obligation:", error); setActionErr("That obligation could not be updated. Nothing was changed — try again."); return; }
+    setObligations(obs => obs.map(o => o.id === id ? { ...o, active } : o));
   };
 
   const loadDirectives = useCallback(async () => {
     setDirectivesLoading(true);
     const { data: rows, error } = await supabase.from("directives").select("*").order("issued_at", { ascending: false });
-    if (!error) setDirectives(rows || []);
+    if (error) console.error("Failed to load decision history:", error);
+    else setDirectives(rows || []);
+    setDirectivesError(!!error);
     setDirectivesLoading(false);
   }, []);
 
   const acknowledgeDirective = async (directiveId, actionTaken) => {
     const patch = { acknowledged_at: new Date().toISOString(), action_taken: actionTaken, founder_note: ackNote.trim() || null };
     const { error } = await supabase.from("directives").update(patch).eq("id", directiveId);
-    if (!error) {
-      setDirectives(ds => ds.map(d => d.id === directiveId ? { ...d, ...patch } : d));
-      setAckNote("");
-    }
+    if (error) { console.error("Failed to record directive response:", error); setActionErr("Your response could not be saved. Try again."); return; }
+    setDirectives(ds => ds.map(d => d.id === directiveId ? { ...d, ...patch } : d));
+    setAckNote("");
   };
 
   useEffect(() => { loadHistory(); }, [loadHistory]);
@@ -1358,14 +1382,20 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic }) {
         .from("transactions")
         .upsert(hashed, { onConflict: "user_id,dedupe_hash", ignoreDuplicates: true })
         .select("id");
-      if (insertErr) throw insertErr;
+      if (insertErr) {
+        // Don't leave an upload in the history that added nothing.
+        const { error: cleanupErr } = await supabase.from("upload_batches").delete().eq("id", batch.id);
+        if (cleanupErr) console.error("Failed to remove empty upload record:", cleanupErr);
+        throw insertErr;
+      }
 
       const insertedCount = inserted?.length || 0;
       const duplicateCount = transactions.length - insertedCount;
 
-      await supabase.from("upload_batches")
+      const { error: countErr } = await supabase.from("upload_batches")
         .update({ inserted_count: insertedCount, duplicate_count: duplicateCount })
         .eq("id", batch.id);
+      if (countErr) console.error("Failed to record upload counts:", countErr);
 
       setUploadStatus(`Added ${insertedCount} new transaction${insertedCount === 1 ? "" : "s"}. ${duplicateCount} already on file.`);
       await loadHistory();
@@ -1380,7 +1410,8 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic }) {
 
   const deleteBatch = async (batchId) => {
     const { error } = await supabase.from("upload_batches").delete().eq("id", batchId);
-    if (!error) { await loadHistory(); await loadBatches(); await loadObligations(); }
+    if (error) { console.error("Failed to delete upload:", error); setActionErr("That upload could not be deleted. Its transactions are still in your history."); return; }
+    await loadHistory(); await loadBatches(); await loadObligations();
   };
 
   // Persisted history is the source of truth once it exists; a fresh
@@ -1432,6 +1463,10 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic }) {
     mode
   );
 
+  // A scenario with no cash balance has no runway to state; printing its
+  // burnMonths showed a negative number of months.
+  const scenarioRunway = m => m.cashFlowPositive ? "No burn" : m.runwayConfidence.shown ? `${safe(m.burnMonths).toFixed(1)}mo runway` : "--- (no cash entered)";
+
   const alert = (() => {
     if (!hasData) return { t:"info", msg:"Connect your financial data in the Data tab to activate your command center." };
     if (safe(free) < 0) return { t:"crit", msg:"True Free Cash is negative. Overhead exceeds liquidity after obligations. Cut costs before next cycle." };
@@ -1455,7 +1490,7 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic }) {
   // the initial fetch to land first, so an already-persisted directive
   // that just hasn't loaded into state yet is never duplicated.
   useEffect(() => {
-    if (!currentDirective || directivesLoading) return;
+    if (!currentDirective || directivesLoading || directivesError) return;
     const latestStored = directives[0];
     const isNew = !latestStored || latestStored.directive_text !== currentDirective.text || latestStored.trigger_rule !== currentDirective.rule;
     if (!isNew) return;
@@ -1474,7 +1509,7 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic }) {
       if (!error && inserted) setDirectives(ds => [inserted, ...ds]);
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentDirective?.text, currentDirective?.rule, directivesLoading]);
+  }, [currentDirective?.text, currentDirective?.rule, directivesLoading, directivesError]);
 
   // Outcome measurement: 60 days after issue, recompute the target
   // metric's current value from the event store and record it — never
@@ -1720,6 +1755,12 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic }) {
       </header>
 
       <main className="dash-body">
+        {actionErr && (
+          <div className="d-alert crit" role="alert" style={{ justifyContent:"space-between", alignItems:"center" }}>
+            <span>{actionErr}</span>
+            <button className="modal-x" aria-label="Dismiss" onClick={() => setActionErr("")}>×</button>
+          </div>
+        )}
 
         {tab === "data" && (
           <>
@@ -1753,7 +1794,7 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic }) {
                           {new Date(b.uploaded_at).toLocaleDateString()} · {b.period_start} to {b.period_end} · {b.inserted_count ?? "—"} added, {b.duplicate_count ?? "—"} duplicate
                         </div>
                       </div>
-                      <button className="modal-x" title="Delete this upload and its transactions"
+                      <button className="modal-x" title="Delete this upload and its transactions" aria-label={`Delete upload ${b.filename || "Untitled upload"}`}
                         onClick={() => { if (window.confirm(`Delete "${b.filename}" and every transaction it added? This cannot be undone.`)) deleteBatch(b.id); }}>
                         ×
                       </button>
@@ -1861,12 +1902,11 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic }) {
 
                 <div className="card">
                   <div className="card-sec">Before vs. After</div>
-                  <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:16 }}>
+                  <div className="kpi4" style={{ gap:16 }}>
                     {[
                       { lbl:"Margin", before:pc(scenario.before.margin), after:pc(scenario.after.margin), better: scenario.after.margin >= scenario.before.margin },
                       { lbl:"True Free Cash", before:fmt(scenario.before.free), after:fmt(scenario.after.free), better: scenario.after.free >= scenario.before.free },
-                      { lbl:"Cash Position", before: scenario.before.cashFlowPositive ? "No burn" : `${safe(scenario.before.burnMonths).toFixed(1)}mo runway`,
-                        after: scenario.after.cashFlowPositive ? "No burn" : `${safe(scenario.after.burnMonths).toFixed(1)}mo runway`,
+                      { lbl:"Cash Position", before: scenarioRunway(scenario.before), after: scenarioRunway(scenario.after),
                         better: scenario.after.cashFlowPositive || scenario.after.burnMonths >= scenario.before.burnMonths },
                       { lbl:"Risk Score", before:`${scenario.before.risk.score.toFixed(0)} - ${scenario.before.risk.label}`, after:`${scenario.after.risk.score.toFixed(0)} - ${scenario.after.risk.label}`, better: scenario.after.risk.score <= scenario.before.risk.score },
                     ].map((row, i) => (
@@ -2322,7 +2362,7 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic }) {
             {plan === "advisory" && (
               <div className="card">
                 <div className="card-sec">Direct Access</div>
-                <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:16 }}>
+                <div className="g2" style={{ gap:16 }}>
                   <div className="elite-box">
                     <div className="elite-title">Direct Advisory Line</div>
                     <div style={{ fontSize:13, color:C.ink, fontFamily:"'Cormorant Garamond',serif", lineHeight:1.6, marginBottom:12 }}>
@@ -2948,7 +2988,7 @@ function PrivacyPage({ onBack }) {
 // ─── PAYWALL GATE ─────────────────────────────────────────────
 // Shown instead of the Dashboard when profile.plan is empty.
 // No data, no features, no bypass — user must subscribe to proceed.
-function PaywallGate({ user, onSelectPlan, onLogout }) {
+function PaywallGate({ user, activating, onSelectPlan, onLogout }) {
   const userName = user?.user_metadata?.full_name || user?.email?.split("@")[0] || "Founder";
   return (
     <div className="auth-page">
@@ -2984,7 +3024,8 @@ function PaywallGate({ user, onSelectPlan, onLogout }) {
                       ${pl.usd.toLocaleString()} <span style={{ fontSize:12, color:C.inkDim }}>{pl.period}</span>
                     </div>
                   </div>
-                  <button className={`btn ${p.hot ? "btn-primary" : "btn-outline"}`} style={{ padding:"10px 22px", fontSize:11, whiteSpace:"nowrap" }} onClick={() => onSelectPlan(p.key)}>
+                  <button className={`btn ${p.hot ? "btn-primary" : "btn-outline"}`} style={{ padding:"10px 22px", fontSize:11, whiteSpace:"nowrap" }} onClick={() => onSelectPlan(p.key)}
+                    disabled={activating} title={activating ? "A payment is being activated for this account" : undefined}>
                     Subscribe
                   </button>
                 </div>
@@ -3076,19 +3117,52 @@ export default function App() {
     return () => subscription.unsubscribe();
   }, [loadProfile]);
 
-  const handlePaySuccess = useCallback(async (planKey) => {
-    setPayModal(null);
+  // Access is granted by the PayPal webhook, which can land seconds or minutes
+  // after the buyer approves. Reloading the profile once, a second later, used
+  // to drop most buyers straight back on the paywall with their Subscribe
+  // buttons live — a paying customer invited to pay again. Instead the profile
+  // is polled until the plan they bought appears, checkout stays closed while
+  // that happens, and if it is slow they are told plainly not to pay again.
+  const [activation, setActivation] = useState(null); // null | { planKey, status: "pending" | "delayed" }
+  const activationRun = useRef(0);
+
+  const pollActivation = useCallback(async (planKey) => {
+    const run = ++activationRun.current;
+    setActivation({ planKey, status: "pending" });
     const { data: { user: u } } = await supabase.auth.getUser();
-    if (u) {
-      await new Promise(r => setTimeout(r, 1000)); // Wait for Supabase write to commit
-      await loadProfile(u);
+    if (!u) { setActivation(null); return; }
+    for (let i = 0; i < 20; i++) {
+      await new Promise(r => setTimeout(r, 3000));
+      if (activationRun.current !== run) return;
+      const { data, error } = await supabase.from("profiles").select("*").eq("id", u.id).single();
+      if (error) { console.error("Activation check failed:", error); continue; }
+      if (resolvePlanKey(data.plan) === planKey && data.plan) {
+        setProfile(data);
+        setActivation(null);
+        return;
+      }
     }
-  }, [loadProfile]);
+    if (activationRun.current === run) setActivation({ planKey, status: "delayed" });
+  }, []);
+
+  const handlePaySuccess = useCallback((planKey) => {
+    setPayModal(null);
+    pollActivation(resolvePlanKey(planKey));
+  }, [pollActivation]);
+
+  // Signing out abandons any activation check in flight.
+  useEffect(() => { if (!user) { activationRun.current++; setActivation(null); } }, [user]);
 
   const handlePlanSelect = useCallback((planKey) => {
     if (user) setPayModal(planKey);
     else      setAppState("login");
   }, [user]);
+
+  // While a payment is activating, no new subscription checkout opens.
+  const openSubscription = useCallback((planKey) => {
+    if (activation && planKey !== "diagnostic") return;
+    setPayModal(planKey);
+  }, [activation]);
 
   if (appState === "loading") return (
     <>
@@ -3104,6 +3178,21 @@ export default function App() {
   return (
     <>
       <style>{CSS}</style>
+      {activation && user && appState === "dashboard" && (
+        <div className="activation-banner" role="status">
+          {activation.status === "pending" ? (
+            <><span className="spinner"/>Payment approved. Activating {PLANS[activation.planKey].name} — this usually takes under a minute. Do not pay again.</>
+          ) : (
+            <>
+              <span>
+                PayPal approved your payment, but activation is taking longer than usual. Do not subscribe again — you would be charged twice.
+                Use Check again in a few minutes; if it has not activated within an hour, email <a href="mailto:commandledger@gmail.com?subject=Subscription%20activation">commandledger@gmail.com</a>.
+              </span>
+              <button className="btn btn-outline" style={{ padding:"6px 14px", fontSize:11, whiteSpace:"nowrap" }} onClick={() => pollActivation(activation.planKey)}>Check again</button>
+            </>
+          )}
+        </div>
+      )}
       {payModal === "diagnostic" && user && (
         <DiagnosticModal onClose={() => setPayModal(null)}/>
       )}
@@ -3122,13 +3211,14 @@ export default function App() {
             user={user}
             profile={profile}
             onLogout={async () => { await supabase.auth.signOut(); }}
-            onUpgrade={() => { if (resolvePlanKey(profile.plan) === "software") setPayModal("advisory"); }}
+            onUpgrade={() => { if (resolvePlanKey(profile.plan) === "software") openSubscription("advisory"); }}
             onBuyDiagnostic={() => setPayModal("diagnostic")}
           />
         ) : (
           <PaywallGate
             user={user}
-            onSelectPlan={(planKey) => setPayModal(planKey)}
+            activating={!!activation}
+            onSelectPlan={openSubscription}
             onLogout={async () => { await supabase.auth.signOut(); }}
           />
         )
