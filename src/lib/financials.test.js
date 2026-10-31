@@ -1246,6 +1246,21 @@ describe("computeForwardRunway", () => {
 });
 
 describe("checkAffordability", () => {
+  it("answers from profit, not a $0 simulation, when no cash balance is entered", () => {
+    const covered = checkAffordability({ currentCash: 0, avgRev: 50000, avgExp: 34000, obligations: [], monthlyCost: 9000, fromDate: "2026-01-01" });
+    expect(covered.affordable).toBe(true);           // 16,000 monthly profit covers 9,000
+    expect(covered.needsCash).toBe(true);
+    const over = checkAffordability({ currentCash: 0, avgRev: 50000, avgExp: 34000, obligations: [], monthlyCost: 20000, fromDate: "2026-01-01" });
+    expect(over.affordable).toBe(false);
+    expect(over.breaksInMonth).toBeUndefined();      // no invented break date
+  });
+
+  it("still simulates a real negative balance (an overdraft)", () => {
+    const r = checkAffordability({ currentCash: -500, avgRev: 10000, avgExp: 8000, obligations: [], monthlyCost: 100, fromDate: "2026-01-01" });
+    expect(r.needsCash).toBeUndefined();
+    expect(r.affordable).toBe(false);
+  });
+
   it("confirms affordability holds for 12 months when the math supports it", () => {
     const result = checkAffordability({
       currentCash: 50000, avgRev: 10000, avgExp: 8000, obligations: [], monthlyCost: 1500, fromDate: "2026-01-01",

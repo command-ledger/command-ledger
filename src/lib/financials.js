@@ -4,6 +4,15 @@
 
 export const fmt  = n => new Intl.NumberFormat("en-US",{style:"currency",currency:"USD",maximumFractionDigits:0}).format(Number(n)||0);
 export const pc   = n => `${(Number(n)||0).toFixed(1)}%`;
+// Large amounts in compact form ("$1.2M") where a tile has no room for every
+// digit. Below $100k the full figure is short enough and more useful, so a
+// $5k/month business still sees exact numbers.
+export const fmtCompact = n => {
+  const v = Number(n) || 0;
+  return Math.abs(v) >= 100000
+    ? new Intl.NumberFormat("en-US",{style:"currency",currency:"USD",notation:"compact",maximumFractionDigits:1}).format(v)
+    : fmt(v);
+};
 export const safe = n => { const v=Number(n); return isNaN(v)||!isFinite(v)?0:v; };
 
 const EXPENSE_CATEGORIES = {
@@ -415,6 +424,21 @@ export function computeForwardRunway({ currentCash, avgRev, avgExp, obligations,
 // flat current-cash check. Layers a synthetic monthly obligation onto the
 // existing ones and re-runs the same simulation over a 12-month horizon.
 export function checkAffordability({ currentCash, avgRev, avgExp, obligations, monthlyCost, fromDate }) {
+  // No cash balance on file (0 is how "not entered" arrives) leaves nothing
+  // to simulate from: the run would start at $0 and call every cost
+  // unaffordable on day one, even for a profitable business. Answer from
+  // monthly profit instead and say what is missing. A real negative
+  // balance (an overdraft) is data, and still runs the full simulation.
+  if (!Number(currentCash)) {
+    const monthlyProfit = (Number(avgRev) || 0) - (Number(avgExp) || 0);
+    const covered = monthlyProfit >= (Number(monthlyCost) || 0);
+    return {
+      affordable: covered, needsCash: true,
+      message: covered
+        ? `Your average monthly profit (${fmt(monthlyProfit)}) covers this. Add a cash balance to also test it against your bills on their real dates.`
+        : `This is more than your average monthly profit (${fmt(Math.max(0, monthlyProfit))}) covers, and with no cash balance entered there is nothing to fund the gap. Add a cash balance to see how long it would last.`,
+    };
+  }
   const horizonDays = 365;
   const synthetic = {
     label: "Hypothetical new cost", cadence: "monthly",
@@ -1615,4 +1639,124 @@ export function checkoutBlockReason(plan, verified) {
   const hasTrial = verified.hasTrial === true || (Array.isArray(verified.trials) && verified.trials.length > 0);
   if (hasTrial || verified.setupFee !== 0) return "first_charge_differs";
   return null;
+}
+
+// ─── WORKSPACE SEARCH ──────────────────────────────────────────
+// Backs the header search box. Every result is something real: a page of the
+// app, or a transaction from the founder's own history. A token matches a
+// transaction's description or category, a date prefix ("2026-03"), or its
+// amount ("1500", "$1,500.00" — sign ignored, whole dollars match any cents).
+// Every token in the query must match.
+function transactionTokenMatches(txn, token) {
+  if (String(txn.description || "").toLowerCase().includes(token)) return true;
+  if (String(txn.category || "").toLowerCase().includes(token)) return true;
+  if (String(txn.txn_date || "").startsWith(token)) return true;
+  const numeric = token.replace(/[$,]/g, "").replace(/^[-+]/, "");
+  if (/^\d+(\.\d+)?$/.test(numeric)) {
+    const abs = Math.abs(Number(txn.amount) || 0);
+    return numeric.includes(".") ? Math.abs(abs - Number(numeric)) < 0.005 : Math.floor(abs) === Number(numeric);
+  }
+  return false;
+}
+
+const searchTokens = query => String(query || "").trim().toLowerCase().split(/\s+/).filter(Boolean);
+
+export function filterTransactions(transactions, query) {
+  const tokens = searchTokens(query);
+  const list = transactions || [];
+  return tokens.length === 0 ? list : list.filter(t => tokens.every(tok => transactionTokenMatches(t, tok)));
+}
+
+// `destinations` is [{ id, label, keywords }]; one matches when any query
+// token of 2+ characters starts a word of its label or keywords.
+export function searchWorkspace(query, { transactions = [], destinations = [], limit = 6 } = {}) {
+  const tokens = searchTokens(query);
+  if (tokens.length === 0) return { destinations: [], transactions: [], transactionTotal: 0 };
+  const matchedDestinations = destinations.filter(d => {
+    const words = [d.label, ...(d.keywords || [])].join(" ").toLowerCase().split(/[\s/&-]+/).filter(Boolean);
+    return tokens.some(tok => tok.length >= 2 && words.some(w => w.startsWith(tok)));
+  });
+  const matched = filterTransactions(transactions, query)
+    .slice()
+    .sort((a, b) => String(b.txn_date).localeCompare(String(a.txn_date)));
+  return { destinations: matchedDestinations, transactions: matched.slice(0, limit), transactionTotal: matched.length };
+}
+
+// ─── ALERTS ────────────────────────────────────────────────────
+// The header's notification bell. Each alert is a live condition computed
+// from the founder's data, not a stored message: it appears while the
+// condition holds and disappears once it is resolved. `section` is where
+// the founder goes to act on it.
+export function buildAlerts({
+  hasData = false, missedObligations = [], currentDirective = null,
+  needsAcknowledgement = false, latestDirective = null, lastTxnDate = null,
+  today, showForwardRunway = false, forwardRunway = null, directives = [],
+} = {}) {
+  const alerts = [];
+  if (!hasData) {
+    alerts.push({ id: "no-data", severity: "info", title: "Connect your financial data",
+      detail: "Upload a bank or accounting export to activate your metrics.", section: "transactions" });
+  }
+  (missedObligations || []).forEach(m => alerts.push({
+    id: `missed-${m.normalized_key || m.label}`, severity: "critical",
+    title: `${m.label} has not appeared`, detail: m.message, section: "forecasts",
+  }));
+  if (currentDirective?.severity === "critical") {
+    alerts.push({ id: `directive-${currentDirective.rule}`, severity: "critical",
+      title: currentDirective.text, detail: "This week's directive.", section: "dashboard" });
+  }
+  if (showForwardRunway && forwardRunway?.crossesZero) {
+    alerts.push({ id: "forward-runway", severity: "warning",
+      title: `Cash runs out around ${forwardRunway.crossDate} against known bills`,
+      detail: `${forwardRunway.monthsUntilCross} months, counting recurring obligations on their real dates.`,
+      section: "forecasts" });
+  }
+  if (needsAcknowledgement && latestDirective) {
+    alerts.push({ id: `ack-${latestDirective.id}`, severity: "warning",
+      title: "Did you act on your last directive?", detail: latestDirective.directive_text, section: "decisions" });
+  }
+  if (lastTxnDate && today) {
+    const days = daysBetween(lastTxnDate, today);
+    if (days > CONFIDENCE_RECENCY_DAYS) {
+      alerts.push({ id: "stale-data", severity: "warning", title: `Latest transaction is ${days} days old`,
+        detail: "Confidence in every metric is reduced until you upload a recent export.", section: "transactions" });
+    }
+  }
+  if (today) {
+    (directives || [])
+      .filter(d => d.outcome_at && daysBetween(String(d.outcome_at).slice(0, 10), today) <= 14)
+      .forEach(d => alerts.push({ id: `outcome-${d.id}`, severity: "info", title: "Directive outcome measured",
+        detail: `"${d.directive_text}" — ${describeDirectiveOutcome(d).message}`, section: "decisions" }));
+  }
+  const rank = { critical: 0, warning: 1, info: 2 };
+  return alerts.sort((a, b) => rank[a.severity] - rank[b.severity]);
+}
+
+// ─── REPORT EXPORT ─────────────────────────────────────────────
+// The Reports page's CSV: the monthly profit-and-loss table plus the metric
+// summary, exactly as shown on screen. Text cells that a spreadsheet would
+// execute as a formula (=, +, -, @) are prefixed with an apostrophe;
+// numbers are written as numbers.
+function csvCell(v) {
+  if (v === null || v === undefined) return "";
+  if (typeof v === "number") return Number.isFinite(v) ? String(Math.round(v * 100) / 100) : "";
+  let s = String(v);
+  const isFormattedNumber = /^-?\$?[\d,]+(\.\d+)?%?$/.test(s);
+  if (/^[=+\-@\t\r]/.test(s) && !isFormattedNumber) s = "'" + s;
+  return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+export function buildReportCsv({ title = "Command Ledger financial summary", periodLabel = "", generatedAt = "", rows = [], summary = [] } = {}) {
+  const lines = [[title], ["Period", periodLabel], ["Generated", generatedAt], [],
+    ["Month", "Revenue", "Expenses", "Net", "Margin %"]];
+  let rev = 0, exp = 0;
+  (rows || []).forEach(r => {
+    const net = (r.revenue || 0) - (r.expenses || 0);
+    rev += r.revenue || 0; exp += r.expenses || 0;
+    lines.push([r.month, r.revenue || 0, r.expenses || 0, net, r.revenue > 0 ? (net / r.revenue) * 100 : ""]);
+  });
+  lines.push(["Total", rev, exp, rev - exp, rev > 0 ? ((rev - exp) / rev) * 100 : ""]);
+  lines.push([], ["Metric", "Value"]);
+  (summary || []).forEach(([label, value]) => lines.push([label, value]));
+  return lines.map(cols => cols.map(csvCell).join(",")).join("\r\n");
 }

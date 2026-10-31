@@ -1,6 +1,6 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { createClient } from "@supabase/supabase-js";
-import { fmt, pc, safe, parseAnyCSV, computeMetrics, runScenario, parseTransactions, computeDedupeHash, aggregateTransactionsByMonth, computeRevenueConcentration, detectRecurringObligations, computeForwardRunway, checkAffordability, detectMissedObligations, projectForwardCalendar, summarizeCalendarByWeek, computeDirective, getDirectiveMetricValue, describeDirectiveOutcome, checkoutBlockReason } from "./lib/financials.js";
+import { fmt, pc, safe, parseAnyCSV, computeMetrics, runScenario, parseTransactions, computeDedupeHash, aggregateTransactionsByMonth, computeRevenueConcentration, detectRecurringObligations, computeForwardRunway, checkAffordability, detectMissedObligations, projectForwardCalendar, summarizeCalendarByWeek, computeDirective, getDirectiveMetricValue, describeDirectiveOutcome, checkoutBlockReason, fmtCompact, filterTransactions, searchWorkspace, buildAlerts, buildReportCsv } from "./lib/financials.js";
 
 const supabase = createClient(
   import.meta.env.VITE_SUPABASE_URL,
@@ -251,33 +251,9 @@ body{background:#050709;color:#F4F7FF;font-family:'Syne',sans-serif;-webkit-font
 .loading-screen{min-height:100vh;display:flex;align-items:center;justify-content:center;background:#050709;flex-direction:column;gap:16px;}
 .loading-logo{font-family:'Cormorant Garamond',serif;font-size:48px;color:#D8DADE;}
 .loading-text{font-size:11px;letter-spacing:0.2em;text-transform:uppercase;color:#7A7E88;}
-.dash{min-height:100vh;background:#050709;display:grid;grid-template-columns:220px 1fr;grid-template-rows:64px 1fr;}
-.sidebar{grid-row:1/3;background:#0A0D14;border-right:1px solid #161C2E;display:flex;flex-direction:column;}
-.sidebar-logo{height:64px;border-bottom:1px solid #161C2E;display:flex;align-items:center;gap:10px;padding:0 20px;}
-.sb-nav{padding:24px 0;flex:1;}
-.sb-sec{font-size:9px;letter-spacing:0.2em;text-transform:uppercase;color:#7A7E88;padding:8px 20px 4px;font-weight:600;}
-.sb-item{display:flex;align-items:center;gap:10px;padding:10px 20px;cursor:pointer;font-size:12px;letter-spacing:0.06em;color:#8898B8;transition:all 0.15s;border-left:2px solid transparent;font-weight:500;}
-.sb-item:hover{color:#F0E8D8;background:#0F1320;}
-.sb-item.on{color:#D8DADE;background:rgba(216,218,222,0.12);border-left-color:#D8DADE;}
-.sb-item.locked{opacity:0.35;cursor:default;}
-.sb-item.locked:hover{color:#8898B8;background:transparent;}
-.sb-icon{font-size:14px;width:18px;text-align:center;}
-.sb-foot{padding:16px 20px;border-top:1px solid #161C2E;}
-.sb-user{display:flex;align-items:center;gap:10px;}
-.sb-av{width:36px;height:36px;border-radius:50%;background:rgba(216,218,222,0.12);border:1px solid #5A5D64;display:flex;align-items:center;justify-content:center;font-size:14px;color:#D8DADE;overflow:hidden;flex-shrink:0;}
-.sb-av img{width:100%;height:100%;object-fit:cover;border-radius:50%;}
-.sb-name{font-size:12px;color:#F0E8D8;font-weight:600;max-width:130px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-.sb-plan{font-size:9px;color:#D8DADE;text-transform:uppercase;letter-spacing:0.1em;background:rgba(216,218,222,0.12);padding:2px 6px;margin-top:2px;display:inline-block;}
-.topbar{grid-column:2;height:64px;border-bottom:1px solid #161C2E;display:flex;align-items:center;justify-content:space-between;padding:0 32px;background:rgba(5,7,9,0.6);backdrop-filter:blur(16px);}
-.breadcrumb{font-size:11px;color:#7A7E88;letter-spacing:0.08em;}
-.breadcrumb span{color:#F0E8D8;}
-.tb-right{display:flex;align-items:center;gap:14px;}
-.live-badge{display:flex;align-items:center;gap:6px;font-size:10px;letter-spacing:0.1em;text-transform:uppercase;}
-.live-dot{width:6px;height:6px;border-radius:50%;animation:pulse 2s infinite;}
 .mode-pills{display:flex;border:1px solid #161C2E;overflow:hidden;}
 .mpill{padding:5px 14px;font-size:10px;letter-spacing:0.1em;text-transform:uppercase;background:transparent;border:none;color:#7A7E88;cursor:pointer;font-family:'Syne',sans-serif;transition:all 0.15s;}
 .mpill.on{background:#0F1320;color:#D8DADE;}
-.dash-body{grid-column:2;padding:28px 32px;overflow-y:auto;display:flex;flex-direction:column;gap:20px;}
 .card{background:#0A0D14;border:1px solid #161C2E;padding:22px;position:relative;overflow:hidden;transition:border-color 0.2s;}
 .card::before{content:'';position:absolute;top:0;left:0;right:0;height:1px;background:linear-gradient(to right,transparent,rgba(216,218,222,0.12),transparent);}
 .card:hover{border-color:#243050;}
@@ -314,14 +290,6 @@ body{background:#050709;color:#F4F7FF;font-family:'Syne',sans-serif;-webkit-font
 .alloc-track{height:2px;background:#161C2E;margin-top:4px;}
 .alloc-fill{height:100%;transition:width 0.8s ease;}
 .alloc-amt{font-family:'Cormorant Garamond',serif;font-size:18px;}
-.indicator{background:#0A0D14;border:1px solid #161C2E;padding:18px;position:relative;overflow:hidden;transition:all 0.2s;}
-.indicator:hover{border-color:#243050;transform:translateY(-1px);}
-.indicator.green{border-left:2px solid #2ABF85;}
-.indicator.red{border-left:2px solid #E84855;}
-.indicator.amber{border-left:2px solid #E8A020;}
-.indicator.gold{border-left:2px solid #D8DADE;}
-.directive-box{background:linear-gradient(135deg,rgba(216,218,222,0.06) 0%,rgba(5,7,9,0) 60%);border:1px solid #5A5D64;padding:24px;position:relative;overflow:hidden;}
-.directive-box::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:linear-gradient(to right,transparent,#D8DADE,transparent);}
 .ai-top{padding:12px 20px;border-bottom:1px solid #161C2E;display:flex;align-items:center;justify-content:space-between;}
 .ai-lbl{display:flex;align-items:center;gap:8px;font-size:10px;text-transform:uppercase;letter-spacing:0.14em;color:#7A7E88;font-weight:600;}
 .ai-glow{width:6px;height:6px;border-radius:50%;background:#D8DADE;box-shadow:0 0 10px #D8DADE;}
@@ -353,16 +321,6 @@ body{background:#050709;color:#F4F7FF;font-family:'Syne',sans-serif;-webkit-font
 .drop-zone-sub{font-size:12px;color:#8898B8;line-height:1.6;}
 .upload-ok{background:rgba(42,191,133,0.1);border:1px solid #2ABF85;padding:14px 18px;display:flex;align-items:center;gap:12px;}
 .upload-ok-txt{font-size:13px;color:#80C8A8;font-family:'Cormorant Garamond',serif;}
-.nudge{background:#0F1320;border:1px solid #161C2E;padding:28px;text-align:center;position:relative;overflow:hidden;}
-.nudge::before{content:'';position:absolute;top:0;left:0;right:0;height:1px;background:linear-gradient(to right,transparent,#D8DADE,transparent);}
-.nudge-title{font-family:'Cormorant Garamond',serif;font-size:20px;color:#F0E8D8;margin-bottom:8px;}
-.nudge-sub{font-size:13px;color:#8898B8;font-family:'Cormorant Garamond',serif;line-height:1.6;margin-bottom:20px;max-width:400px;margin-left:auto;margin-right:auto;}
-.elite-box{background:#0F1320;border:1px solid #5A5D64;padding:20px;margin-top:14px;}
-.elite-title{font-size:10px;text-transform:uppercase;letter-spacing:0.16em;color:#D8DADE;margin-bottom:12px;font-weight:600;}
-.wa-btn{display:flex;align-items:center;justify-content:center;gap:10px;background:#25D366;border:none;color:white;padding:11px 20px;font-size:12px;font-family:'Syne',sans-serif;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;cursor:pointer;width:100%;transition:all 0.2s;}
-.wa-btn:hover{background:#20c05a;}
-.cal-btn{display:flex;align-items:center;justify-content:center;gap:10px;background:transparent;border:1px solid #D8DADE;color:#D8DADE;padding:11px 20px;font-size:12px;font-family:'Syne',sans-serif;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;cursor:pointer;width:100%;transition:all 0.2s;margin-top:8px;}
-.cal-btn:hover{background:rgba(216,218,222,0.12);}
 .page-wrap{max-width:760px;margin:0 auto;padding:120px 48px 80px;}
 .page-title{font-family:'Cormorant Garamond',serif;font-size:clamp(36px,5vw,56px);font-weight:300;color:#F0E8D8;margin-bottom:8px;}
 .page-date{font-size:11px;color:#7A7E88;font-family:'JetBrains Mono',monospace;margin-bottom:48px;}
@@ -380,31 +338,7 @@ body{background:#050709;color:#F4F7FF;font-family:'Syne',sans-serif;-webkit-font
    only carries shape/type. ── */
 .severity-tag{display:inline-flex;align-items:center;gap:6px;font-family:'JetBrains Mono',monospace;font-size:9.5px;font-weight:700;letter-spacing:0.14em;text-transform:uppercase;padding:3px 9px;border-radius:2px;flex-shrink:0;}
 
-/* ── Hero metric: one KPI dominates, chosen by severity rather than
-   fixed by position — the primary metric changes when runway turns
-   critical. Supporting metrics stay in the ordinary .card treatment. ── */
-.kpi-hero-row{display:flex;flex-direction:column;gap:14px;}
-.kpi-hero-sub{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;align-items:stretch;}
-/* The supporting figures share a row three-up; Cormorant at 36px needs
-   ~275px for a value like "No burn", which a third of a narrow dashboard
-   column does not have. Scaling the figure down rather than letting it
-   overflow keeps it the most legible element in the card at every width. */
-.kpi-hero-sub .val{font-size:clamp(22px,2.4vw,36px);}
-.hero-metric{background:#0A0D14;border:1px solid #161C2E;padding:26px 28px;position:relative;overflow:hidden;display:flex;flex-direction:column;justify-content:center;}
-.hero-metric::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:var(--sev,#5A5D64);}
-.hero-metric-val{font-family:'Cormorant Garamond',serif;font-size:clamp(38px,4.2vw,56px);font-weight:300;line-height:1;letter-spacing:-0.01em;}
-.hero-metric-sub{margin-top:14px;font-size:13px;font-family:'Cormorant Garamond',serif;line-height:1.65;color:#8898B8;max-width:440px;}
 
-/* ── Trajectory: Growth Score + Trends + Business History as one
-   coherent "direction of travel" unit, not three scattered cards below
-   the fold — this is the product's differentiator, so it reads as one
-   deliberate section, not a leftover appendix. ── */
-.trajectory-zone{border:1px solid #161C2E;background:#0A0D14;position:relative;overflow:hidden;}
-.trajectory-zone::before{content:'';position:absolute;top:0;left:0;right:0;height:1px;background:linear-gradient(to right,transparent,rgba(216,218,222,0.18),transparent);}
-.trajectory-head{padding:16px 22px;border-bottom:1px solid #161C2E;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;}
-.trajectory-body{padding:22px;display:flex;flex-direction:column;gap:20px;}
-.trajectory-row{display:flex;gap:20px;align-items:flex-start;}
-.trajectory-row+.trajectory-row{padding-top:20px;border-top:1px solid #161C2E;}
 
 /* ── Data maturity: a single-period read must not look as confident as
    a multi-period one. Dashed border + explicit label communicate "the
@@ -420,47 +354,257 @@ body{background:#050709;color:#F4F7FF;font-family:'Syne',sans-serif;-webkit-font
 @keyframes skeletonPulse{0%,100%{opacity:0.45}50%{opacity:0.85}}
 .skel{background:#161C2E;border-radius:2px;animation:skeletonPulse 1.5s ease-in-out infinite;}
 
-/* ── Mobile dashboard navigation: the sidebar (the only nav) disappears
-   entirely below 960px with nothing replacing it. This fixed bottom tab
-   bar keeps every tab reachable without scrolling, and the account menu
-   moves sign-out/plan actions into the topbar instead of vanishing with
-   the sidebar. ── */
-.dash-tabbar{display:none;}
-.dash-tabbar-item{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;flex:1;padding:9px 4px calc(6px + env(safe-area-inset-bottom,0px));background:none;border:none;color:#7A7E88;font-family:'Syne',sans-serif;font-size:9.5px;font-weight:600;letter-spacing:0.03em;text-transform:uppercase;cursor:pointer;min-height:48px;}
-.dash-tabbar-item.on{color:#D8DADE;}
-.dash-tabbar-glyph{font-family:'JetBrains Mono',monospace;font-size:13px;line-height:1;}
-.dash-account-wrap{position:relative;display:none;}
-.dash-account-btn{width:40px;height:40px;border-radius:50%;background:rgba(216,218,222,0.12);border:1px solid #5A5D64;display:flex;align-items:center;justify-content:center;font-size:14px;color:#D8DADE;cursor:pointer;overflow:hidden;flex-shrink:0;padding:0;}
-.dash-account-btn img{width:100%;height:100%;object-fit:cover;border-radius:50%;}
-.dash-account-menu{position:absolute;top:44px;right:0;background:#0F1320;border:1px solid #243050;min-width:190px;z-index:250;box-shadow:0 16px 40px -12px rgba(0,0,0,0.6);animation:fadeIn 0.15s ease;}
-.dash-account-menu-item{padding:12px 16px;font-size:12px;color:#8898B8;cursor:pointer;border-bottom:1px solid #161C2E;}
-.dash-account-menu-item:last-child{border-bottom:none;}
-.dash-account-menu-item:hover{color:#F0E8D8;background:#0A0D14;}
+
+/* ── App shell: header, sidebar and section layout for the signed-in
+   workspace. Rows are compact grids so a laptop screen shows the
+   directive, the six vital numbers and the trend without scrolling.
+   Type sizes are not reduced to get there; the order and density of
+   the rows does the work. ── */
+.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0;}
+.skip-link{position:absolute;left:12px;top:-60px;z-index:500;background:#D8DADE;color:#050709;padding:8px 14px;font-size:12px;font-weight:700;text-decoration:none;}
+.skip-link:focus{top:8px;}
+.app{min-height:100vh;background:#050709;display:grid;grid-template-columns:232px minmax(0,1fr);grid-template-rows:56px 1fr;}
+.app :focus-visible{outline:2px solid #D8DADE;outline-offset:2px;}
+.app-header{grid-column:1/-1;grid-row:1;position:sticky;top:0;z-index:200;height:56px;display:flex;align-items:center;gap:16px;padding-right:20px;background:rgba(5,7,9,0.96);backdrop-filter:blur(16px);border-bottom:1px solid #161C2E;}
+.app-brand{width:232px;flex-shrink:0;align-self:stretch;display:flex;align-items:center;gap:10px;padding:0 20px;border-right:1px solid #161C2E;text-decoration:none;}
+.app-brand .logomark{width:30px;height:30px;font-size:15px;}
+.app-brand .wordmark{font-size:16px;line-height:1.1;}
+.app-crumb{font-size:12.5px;color:#7A7E88;white-space:nowrap;}
+.app-crumb b{color:#F0E8D8;font-weight:600;}
+.hdr-search{position:relative;flex:1 1 320px;max-width:460px;margin-left:auto;}
+.hdr-search-input{width:100%;height:36px;background:#0F1320;border:1px solid #161C2E;color:#F4F7FF;padding:0 60px 0 36px;font-family:'Syne',sans-serif;font-size:13px;border-radius:2px;}
+.hdr-search-input::placeholder{color:#7A7E88;}
+.hdr-search-input:focus{outline:none;border-color:#5A5D64;}
+.hdr-search-input::-webkit-search-cancel-button{-webkit-appearance:none;}
+.hdr-search-icon{position:absolute;left:11px;top:50%;transform:translateY(-50%);color:#7A7E88;display:flex;pointer-events:none;}
+.hdr-kbd{position:absolute;right:10px;top:50%;transform:translateY(-50%);font-family:'JetBrains Mono',monospace;font-size:10.5px;color:#7A7E88;border:1px solid #243050;padding:1px 6px;border-radius:2px;pointer-events:none;}
+.hdr-tools{display:flex;align-items:center;gap:10px;flex-shrink:0;}
+.hdr-select{height:36px;background:#0F1320;border:1px solid #161C2E;color:#F0E8D8;font-family:'Syne',sans-serif;font-size:13px;padding:0 10px;border-radius:2px;cursor:pointer;}
+.hdr-select:focus{outline:none;border-color:#5A5D64;}
+.hdr-icon-btn{position:relative;width:36px;height:36px;flex-shrink:0;display:flex;align-items:center;justify-content:center;background:transparent;border:1px solid #161C2E;border-radius:2px;color:#8898B8;cursor:pointer;transition:color 0.15s,border-color 0.15s;}
+.hdr-icon-btn:hover,.hdr-icon-btn[aria-expanded="true"]{color:#F0E8D8;border-color:#243050;}
+.hdr-menu,.hdr-search-toggle{display:none;}
+.hdr-badge{position:absolute;top:-6px;right:-6px;min-width:18px;height:18px;padding:0 5px;border-radius:9px;background:#E84855;color:#fff;font-size:10.5px;font-weight:700;font-family:'JetBrains Mono',monospace;display:flex;align-items:center;justify-content:center;}
+.hdr-dot{position:absolute;top:6px;right:6px;width:7px;height:7px;border-radius:50%;background:#4A7CF7;}
+.hdr-pop-wrap{position:relative;}
+.hdr-account{display:flex;align-items:center;gap:10px;background:transparent;border:1px solid transparent;border-radius:2px;padding:3px 8px 3px 3px;cursor:pointer;color:#8898B8;font-family:'Syne',sans-serif;}
+.hdr-account:hover,.hdr-account[aria-expanded="true"]{border-color:#161C2E;color:#F0E8D8;}
+.hdr-av{border-radius:50%;background:rgba(216,218,222,0.12);border:1px solid #5A5D64;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:600;color:#D8DADE;overflow:hidden;flex-shrink:0;}
+.hdr-av img{width:100%;height:100%;object-fit:cover;}
+.hdr-who{display:flex;flex-direction:column;align-items:flex-start;line-height:1.3;min-width:0;}
+.hdr-name{font-size:13px;color:#F0E8D8;font-weight:600;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.hdr-role{font-size:11.5px;color:#7A7E88;max-width:190px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.hdr-chev{display:flex;color:#7A7E88;}
+.hdr-pop{position:absolute;top:calc(100% + 8px);background:#0F1320;border:1px solid #243050;box-shadow:0 18px 44px -14px rgba(0,0,0,0.7);z-index:260;animation:fadeIn 0.12s ease;}
+.hdr-pop-right{right:0;}
+.hdr-search-pop{left:0;right:0;max-height:min(440px,70vh);overflow-y:auto;padding:4px 0;}
+.alerts-pop{width:min(380px,calc(100vw - 24px));max-height:min(480px,75vh);overflow-y:auto;}
+.acct-pop{min-width:230px;padding:4px 0;}
+.acct-id{padding:10px 14px;border-bottom:1px solid #161C2E;margin-bottom:4px;}
+.pop-head{display:flex;justify-content:space-between;align-items:center;padding:12px 14px;border-bottom:1px solid #161C2E;font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:#D8DADE;font-weight:600;}
+.pop-head span{font-family:'JetBrains Mono',monospace;color:#7A7E88;letter-spacing:0;}
+.pop-sec{padding:10px 14px 4px;font-size:10.5px;letter-spacing:0.14em;text-transform:uppercase;color:#7A7E88;font-weight:600;}
+.pop-item{display:flex;align-items:center;gap:10px;width:100%;padding:9px 14px;background:none;border:none;text-align:left;color:#8898B8;font-size:13px;font-family:'Syne',sans-serif;cursor:pointer;}
+.pop-item:hover,.pop-item.active{background:#0A0D14;color:#F0E8D8;}
+.pop-main{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.pop-date{font-family:'JetBrains Mono',monospace;font-size:11.5px;color:#7A7E88;flex-shrink:0;}
+.pop-amt{font-family:'JetBrains Mono',monospace;font-size:12px;flex-shrink:0;}
+.pop-empty{padding:14px;font-size:13px;line-height:1.6;color:#8898B8;}
+.alert-item{display:flex;flex-direction:column;gap:3px;width:100%;padding:12px 14px;background:none;border:none;border-bottom:1px solid #161C2E;text-align:left;cursor:pointer;font-family:'Syne',sans-serif;}
+.alert-item:last-child{border-bottom:none;}
+.alert-item:hover{background:#0A0D14;}
+.alert-sev{font-family:'JetBrains Mono',monospace;font-size:10px;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;}
+.alert-title{font-size:13px;color:#F0E8D8;font-weight:600;line-height:1.4;}
+.alert-detail{font-size:12.5px;color:#8898B8;line-height:1.5;}
+
+.app-side{grid-column:1;grid-row:2;position:sticky;top:56px;height:calc(100vh - 56px);overflow-y:auto;background:#0A0D14;border-right:1px solid #161C2E;display:flex;flex-direction:column;padding:14px 10px 16px;}
+.side-backdrop{display:none;}
+.nav-label{font-size:10.5px;letter-spacing:0.16em;text-transform:uppercase;color:#7A7E88;font-weight:600;padding:10px 12px 6px;}
+.nav-list{list-style:none;margin-bottom:8px;}
+.nav-item{display:flex;align-items:center;gap:12px;width:100%;padding:9px 12px;margin:1px 0;font-size:13.5px;font-weight:500;color:#8898B8;text-decoration:none;background:none;border:1px solid transparent;border-left:2px solid transparent;border-radius:2px;cursor:pointer;font-family:'Syne',sans-serif;text-align:left;transition:color 0.15s,background 0.15s;}
+.nav-item svg{flex-shrink:0;color:#7A7E88;transition:color 0.15s;}
+.nav-item:hover{color:#F0E8D8;background:#0F1320;}
+.nav-item:hover svg{color:#D8DADE;}
+.nav-item.on{color:#F0E8D8;background:rgba(216,218,222,0.07);border-color:#161C2E;border-left-color:#D8DADE;}
+.nav-item.on svg{color:#D8DADE;}
+.side-plan{margin-top:auto;border:1px solid #161C2E;padding:12px;}
+.side-plan-name{font-size:13px;color:#F0E8D8;font-weight:600;}
+
+.app-main{grid-column:2;grid-row:2;min-width:0;padding:20px 24px 40px;display:flex;flex-direction:column;gap:16px;outline:none;}
+.page-head{display:flex;align-items:flex-end;justify-content:space-between;gap:12px 20px;flex-wrap:wrap;}
+.page-h1{font-family:'Cormorant Garamond',serif;font-size:30px;font-weight:400;color:#F0E8D8;line-height:1.1;}
+.page-meta{font-family:'JetBrains Mono',monospace;font-size:11.5px;color:#7A7E88;margin-top:4px;}
+.page-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap;}
+.btn-md{font-size:11px;padding:9px 16px;display:inline-flex;align-items:center;justify-content:center;gap:8px;text-decoration:none;white-space:nowrap;}
+.page-actions .mpill{padding:8px 14px;font-size:10.5px;}
+
+.row{display:grid;gap:16px;min-width:0;align-items:stretch;}
+.row-21{grid-template-columns:minmax(0,2fr) minmax(0,1fr);}
+.row-12{grid-template-columns:minmax(0,1fr) minmax(0,2fr);}
+.row-2{grid-template-columns:repeat(2,minmax(0,1fr));}
+.row-3{grid-template-columns:repeat(3,minmax(0,1fr));}
+.panel{background:#0A0D14;border:1px solid #161C2E;padding:16px 18px;min-width:0;display:flex;flex-direction:column;position:relative;}
+.panel-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:12px;}
+.panel-title{font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:#D8DADE;font-weight:600;font-family:'Syne',sans-serif;}
+.panel-link{display:inline-flex;align-items:center;gap:5px;background:none;border:none;padding:2px 0;color:#8898B8;font-size:12.5px;font-family:'Syne',sans-serif;cursor:pointer;white-space:nowrap;text-decoration:none;align-self:flex-start;}
+.panel-link:hover{color:#F0E8D8;}
+.panel-head .panel-link{align-self:center;}
+.panel-copy{font-family:'Cormorant Garamond',serif;font-size:15px;line-height:1.6;color:#8898B8;}
+.narrative{font-family:'Cormorant Garamond',serif;font-size:16px;line-height:1.65;color:#F0E8D8;margin-bottom:8px;}
+.big-num{font-family:'Cormorant Garamond',serif;font-size:34px;font-weight:400;color:#F0E8D8;line-height:1.1;margin-bottom:6px;}
+
+.directive-strip{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:8px 22px;align-items:center;padding:14px 18px;border:1px solid var(--uc,#5A5D64);background:linear-gradient(135deg,rgba(216,218,222,0.05) 0%,rgba(5,7,9,0) 60%);position:relative;}
+.directive-strip::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:linear-gradient(to right,transparent,var(--uc,#D8DADE),transparent);}
+.ds-meta{display:flex;flex-direction:column;gap:8px;align-items:flex-start;}
+.ds-kicker{font-size:10.5px;letter-spacing:0.18em;text-transform:uppercase;font-weight:600;white-space:nowrap;}
+.ds-text{font-family:'Cormorant Garamond',serif;font-size:21px;color:#F0E8D8;line-height:1.3;}
+.ds-reason{font-family:'Cormorant Garamond',serif;font-size:15px;color:#8898B8;line-height:1.55;margin-top:2px;}
+.ds-actions{display:flex;align-items:center;}
+.alert-row{display:flex;flex-direction:column;gap:8px;}
+
+.kpi-row{display:grid;grid-template-columns:minmax(0,1.5fr) repeat(5,minmax(0,1fr));gap:12px;}
+.kpi-row.data-thin{padding:8px;}
+.kpi{background:#0A0D14;border:1px solid #161C2E;padding:14px 16px;min-width:0;position:relative;display:flex;flex-direction:column;}
+.kpi.kpi-lead{background:linear-gradient(160deg,#0F1320 0%,#0A0D14 70%);}
+.kpi.kpi-lead::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:var(--sev,#5A5D64);}
+.kpi-lbl{display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:20px;font-size:10.5px;letter-spacing:0.14em;text-transform:uppercase;color:#7A7E88;font-weight:600;}
+.kpi-val{font-family:'Cormorant Garamond',serif;font-size:34px;font-weight:400;line-height:1.1;margin-top:8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.kpi.kpi-lead .kpi-val{font-size:56px;}
+.kpi-unit{font-size:0.5em;color:#7A7E88;margin-left:3px;}
+.kpi-sub{font-size:12px;color:#8898B8;line-height:1.5;margin-top:6px;}
+.kpi.kpi-lead .kpi-sub{font-family:'Cormorant Garamond',serif;font-size:15px;}
+
+.traj-pair{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
+.traj-cell{display:flex;align-items:center;gap:12px;min-width:0;}
+.traj-lbl{font-family:'Cormorant Garamond',serif;font-size:19px;color:#F0E8D8;line-height:1.2;}
+.traj-note{font-family:'Cormorant Garamond',serif;font-size:14.5px;color:#8898B8;line-height:1.5;margin-top:10px;}
+.traj-note:empty{display:none;}
+.mini-list{list-style:none;display:flex;flex-direction:column;}
+.mini-list li{display:flex;align-items:baseline;gap:10px;padding:8px 0;border-bottom:1px solid #161C2E;min-width:0;}
+.mini-list li:last-child{border-bottom:none;}
+.mini-list li.mini-stack{flex-direction:column;align-items:stretch;gap:3px;}
+.mini-main{flex:1;min-width:0;font-size:13px;color:#F0E8D8;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.mini-stack .mini-main{white-space:normal;font-family:'Cormorant Garamond',serif;font-size:15px;line-height:1.35;}
+.mini-date{font-family:'JetBrains Mono',monospace;font-size:11px;color:#7A7E88;flex-shrink:0;}
+.mini-amt{font-family:'JetBrains Mono',monospace;font-size:12.5px;color:#D8DADE;flex-shrink:0;}
+.mini-foot{margin-top:10px;padding-top:10px;border-top:1px solid #161C2E;font-size:12px;color:#8898B8;}
+.bar-row-lbl{display:flex;justify-content:space-between;gap:10px;font-size:13px;color:#8898B8;margin-bottom:5px;}
+.bar-track{display:block;height:8px;background:#161C2E;border-radius:4px;overflow:hidden;}
+.bar-track > *{display:block;height:100%;}
+.nudge-row{display:flex;align-items:center;justify-content:space-between;gap:16px 24px;flex-wrap:wrap;padding:16px 18px;background:#0F1320;border:1px solid #161C2E;}
+.nudge-row-title{font-family:'Cormorant Garamond',serif;font-size:19px;color:#F0E8D8;}
+.nudge-row-sub{font-family:'Cormorant Garamond',serif;font-size:15px;color:#8898B8;line-height:1.55;margin-top:2px;max-width:640px;}
+
+.tbl-wrap{overflow:auto;min-width:0;}
+.tbl{width:100%;border-collapse:collapse;font-size:13px;}
+.tbl th{text-align:left;font-size:10.5px;letter-spacing:0.12em;text-transform:uppercase;color:#7A7E88;font-weight:600;padding:8px 10px;border-bottom:1px solid #243050;background:#0A0D14;position:sticky;top:0;white-space:nowrap;}
+.tbl td{padding:9px 10px;border-bottom:1px solid #161C2E;color:#F0E8D8;vertical-align:top;}
+.tbl tfoot th,.tbl tfoot td{border-top:1px solid #243050;border-bottom:none;font-weight:600;position:static;}
+.tbl tbody tr:hover td{background:#0F1320;}
+.tbl .num{text-align:right;font-family:'JetBrains Mono',monospace;font-size:12.5px;white-space:nowrap;}
+.tbl .mono{font-family:'JetBrains Mono',monospace;font-size:12px;color:#8898B8;white-space:nowrap;}
+.tbl .muted{color:#8898B8;}
+.tx-tools{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px;}
+.tx-sum{font-family:'JetBrains Mono',monospace;font-size:12px;color:#8898B8;margin-left:auto;}
+.busy-line{display:flex;align-items:center;gap:10px;margin-top:12px;font-size:12.5px;color:#8898B8;font-family:'JetBrains Mono',monospace;}
+.batch-list{list-style:none;display:flex;flex-direction:column;max-height:320px;overflow-y:auto;}
+.batch-list li{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid #161C2E;}
+.batch-list li:last-child{border-bottom:none;}
+.batch-name{font-size:13px;color:#F0E8D8;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.batch-meta{font-family:'JetBrains Mono',monospace;font-size:11px;color:#7A7E88;margin-top:3px;line-height:1.5;}
+.input-grid-4{grid-template-columns:repeat(4,minmax(0,1fr));}
+.details-summary{cursor:pointer;font-family:'Cormorant Garamond',serif;font-size:15px;color:#8898B8;line-height:1.5;}
+.details-summary:hover{color:#F0E8D8;}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:8px 16px;font-size:13px;}
+.kv dt{color:#8898B8;}
+.kv dd{color:#F0E8D8;text-align:right;font-family:'JetBrains Mono',monospace;font-size:12.5px;}
+.kv-wide dd{text-align:left;}
+.week-list{list-style:none;display:flex;flex-direction:column;gap:6px;}
+.week-list li{display:grid;grid-template-columns:44px minmax(0,1fr) 88px;align-items:center;gap:10px;}
+.week-list .mini-amt{text-align:right;}
+.week-bar{height:10px;}
+.scenario-cell{background:#0F1320;border:1px solid #161C2E;padding:12px 14px;min-width:0;}
+.scenario-before{font-family:'JetBrains Mono',monospace;font-size:12px;color:#7A7E88;margin-top:6px;}
+.scenario-after{font-family:'JetBrains Mono',monospace;font-size:16px;margin-top:2px;overflow-wrap:anywhere;}
+.form-stack{display:flex;flex-direction:column;gap:14px;}
+.faq-list{display:flex;flex-direction:column;}
+.faq-d{border-bottom:1px solid #161C2E;padding:12px 0;}
+.faq-d:last-child{border-bottom:none;}
+.faq-d summary{cursor:pointer;font-size:14px;font-weight:600;color:#F0E8D8;line-height:1.4;}
+.faq-d summary:hover{color:#D8DADE;}
+.faq-d p{font-family:'Cormorant Garamond',serif;font-size:15.5px;line-height:1.7;color:#8898B8;margin-top:8px;}
+.report-head{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;padding-bottom:12px;border-bottom:1px solid #161C2E;}
+.report-title{font-family:'Cormorant Garamond',serif;font-size:24px;color:#F0E8D8;}
+.log-list{list-style:none;display:flex;flex-direction:column;gap:14px;}
+.log-list li{border-left:3px solid #D8DADE;padding:2px 0 14px 14px;border-bottom:1px solid #161C2E;}
+.log-list li:last-child{border-bottom:none;padding-bottom:2px;}
+.log-top{display:flex;justify-content:space-between;align-items:baseline;gap:10px;flex-wrap:wrap;}
+.log-text{font-family:'Cormorant Garamond',serif;font-size:16.5px;color:#F0E8D8;line-height:1.4;}
+.log-meta{font-family:'Cormorant Garamond',serif;font-size:14.5px;color:#8898B8;margin-top:4px;line-height:1.5;}
+
+/* Six tiles across need about 1,040px of content width to hold the widest
+   values at full size (56px lead, 34px others: measured, not estimated).
+   Below that they wrap to two rows of three rather than shrinking. */
+@media(max-width:1320px){
+  .kpi-row{grid-template-columns:repeat(3,minmax(0,1fr));}
+}
+@media(max-width:1100px){
+  .hdr-who,.hdr-chev,.hdr-kbd{display:none;}
+  .row-3{grid-template-columns:repeat(2,minmax(0,1fr));}
+  .input-grid-4{grid-template-columns:repeat(2,minmax(0,1fr));}
+}
+/* Below 960px the sidebar becomes a drawer opened from the header. */
+@media(max-width:960px){
+  .app{grid-template-columns:minmax(0,1fr);}
+  .app-header{padding:0 12px;gap:10px;}
+  .hdr-menu{display:flex;}
+  .app-crumb{display:none;}
+  .app-brand{width:auto;border-right:none;padding:0;align-self:center;}
+  .app-brand .wordmark-sub{display:none;}
+  .app-side{position:fixed;top:56px;left:0;bottom:0;width:min(280px,86vw);height:auto;z-index:240;transform:translateX(-100%);visibility:hidden;transition:transform 0.2s ease,visibility 0s linear 0.2s;box-shadow:24px 0 48px -24px rgba(0,0,0,0.8);}
+  /* Visible at once on open, so the first link can take focus; hidden only after the slide-out on close. */
+  .app-side.open{transform:none;visibility:visible;transition:transform 0.2s ease,visibility 0s;}
+  .side-backdrop{display:block;position:fixed;top:56px;left:0;right:0;bottom:0;z-index:230;background:rgba(5,7,9,0.6);}
+  .app-main{grid-column:1;padding:16px 16px 32px;}
+  .row-21,.row-12,.row-2{grid-template-columns:minmax(0,1fr);}
+  .directive-strip{grid-template-columns:minmax(0,1fr);}
+  .ds-meta{flex-direction:row;align-items:center;gap:10px;flex-wrap:wrap;}
+}
+/* Phones: search moves behind a header button and opens as a full-width row. */
+@media(max-width:720px){
+  .hdr-search{display:none;}
+  .hdr-search.open{display:block;position:fixed;top:56px;left:0;right:0;max-width:none;padding:10px 12px;background:#050709;border-bottom:1px solid #161C2E;z-index:220;}
+  .hdr-search.open .hdr-search-icon{left:23px;}
+  .hdr-search-toggle{display:flex;}
+  .kpi-row{grid-template-columns:repeat(2,minmax(0,1fr));}
+  .kpi.kpi-lead{grid-column:1/-1;}
+  .row-3{grid-template-columns:minmax(0,1fr);}
+  .tx-sum{margin-left:0;}
+}
+@media(max-width:520px){
+  .app-brand-txt{display:none;}
+  .hdr-select{max-width:118px;}
+  .hdr-tools{gap:8px;}
+  .page-h1{font-size:26px;}
+}
+@media(prefers-reduced-motion:reduce){
+  .app-side{transition:none;}
+}
+/* Printing the Reports page prints only the report, black on white. */
+@media print{
+  body{background:#fff!important;}
+  body *{visibility:hidden;}
+  .print-area,.print-area *{visibility:visible;}
+  .print-area{position:absolute;left:0;top:0;width:100%;border:none!important;background:#fff!important;padding:0!important;}
+  .print-area .row{grid-template-columns:1fr!important;}
+  .print-area *{color:#000!important;background:#fff!important;border-color:#bbb!important;}
+  .app-header,.app-side,.activation-banner{display:none!important;}
+}
 
 @media(max-width:960px){
   .feat-grid,.price-grid,.kpi4,.kpi3,.g3{grid-template-columns:1fr 1fr;}
   .stats-bar{grid-template-columns:1fr;}
   .g2,.g21,.input-grid{grid-template-columns:1fr;}
-  .kpi-hero-sub{grid-template-columns:1fr 1fr;}
-  .trajectory-row{flex-direction:column;gap:10px;}
-  .dash{grid-template-columns:1fr;grid-template-rows:64px auto 1fr;}
-  .sidebar{display:none;}
-  .topbar,.dash-body{grid-column:1;}
-  .dash-tabbar{display:flex;position:fixed;bottom:0;left:0;right:0;z-index:250;background:rgba(10,13,20,0.98);backdrop-filter:blur(20px);border-top:1px solid #161C2E;}
-  .dash-account-wrap{display:block;}
-  /* A 1fr grid column resolves to minmax(auto, 1fr): any child that
-     cannot shrink forces the column — and therefore the whole dashboard
-     — wider than the phone. The topbar's breadcrumb + status badge +
-     mode pills did exactly that (410px column on a 390px screen).
-     min-width:0 lets the column shrink; the breadcrumb goes because the
-     bottom tab bar already shows which tab is current. */
-  .topbar,.dash-body{min-width:0;}
-  .topbar{padding:0 16px;gap:10px;}
-  .breadcrumb{display:none;}
-  .tb-right{min-width:0;gap:10px;}
-  .live-badge{min-width:0;overflow:hidden;}
-  .live-badge span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-  .dash-body{padding:20px 16px calc(64px + env(safe-area-inset-bottom,0px));}
   .nav-links{display:none;}
   .nav-burger{display:flex;}
   /* Sign In + Get Started + the hamburger together overflow the nav at
@@ -480,7 +624,7 @@ body{background:#050709;color:#F4F7FF;font-family:'Syne',sans-serif;-webkit-font
   .price-card.hot:hover{transform:translateY(-4px);}
 }
 @media(max-width:600px){
-  .feat-grid,.price-grid,.kpi4,.kpi3,.g3,.kpi-hero-sub{grid-template-columns:1fr;}
+  .feat-grid,.price-grid,.kpi4,.kpi3,.g3{grid-template-columns:1fr;}
   .price-diag{flex-direction:column;align-items:flex-start;gap:18px;padding:22px;}
   .price-diag .btn{width:100%;}
   .hero-preview-kpis{grid-template-columns:1fr;}
@@ -492,10 +636,8 @@ body{background:#050709;color:#F4F7FF;font-family:'Syne',sans-serif;-webkit-font
    made keyboard-operable via clickableProps; without a visible ring a
    keyboard user cannot tell where they are (WCAG 2.4.7). */
 :focus-visible{outline:2px solid #D8DADE;outline-offset:2px;}
-.sb-item:focus-visible{outline:2px solid #D8DADE;outline-offset:-2px;}
 .drop-zone:focus-visible{outline:2px solid #D8DADE;outline-offset:-3px;}
 .a-link:focus-visible,.page-back:focus-visible,.hero-preview-reset:focus-visible,.footer-links a:focus-visible,.nav-logo:focus-visible,.auth-logo-row:focus-visible{outline:2px solid #D8DADE;outline-offset:3px;}
-.sb-item[aria-disabled="true"]{cursor:default;}
 
 `;
 
@@ -600,17 +742,12 @@ function SeverityTag({ level, label }) {
 // screen, while file parsing / history load / AI generation are in flight.
 function SkeletonKPIRow() {
   return (
-    <div className="kpi-hero-row" aria-busy="true" aria-label="Loading your financial position">
-      <div className="card" style={{ minHeight:150 }}>
-        <div className="skel" style={{ width:"38%", height:9, marginBottom:18 }}/>
-        <div className="skel" style={{ width:"64%", height:42, marginBottom:16 }}/>
-        <div className="skel" style={{ width:"46%", height:10 }}/>
-      </div>
-      {[0, 1].map(i => (
-        <div className="card" key={i} style={{ minHeight:150 }}>
-          <div className="skel" style={{ width:"58%", height:9, marginBottom:16 }}/>
-          <div className="skel" style={{ width:"62%", height:28, marginBottom:12 }}/>
-          <div className="skel" style={{ width:"42%", height:9 }}/>
+    <div className="kpi-row" aria-busy="true" aria-label="Loading your financial position">
+      {[0, 1, 2, 3, 4, 5].map(i => (
+        <div className="kpi" key={i} style={{ minHeight:120 }}>
+          <div className="skel" style={{ width:"55%", height:9, marginBottom:16 }}/>
+          <div className="skel" style={{ width:i === 0 ? "70%" : "60%", height:i === 0 ? 38 : 28, marginBottom:12 }}/>
+          <div className="skel" style={{ width:"45%", height:9 }}/>
         </div>
       ))}
     </div>
@@ -684,32 +821,29 @@ function BChart({ data }) {
 // what's written to the `directives` table can never drift apart.
 const DIRECTIVE_SEVERITY_TAG = { critical:"critical", warn:"warning", go:"positive", stable:"neutral" };
 
-function Directive({ metrics, concentration }) {
-  const { margin, burnMonths, free, vel, conv, ltvcac, n } = metrics;
-  const d = computeDirective({ margin, burnMonths, free, vel, conv, ltvcac, months: n, concentration });
-  const { severity, wasCapped } = d;
-  const uc = { critical:C.red, warn:C.amber, go:C.green, stable:C.gold }[severity];
-  // Critical calls get a heavier frame, not just a red hue — weight and
-  // border treatment carry severity too, so it survives greyscale.
-  const isCritical = severity === "critical";
-
+// A single horizontal banner: severity and label on the left, the call and
+// its reason in the middle, an action on the right. The decision logic lives
+// in computeDirective() (financials.js) — the Dashboard computes it once and
+// both this banner and the persisted decision log read the same object.
+function DirectiveStrip({ d, children }) {
+  const uc = { critical:C.red, warn:C.amber, go:C.green, stable:C.gold }[d.severity];
+  // Critical calls get a heavier frame, not just a red hue — weight carries
+  // severity too, so it survives greyscale.
   return (
-    <div className="directive-box" style={{ "--uc":uc, borderWidth:isCritical?2:1, borderColor:uc }}>
-      <div style={{ position:"absolute", top:0, left:0, right:0, height:2, background:`linear-gradient(to right,transparent,${uc},transparent)` }}/>
-      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", gap:12, flexWrap:"wrap", marginBottom:14 }}>
-        <div style={{ fontSize:9, letterSpacing:"0.2em", textTransform:"uppercase", color:uc, fontWeight:600 }}>
-          This Week's Directive
+    <section className="directive-strip" style={{ "--uc":uc, borderWidth: d.severity === "critical" ? 2 : 1 }} aria-label="This week's directive">
+      <div className="ds-meta">
+        <div className="ds-kicker" style={{ color:uc }}>This week's directive</div>
+        <SeverityTag level={DIRECTIVE_SEVERITY_TAG[d.severity]}/>
+      </div>
+      <div style={{ minWidth:0 }}>
+        <div className="ds-text">{d.text}</div>
+        <div className="ds-reason">
+          {d.reason}
+          {d.wasCapped && " This is based on a single month of data — treat it as an early warning, not a confirmed crisis, until more history confirms it."}
         </div>
-        <SeverityTag level={DIRECTIVE_SEVERITY_TAG[severity]}/>
       </div>
-      <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:22, color:C.cream, lineHeight:1.35, borderLeft:`3px solid ${uc}`, paddingLeft:16, marginBottom:10 }}>
-        {d.text}
-      </div>
-      <div style={{ fontSize:12, color:C.ink, lineHeight:1.7, fontFamily:"'Cormorant Garamond',serif", paddingLeft:16 }}>
-        {d.reason}
-        {wasCapped && " This is based on a single month of data — treat it as an early warning, not a confirmed crisis, until more history confirms it."}
-      </div>
-    </div>
+      {children && <div className="ds-actions">{children}</div>}
+    </section>
   );
 }
 
@@ -1191,22 +1325,437 @@ function DiagnosticModal({ onClose }) {
   );
 }
 
-// ─── DASHBOARD ────────────────────────────────────────────────
-function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic }) {
-  const [tab,  setTab]  = useState("overview");
-  const [mode, setMode] = useState("safe");
+// ─── APP SHELL: SECTIONS AND ROUTING ──────────────────────────
+// Each workspace section has its own path, so the browser's back/forward
+// buttons, refresh and "open in new tab" all land where the founder was.
+// There is no router dependency: the path is read on load, written with
+// pushState on navigation, and re-read on popstate. Vercel rewrites every
+// path to index.html, so any of these URLs boots the app. A signed-out
+// visitor on one of them is sent back to "/" (see leaveAppPaths in App).
+const SECTIONS = [
+  { id:"dashboard",    label:"Dashboard",      path:"/dashboard",    icon:"grid",    group:"workspace" },
+  { id:"transactions", label:"Transactions",   path:"/transactions", icon:"swap",    group:"workspace" },
+  { id:"financials",   label:"Financials",     path:"/financials",   icon:"bars",    group:"workspace" },
+  { id:"advisor",      label:"AI Advisor",     path:"/advisor",      icon:"spark",   group:"workspace" },
+  { id:"reports",      label:"Reports",        path:"/reports",      icon:"doc",     group:"workspace" },
+  { id:"decisions",    label:"Decision Log",   path:"/decisions",    icon:"check",   group:"workspace" },
+  { id:"forecasts",    label:"Forecasts",      path:"/forecasts",    icon:"trend",   group:"workspace" },
+  { id:"settings",     label:"Settings",       path:"/settings",     icon:"sliders", group:"account" },
+  { id:"help",         label:"Help & Support", path:"/help",         icon:"help",    group:"account" },
+];
+const sectionById = id => SECTIONS.find(s => s.id === id) || SECTIONS[0];
+const sectionFromPath = path => (SECTIONS.find(s => s.path === path) || SECTIONS[0]).id;
+const isAppPath = path => SECTIONS.some(s => s.path === path);
+
+// Words the header search maps to each section, so "runway" or "export"
+// finds the page that answers it.
+const SECTION_KEYWORDS = {
+  dashboard:    ["overview", "home", "directive", "kpi", "summary"],
+  transactions: ["upload", "import", "csv", "excel", "bank", "sheet", "data", "manual", "history", "delete"],
+  financials:   ["profit", "loss", "p&l", "margin", "break-even", "breakeven", "ltv", "cac", "unit economics", "concentration", "client", "payer", "sovereignty", "allocator", "tax", "reserve"],
+  advisor:      ["ai", "brief", "claude", "recommendation", "advice"],
+  reports:      ["report", "export", "download", "pdf", "print", "board"],
+  decisions:    ["directive", "decision", "outcome", "acted"],
+  forecasts:    ["runway", "projection", "forecast", "obligation", "recurring", "rent", "payroll", "afford", "hire", "hiring", "scenario", "what-if", "cash", "bills"],
+  settings:     ["profile", "name", "business", "plan", "billing", "subscription", "cancel", "paypal", "mode", "safe", "growth"],
+  help:         ["support", "contact", "email", "faq", "question", "how"],
+};
+const SEARCH_DESTINATIONS = SECTIONS.map(s => ({ id:s.id, label:s.label, keywords:SECTION_KEYWORDS[s.id] || [] }));
+
+const PERIOD_OPTIONS = [["3","Last 3 months","3 mo"],["6","Last 6 months","6 mo"],["12","Last 12 months","12 mo"],["all","All time","All"]];
+const periodLabelOf = v => (PERIOD_OPTIONS.find(p => p[0] === v) || PERIOD_OPTIONS[2])[1];
+
+function useSection() {
+  const [section, setSection] = useState(() => sectionFromPath(window.location.pathname));
+  useEffect(() => {
+    // Normalise the address bar to the section actually shown ("/" -> "/dashboard").
+    const shown = sectionById(sectionFromPath(window.location.pathname));
+    if (window.location.pathname !== shown.path) window.history.replaceState(null, "", shown.path);
+    const onPop = () => setSection(sectionFromPath(window.location.pathname));
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
+  const navigate = useCallback((id) => {
+    const s = sectionById(id);
+    if (window.location.pathname !== s.path) window.history.pushState(null, "", s.path);
+    setSection(s.id);
+    window.scrollTo(0, 0);
+  }, []);
+  return [section, navigate];
+}
+
+// Closes a popover on an outside click or Escape.
+function useDismiss(open, onClose, ref) {
+  useEffect(() => {
+    if (!open) return;
+    const onDown = e => { if (ref.current && !ref.current.contains(e.target)) onClose(); };
+    const onKey = e => { if (e.key === "Escape") onClose(); };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => { document.removeEventListener("mousedown", onDown); document.removeEventListener("keydown", onKey); };
+  }, [open, onClose, ref]);
+}
+
+// PostgREST returns at most 1,000 rows per request (the hosted default), and
+// says nothing when it stops there. Reading history in one request meant a
+// business with more than 1,000 transactions in the period got only its
+// OLDEST 1,000 — ascending order — so the latest months, and every metric
+// built on them, were silently missing. This reads every page.
+async function selectAll(buildQuery, pageSize = 1000, maxPages = 100) {
+  const out = [];
+  for (let page = 0; page < maxPages; page++) {
+    const from = page * pageSize;
+    const { data, error } = await buildQuery().range(from, from + pageSize - 1);
+    if (error) throw error;
+    out.push(...(data || []));
+    if (!data || data.length < pageSize) return out;
+  }
+  throw new Error(`More than ${pageSize * maxPages} rows; refusing to load a partial history.`);
+}
+
+// ─── ICONS ────────────────────────────────────────────────────
+// Inline line icons, drawn with currentColor so they follow the text colour
+// of whatever holds them. Always decorative: the label beside them carries
+// the meaning.
+const ICONS = {
+  grid:     <><rect x="3.5" y="3.5" width="7" height="7"/><rect x="13.5" y="3.5" width="7" height="7"/><rect x="3.5" y="13.5" width="7" height="7"/><rect x="13.5" y="13.5" width="7" height="7"/></>,
+  swap:     <path d="M4 8h15M15 4l4 4-4 4M20 16H5M9 12l-4 4 4 4"/>,
+  bars:     <path d="M4 20h16M7 16v-5M12 16V6M17 16v-8"/>,
+  spark:    <path d="M12 3l1.9 6.1L20 11l-6.1 1.9L12 19l-1.9-6.1L4 11l6.1-1.9z"/>,
+  doc:      <path d="M7 3h7l5 5v13H7zM14 3v5h5M10 13h6M10 17h6"/>,
+  check:    <path d="M9 4h6v3H9zM7 5.5H5V21h14V5.5h-2M9 14l2 2 4-4"/>,
+  trend:    <path d="M3 17l6-6 4 4 8-8M15 7h6v6"/>,
+  sliders:  <path d="M4 7h9M17 7h3M4 17h3M11 17h9M15 5v4M9 15v4"/>,
+  help:     <><circle cx="12" cy="12" r="9"/><path d="M9.6 9.2a2.5 2.5 0 1 1 3.6 2.2c-.7.4-1.2 1-1.2 1.8v.6M12 17h.01"/></>,
+  logout:   <path d="M10 4H5v16h5M15 8l4 4-4 4M19 12H10"/>,
+  search:   <><circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.2-4.2"/></>,
+  bell:     <path d="M6 16v-5a6 6 0 0 1 12 0v5l1.5 2h-15zM10 20.5a2 2 0 0 0 4 0"/>,
+  menu:     <path d="M4 6h16M4 12h16M4 18h16"/>,
+  close:    <path d="M6 6l12 12M18 6L6 18"/>,
+  chevron:  <path d="M6 9l6 6 6-6"/>,
+  upload:   <path d="M12 16V4M7 9l5-5 5 5M4 20h16"/>,
+  arrow:    <path d="M5 12h14M13 6l6 6-6 6"/>,
+  download: <path d="M12 4v12M7 11l5 5 5-5M4 20h16"/>,
+  print:    <path d="M7 9V3h10v6M7 17H4v-8h16v8h-3M7 14h10v7H7z"/>,
+};
+function Icon({ name, size = 18 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6"
+      strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">{ICONS[name]}</svg>
+  );
+}
+
+// ─── HEADER: SEARCH ───────────────────────────────────────────
+// Searches the founder's own transactions (description, category, date,
+// amount) and the app's pages, via searchWorkspace() in financials.js.
+// Choosing a transaction opens the Transactions page filtered to it.
+const SHORTCUT_LABEL = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform || "") ? "⌘K" : "Ctrl K";
+
+function HeaderSearch({ transactions, onNavigate, onShowTransactions, mobileOpen, onMobileClose, inputRef }) {
+  const [q, setQ] = useState("");
+  const [focused, setFocused] = useState(false);
+  const [active, setActive] = useState(0);
+  const wrapRef = useRef(null);
+  const results = useMemo(() => searchWorkspace(q, { transactions, destinations:SEARCH_DESTINATIONS, limit:5 }), [q, transactions]);
+  const options = useMemo(() => {
+    const list = results.destinations.map(d => ({ key:`p-${d.id}`, type:"page", d }));
+    results.transactions.forEach((t, i) => list.push({ key:`t-${t.id ?? i}`, type:"txn", t }));
+    if (results.transactionTotal > results.transactions.length) list.push({ key:"all", type:"all" });
+    return list;
+  }, [results]);
+  const showPop = focused && q.trim().length > 0;
+  useEffect(() => { setActive(0); }, [q]);
+
+  const close = useCallback(() => { setFocused(false); onMobileClose(); }, [onMobileClose]);
+  useDismiss(showPop || mobileOpen, close, wrapRef);
+
+  const choose = opt => {
+    if (!opt) return;
+    if (opt.type === "page") onNavigate(opt.d.id);
+    else if (opt.type === "txn") onShowTransactions(opt.t.description || q);
+    else onShowTransactions(q.trim());
+    setQ("");
+    inputRef.current?.blur();
+    close();
+  };
+  const onKeyDown = e => {
+    if (e.key === "ArrowDown") { e.preventDefault(); setActive(a => Math.min(a + 1, options.length - 1)); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); setActive(a => Math.max(a - 1, 0)); }
+    else if (e.key === "Enter") { e.preventDefault(); choose(options[active]); }
+    else if (e.key === "Escape") { setQ(""); inputRef.current?.blur(); close(); }
+  };
+  const optionId = opt => `hs-${opt.key}`;
+  let section = null;
+
+  return (
+    <div className={`hdr-search${mobileOpen ? " open" : ""}`} ref={wrapRef} role="search">
+      <span className="hdr-search-icon"><Icon name="search" size={16}/></span>
+      <input
+        ref={inputRef}
+        className="hdr-search-input"
+        type="search"
+        placeholder="Search transactions, metrics, pages"
+        aria-label="Search transactions and pages"
+        role="combobox"
+        aria-expanded={showPop}
+        aria-controls="hdr-search-list"
+        aria-autocomplete="list"
+        aria-activedescendant={showPop && options[active] ? optionId(options[active]) : undefined}
+        value={q}
+        onChange={e => setQ(e.target.value)}
+        onFocus={() => setFocused(true)}
+        onBlur={e => { if (!wrapRef.current?.contains(e.relatedTarget)) setFocused(false); }}
+        onKeyDown={onKeyDown}
+      />
+      {!q && <kbd className="hdr-kbd" aria-hidden="true">{SHORTCUT_LABEL}</kbd>}
+      {showPop && (
+        <div className="hdr-pop hdr-search-pop" id="hdr-search-list" role="listbox" aria-label="Search results">
+          {options.length === 0 && (
+            <div className="pop-empty">No pages or transactions in the selected period match "{q.trim()}".</div>
+          )}
+          {options.map((opt, i) => {
+            const heading = opt.type === "page" ? "Pages" : "Transactions";
+            const showHeading = heading !== section;
+            section = heading;
+            return (
+              <div key={opt.key}>
+                {showHeading && <div className="pop-sec" aria-hidden="true">{heading}</div>}
+                <div id={optionId(opt)} role="option" aria-selected={i === active}
+                  className={`pop-item${i === active ? " active" : ""}`}
+                  onMouseDown={e => e.preventDefault()}
+                  onMouseEnter={() => setActive(i)}
+                  onClick={() => choose(opt)}>
+                  {opt.type === "page" && <><Icon name={sectionById(opt.d.id).icon} size={16}/><span className="pop-main">{opt.d.label}</span></>}
+                  {opt.type === "txn" && <>
+                    <span className="pop-date">{opt.t.txn_date}</span>
+                    <span className="pop-main">{opt.t.description || "No description"}</span>
+                    <span className="pop-amt" style={{ color: Number(opt.t.amount) >= 0 ? C.green : C.ink }}>{fmt(opt.t.amount)}</span>
+                  </>}
+                  {opt.type === "all" && <span className="pop-main">Show all {results.transactionTotal} matching transactions</span>}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── HEADER: ALERTS ───────────────────────────────────────────
+// Live conditions from buildAlerts(): each disappears once it is resolved,
+// so there is nothing to mark as read. The badge counts critical and
+// warning alerts; informational ones show as a dot.
+const ALERT_STYLE = { critical:{ text:"Critical", color:C.red }, warning:{ text:"Warning", color:C.amber }, info:{ text:"Info", color:C.blue } };
+
+function AlertsMenu({ alerts, onNavigate }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  const closeMenu = useCallback(() => setOpen(false), []);
+  useDismiss(open, closeMenu, ref);
+  const urgent = alerts.filter(a => a.severity !== "info").length;
+  const label = alerts.length === 0 ? "Alerts, none" : `Alerts, ${alerts.length}${urgent ? `, ${urgent} need attention` : ""}`;
+  return (
+    <div className="hdr-pop-wrap" ref={ref}>
+      <button className="hdr-icon-btn" aria-label={label} aria-expanded={open} aria-haspopup="dialog" onClick={() => setOpen(o => !o)}>
+        <Icon name="bell"/>
+        {urgent > 0 ? <span className="hdr-badge" aria-hidden="true">{urgent}</span>
+          : alerts.length > 0 ? <span className="hdr-dot" aria-hidden="true"/> : null}
+      </button>
+      {open && (
+        <div className="hdr-pop hdr-pop-right alerts-pop" role="dialog" aria-label="Alerts">
+          <div className="pop-head">Alerts<span>{alerts.length}</span></div>
+          {alerts.length === 0 ? (
+            <div className="pop-empty">Nothing needs your attention. Alerts appear here when a recurring bill is missed, a directive turns critical, or your data goes stale.</div>
+          ) : alerts.map(a => (
+            <button key={a.id} className="alert-item" onClick={() => { setOpen(false); onNavigate(a.section); }}>
+              <span className="alert-sev" style={{ color:ALERT_STYLE[a.severity].color }}>{ALERT_STYLE[a.severity].text}</span>
+              <span className="alert-title">{a.title}</span>
+              <span className="alert-detail">{a.detail}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── HEADER: ACCOUNT MENU ─────────────────────────────────────
+function Avatar({ src, name, size = 32 }) {
+  return (
+    <span className="hdr-av" style={{ width:size, height:size }}>
+      {src ? <img src={src} alt=""/> : (name?.[0] || "?").toUpperCase()}
+    </span>
+  );
+}
+
+function AccountMenu({ name, role, avatar, email, canUpgrade, onNavigate, onUpgrade, onLogout }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  const closeMenu = useCallback(() => setOpen(false), []);
+  useDismiss(open, closeMenu, ref);
+  const go = fn => () => { setOpen(false); fn(); };
+  return (
+    <div className="hdr-pop-wrap" ref={ref}>
+      <button className="hdr-account" aria-label={`Account menu for ${name}`} aria-expanded={open} aria-haspopup="menu" onClick={() => setOpen(o => !o)}>
+        <Avatar src={avatar} name={name}/>
+        <span className="hdr-who">
+          <span className="hdr-name">{name}</span>
+          <span className="hdr-role">{role}</span>
+        </span>
+        <span className="hdr-chev"><Icon name="chevron" size={16}/></span>
+      </button>
+      {open && (
+        <div className="hdr-pop hdr-pop-right acct-pop" role="menu" aria-label="Account">
+          <div className="acct-id">
+            <div className="hdr-name">{name}</div>
+            <div className="hdr-role">{email}</div>
+          </div>
+          <button role="menuitem" className="pop-item" onClick={go(() => onNavigate("settings"))}><Icon name="sliders" size={16}/><span className="pop-main">Settings</span></button>
+          <button role="menuitem" className="pop-item" onClick={go(() => onNavigate("help"))}><Icon name="help" size={16}/><span className="pop-main">Help & Support</span></button>
+          {canUpgrade && <button role="menuitem" className="pop-item" onClick={go(onUpgrade)}><Icon name="spark" size={16}/><span className="pop-main">Add Command Advisory</span></button>}
+          <button role="menuitem" className="pop-item" onClick={go(onLogout)}><Icon name="logout" size={16}/><span className="pop-main">Log out</span></button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── SIDEBAR ──────────────────────────────────────────────────
+// Persistent on desktop; below 960px the same element becomes a drawer
+// opened from the header's menu button.
+function NavLink({ s, active, onNavigate, linkRef }) {
+  return (
+    <a ref={linkRef} href={s.path} className={`nav-item${active ? " on" : ""}`} aria-current={active ? "page" : undefined}
+      onClick={e => {
+        // Let modified clicks open a new tab as links normally do.
+        if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
+        e.preventDefault();
+        onNavigate(s.id);
+      }}>
+      <Icon name={s.icon}/><span>{s.label}</span>
+    </a>
+  );
+}
+
+function AppSidebar({ section, onNavigate, onLogout, open, onClose, planName, canUpgrade, onUpgrade, firstLinkRef }) {
+  return (
+    <>
+      {open && <div className="side-backdrop" onClick={onClose} aria-hidden="true"/>}
+      <nav id="app-nav" className={`app-side${open ? " open" : ""}`} aria-label="Main">
+        <div className="nav-label" id="nav-workspace">Workspace</div>
+        <ul className="nav-list" aria-labelledby="nav-workspace">
+          {SECTIONS.filter(s => s.group === "workspace").map((s, i) => (
+            <li key={s.id}><NavLink s={s} active={section === s.id} onNavigate={onNavigate} linkRef={i === 0 ? firstLinkRef : undefined}/></li>
+          ))}
+        </ul>
+        <div className="nav-label" id="nav-account">Account</div>
+        <ul className="nav-list" aria-labelledby="nav-account">
+          {SECTIONS.filter(s => s.group === "account").map(s => (
+            <li key={s.id}><NavLink s={s} active={section === s.id} onNavigate={onNavigate}/></li>
+          ))}
+          <li><button className="nav-item" onClick={onLogout}><Icon name="logout"/><span>Log Out</span></button></li>
+        </ul>
+        <div className="side-plan">
+          <div className="card-lbl" style={{ marginBottom:4 }}>Plan</div>
+          <div className="side-plan-name">{planName}</div>
+          {canUpgrade && <button className="panel-link" style={{ marginTop:8 }} onClick={onUpgrade}>Add Command Advisory<Icon name="arrow" size={14}/></button>}
+        </div>
+      </nav>
+    </>
+  );
+}
+
+// ─── SHARED LAYOUT PIECES ─────────────────────────────────────
+function Panel({ title, action, children, className = "", style, id }) {
+  return (
+    <section className={`panel ${className}`} style={style} id={id} aria-label={typeof title === "string" ? title : undefined}>
+      {(title || action) && (
+        <div className="panel-head">
+          {title && <h2 className="panel-title">{title}</h2>}
+          {action}
+        </div>
+      )}
+      {children}
+    </section>
+  );
+}
+
+function PanelLink({ to, onNavigate, children }) {
+  return <button className="panel-link" onClick={() => onNavigate(to)}>{children}<Icon name="arrow" size={14}/></button>;
+}
+
+function PageHead({ title, meta, children }) {
+  return (
+    <div className="page-head">
+      <div style={{ minWidth:0 }}>
+        <h1 className="page-h1">{title}</h1>
+        {meta && <div className="page-meta">{meta}</div>}
+      </div>
+      {children && <div className="page-actions">{children}</div>}
+    </div>
+  );
+}
+
+function ReserveModeToggle({ mode, setMode }) {
+  return (
+    <div className="mode-pills" role="group" aria-label="Reserve mode"
+      title="Safe holds back 30% for tax and 20% as a safety buffer; Growth holds back 25% and 10%.">
+      <button className={`mpill${mode === "safe" ? " on" : ""}`} aria-pressed={mode === "safe"} onClick={() => setMode("safe")}>Safe</button>
+      <button className={`mpill${mode === "growth" ? " on" : ""}`} aria-pressed={mode === "growth"} onClick={() => setMode("growth")}>Growth</button>
+    </div>
+  );
+}
+
+function KpiTile({ t, hero = false }) {
+  const sev = t.sev ? SEVERITY_STYLE[t.sev] : null;
+  return (
+    <div className={`kpi${hero ? " kpi-lead" : ""}`} style={sev ? { "--sev":sev.color } : undefined} title={t.title}>
+      <div className="kpi-lbl"><span>{t.lbl}</span>{t.sev && <SeverityTag level={t.sev} label={t.sevLabel}/>}</div>
+      <div className="kpi-val" style={{ color:t.col || C.cream }}>
+        {t.val}{t.unit && <span className="kpi-unit">{t.unit}</span>}
+      </div>
+      {t.sub && <div className="kpi-sub">{t.sub}</div>}
+      <ConfidenceLine c={t.conf}/>
+    </div>
+  );
+}
+
+const capitalize = s => s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
+
+// ─── DASHBOARD (the signed-in workspace) ──────────────────────
+// Holds all data loading and every derived metric once, then renders the
+// section the URL names. Sections receive one `ctx` object rather than
+// re-deriving anything, so a number shown on two pages can never disagree.
+function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProfileChange }) {
+  const [section, navigate] = useSection();
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [mobileSearchOpen, setMobileSearchOpen] = useState(false);
+  const searchRef = useRef(null);
+  const menuBtnRef = useRef(null);
+  const firstNavRef = useRef(null);
+
+  // Reserve mode is a per-device preference, so it lives in localStorage;
+  // the page works the same if storage is unavailable.
+  const [mode, setModeState] = useState(() => {
+    try { return window.localStorage.getItem("cl.reserveMode") === "growth" ? "growth" : "safe"; } catch { return "safe"; }
+  });
+  const setMode = m => { setModeState(m); try { window.localStorage.setItem("cl.reserveMode", m); } catch { /* storage unavailable */ } };
+
   const [data, setData] = useState(null);
   const [dataSource, setDataSource]   = useState("");
-  const [detectedCols, setDetectedCols] = useState([]);
   // Financial Memory Engine — persisted transaction history, read fresh on
   // every load and every period-filter change. Nothing here is computed
   // client-side and stored back; `history` is raw monthly aggregates only.
+  const [txns, setTxns] = useState([]);
   const [history, setHistory] = useState([]);
   const [lastTxnDate, setLastTxnDate] = useState(null);
   const [concentrationData, setConcentrationData] = useState(null);
   const [obligations, setObligations] = useState([]);
   const [affordInput, setAffordInput] = useState("");
-  const [affordResult, setAffordResult] = useState(null);
+  // The amount last checked. The answer is recomputed from it on every
+  // render, so it can never go stale when the cash balance or period changes.
+  const [affordAmount, setAffordAmount] = useState(null);
   // Decision Log — every directive issued, whether it was acted on, and
   // what happened to its target metric afterward. Newest first.
   const [directives, setDirectives] = useState([]);
@@ -1219,18 +1768,6 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic }) {
   // One place for a save/delete that failed, so a click that did nothing
   // says so instead of looking like it worked.
   const [actionErr, setActionErr] = useState("");
-  // Mobile-only: the sidebar (the app's only home for plan/sign-out) is
-  // hidden below 960px, so those actions move into this topbar menu.
-  const [accountMenuOpen, setAccountMenuOpen] = useState(false);
-
-  // Escape closes the mobile account menu. Without it the only way to dismiss
-  // the menu is clicking the backdrop, which a keyboard user cannot do.
-  useEffect(() => {
-    if (!accountMenuOpen) return;
-    const onKey = e => { if (e.key === "Escape") setAccountMenuOpen(false); };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [accountMenuOpen]);
   const [batches, setBatches] = useState([]);
   const [periodFilter, setPeriodFilter] = useState("12");
   const [historyLoading, setHistoryLoading] = useState(true);
@@ -1240,6 +1777,10 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic }) {
   const [aiRec,    setAiRec]    = useState(null);
   const [aiError,  setAiError]  = useState("");
   const [aiLoad,   setAiLoad]   = useState(false);
+  // Transactions page filters; the header search sets txQuery.
+  const [txQuery, setTxQuery] = useState("");
+  const [txDirection, setTxDirection] = useState("all");
+  const [txLimit, setTxLimit] = useState(100);
   // Manual input state
   const [mRev,  setMRev]  = useState(0);
   const [mExp,  setMExp]  = useState(0);
@@ -1259,6 +1800,40 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic }) {
   const userName  = profile?.name || user?.user_metadata?.full_name || user?.email?.split("@")[0] || "Founder";
   const userAvatar = user?.user_metadata?.avatar_url;
 
+  // ── Shell behaviour ──
+  const closeDrawer = useCallback(() => setDrawerOpen(false), []);
+  const go = useCallback(id => { setDrawerOpen(false); setMobileSearchOpen(false); navigate(id); }, [navigate]);
+  const showTransactions = useCallback(q => { setTxQuery(q); setTxLimit(100); go("transactions"); }, [go]);
+  const closeMobileSearch = useCallback(() => setMobileSearchOpen(false), []);
+  const logout = () => { window.history.replaceState(null, "", "/"); onLogout(); };
+
+  // The drawer: Escape closes it and returns focus to the menu button, the
+  // first link takes focus when it opens, and the page behind stops scrolling.
+  useEffect(() => {
+    if (!drawerOpen) return;
+    firstNavRef.current?.focus();
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const onKey = e => { if (e.key === "Escape") { setDrawerOpen(false); menuBtnRef.current?.focus(); } };
+    document.addEventListener("keydown", onKey);
+    return () => { document.body.style.overflow = prev; document.removeEventListener("keydown", onKey); };
+  }, [drawerOpen]);
+
+  // Ctrl/Cmd+K focuses search from anywhere in the workspace.
+  useEffect(() => {
+    const onKey = e => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setMobileSearchOpen(true);
+        setTimeout(() => searchRef.current?.focus(), 0);
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, []);
+  useEffect(() => { if (mobileSearchOpen) searchRef.current?.focus(); }, [mobileSearchOpen]);
+
+  // ── Data loading ──
   const periodCutoff = useCallback(() => {
     if (periodFilter === "all") return null;
     const d = new Date();
@@ -1272,21 +1847,26 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic }) {
       // `description` is fetched alongside the aggregates so real revenue
       // concentration can be computed from payer names — that only exists
       // at the transaction level, never in a monthly bucket.
-      let query = supabase.from("transactions").select("txn_date, amount, category, description").order("txn_date", { ascending: true });
       const cutoff = periodCutoff();
-      if (cutoff) query = query.gte("txn_date", cutoff);
-      const { data: txns, error } = await query;
-      if (error) throw error;
-      setHistory(aggregateTransactionsByMonth(txns || []));
-      setConcentrationData(computeRevenueConcentration(txns || []));
+      const list = await selectAll(() => {
+        let query = supabase.from("transactions").select("id, txn_date, amount, category, description")
+          .order("txn_date", { ascending: true }).order("id", { ascending: true });
+        if (cutoff) query = query.gte("txn_date", cutoff);
+        return query;
+      });
+      setTxns(list);
+      setHistory(aggregateTransactionsByMonth(list));
+      setConcentrationData(computeRevenueConcentration(list));
       // Ascending order, so the last row is the most recent real transaction —
       // this is what the confidence model's recency check degrades against.
-      setLastTxnDate(txns && txns.length > 0 ? txns[txns.length - 1].txn_date : null);
+      setLastTxnDate(list.length > 0 ? list[list.length - 1].txn_date : null);
     } catch (e) {
       console.error("Failed to load transaction history:", e);
+      setTxns([]);
       setHistory([]);
       setConcentrationData(computeRevenueConcentration([]));
       setLastTxnDate(null);
+      setActionErr("Your transaction history could not be loaded. Refresh to try again.");
     }
     setHistoryLoading(false);
   }, [periodCutoff]);
@@ -1298,14 +1878,14 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic }) {
   }, []);
 
   // Recurring-obligation detection always runs over the founder's FULL
-  // transaction history, independent of the dashboard's period filter —
-  // a quarterly or annual obligation can't be reliably detected from a
-  // 3-month window even if that's what's currently selected for display.
+  // transaction history, independent of the period filter — a quarterly or
+  // annual obligation can't be reliably detected from a 3-month window even
+  // if that's what's currently selected for display.
   const loadObligations = useCallback(async () => {
     try {
-      const { data: txns, error } = await supabase.from("transactions").select("txn_date, amount, description, category").order("txn_date", { ascending: true });
-      if (error) throw error;
-      const detected = detectRecurringObligations(txns || []);
+      const all = await selectAll(() => supabase.from("transactions").select("txn_date, amount, description, category")
+        .order("txn_date", { ascending: true }).order("id", { ascending: true }));
+      const detected = detectRecurringObligations(all);
 
       // If this read fails, every obligation the founder marked as ended
       // would look unseen and be upserted back to active — so it must throw.
@@ -1365,7 +1945,7 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic }) {
   useEffect(() => { loadDirectives(); }, [loadDirectives]);
 
   const handleDataLoaded = async (parsedRows, source, cols, rawText) => {
-    setData(parsedRows); setDataSource(source); setDetectedCols(cols); setTab("overview");
+    setData(parsedRows); setDataSource(source);
     setUploadStatus(""); setUploadErr(""); setUploadBusy(true);
     try {
       const parsed = parseTransactions(rawText);
@@ -1412,7 +1992,7 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic }) {
       await loadObligations();
     } catch (e) {
       console.error("Failed to save transaction history:", e);
-      setUploadErr("Your file was read for this session, but saving it to your permanent history failed. The numbers below are accurate for now — try re-uploading to save them.");
+      setUploadErr("Your file was read for this session, but saving it to your permanent history failed. The numbers are accurate for now — try re-uploading to save them.");
     }
     setUploadBusy(false);
   };
@@ -1423,28 +2003,28 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic }) {
     await loadHistory(); await loadBatches(); await loadObligations();
   };
 
+  // ── Metrics ──
   // Persisted history is the source of truth once it exists; a fresh
   // upload's session-only `data` is only shown as an optimistic bridge
   // until loadHistory() catches up. Manual entry never touches either.
   const rows = history.length > 0 ? history : (data && data.length > 0 ? data : null);
-  const {
-    tr, sr, latest, prev, totRev, totExp, totCogs, totMkt, totL, totC,
-    activeCash, activeCac, activeLtv, n, totPro, margin, vel, conv, ltvcac,
-    cogsRatio, mktRatio, sov, sovLbl, taxV, safV, free, avgExp, burnMonths,
-    hiringCapacity, concentration, concentrationReliable, breakEven, proj90, hasData,
-    hasConversionData, cashFlowPositive, dataConfidence, growth, risk, trends,
-    hasCashData, hasUnitEconomicsData, runwayConfidence, breakEvenConfidence,
-    proj90Confidence, hiringCapacityConfidence, ltvcacConfidence, growthConfidence,
-    seasonalPattern, trajectory, historicalConfidence, founderNarrative,
-  } = computeMetrics(
+  const m = computeMetrics(
     rows, { mRev, mExp, mCash, mCac, mLtv, mLeads, mClose }, mode,
     { lastTxnDate: history.length > 0 ? lastTxnDate : null, revenueConcentration: concentrationData }
   );
+  const {
+    tr, sr, latest, totRev, totExp, totCogs, activeCash, activeCac, activeLtv, n, totPro, margin, vel, conv, ltvcac,
+    cogsRatio, mktRatio, sov, sovLbl, taxV, safV, free, avgRev, avgExp, burnMonths, hiringCapacity,
+    concentration, concentrationReliable, breakEven, proj90, hasData, hasConversionData, cashFlowPositive,
+    dataConfidence, growth, risk, trends, hasCashData, runwayConfidence, breakEvenConfidence, proj90Confidence,
+    hiringCapacityConfidence, ltvcacConfidence, growthConfidence, seasonalPattern, historicalConfidence, founderNarrative,
+  } = m;
   const metrics = { margin, vel, conv, sov, free, burnMonths, concentration, concentrationReliable, ltvcac, cashFlowPositive, n };
 
   const todayStr = new Date().toISOString().slice(0, 10);
   const activeObligations = obligations.filter(o => o.active !== false);
   const missedObligations = detectMissedObligations(activeObligations, todayStr);
+  const upcoming = projectForwardCalendar(activeObligations, todayStr, 90);
 
   // Obligation-aware runway: real, dated obligations against current cash,
   // instead of a single flat average-burn rate — only meaningful once
@@ -1462,34 +2042,25 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic }) {
 
   const checkAfford = () => {
     const monthlyCost = Number(affordInput);
-    if (!monthlyCost || monthlyCost <= 0) { setAffordResult(null); return; }
-    setAffordResult(checkAffordability({ currentCash: activeCash, avgRev, avgExp, obligations: activeObligations, monthlyCost, fromDate: todayStr }));
+    setAffordAmount(monthlyCost > 0 ? monthlyCost : null);
   };
+  const affordResult = affordAmount
+    ? checkAffordability({ currentCash: activeCash, avgRev, avgExp, obligations: activeObligations, monthlyCost: affordAmount, fromDate: todayStr })
+    : null;
 
   const scenario = runScenario(
     { revenue: latest.revenue, expenses: latest.expenses, cash: activeCash, cac: activeCac, ltv: activeLtv, leads: 0, closures: 0 },
     { revenuePct: scRevPct, expensePct: scExpPct, expenseDelta: scHire, cashDelta: scCash },
     mode
   );
-
   // A scenario with no cash balance has no runway to state; printing its
   // burnMonths showed a negative number of months.
-  const scenarioRunway = m => m.cashFlowPositive ? "No burn" : m.runwayConfidence.shown ? `${safe(m.burnMonths).toFixed(1)}mo runway` : "--- (no cash entered)";
+  const scenarioRunway = s => s.cashFlowPositive ? "No burn" : s.runwayConfidence.shown ? `${safe(s.burnMonths).toFixed(1)}mo runway` : "--- (no cash entered)";
 
-  const alert = (() => {
-    if (!hasData) return { t:"info", msg:"Connect your financial data in the Data tab to activate your command center." };
-    if (safe(free) < 0) return { t:"crit", msg:"True Free Cash is negative. Overhead exceeds liquidity after obligations. Cut costs before next cycle." };
-    if (safe(burnMonths) > 0 && safe(burnMonths) < 3) return { t:"crit", msg:`Runway is ${safe(burnMonths).toFixed(1)} months. Below the 3-month danger threshold. Protect cash immediately.` };
-    if (concentrationReliable && safe(concentration) > 60) return { t:"warn", msg:`${pc(concentration)} of revenue comes from your single largest client. Losing that client would collapse your revenue.` };
-    if (safe(ltvcac) > 0 && safe(ltvcac) < 3) return { t:"warn", msg:`LTV:CAC at ${safe(ltvcac).toFixed(1)}x. Below the 3x minimum. Fix unit economics before scaling acquisition spend.` };
-    if (safe(margin) > 40 && safe(conv) > 20) return { t:"ok", msg:"Margin and conversion both strong. You are in a deployment window. Increase lead volume now." };
-    return { t:"info", msg:"Foundation stable. Maintain velocity and watch your runway." };
-  })();
-
-  // ─── DECISION LOG ────────────────────────────────────────────
-  // A directive nobody follows up on is a tool, not an advisor. This
-  // computes the same directive Directive renders, so what's persisted
-  // and what's shown can never disagree.
+  // ── Decision log ──
+  // A directive nobody follows up on is a tool, not an advisor. This is the
+  // same directive the strip renders, so what's persisted and what's shown
+  // can never disagree.
   const currentDirective = hasData
     ? computeDirective({ margin, burnMonths, free, vel, conv, ltvcac, months: n, concentration: concentrationData })
     : null;
@@ -1515,7 +2086,8 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic }) {
         metric_at_issue: value,
         snapshot: metrics,
       }).select().single();
-      if (!error && inserted) setDirectives(ds => [inserted, ...ds]);
+      if (error) console.error("Failed to record directive:", error);
+      else if (inserted) setDirectives(ds => [inserted, ...ds]);
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentDirective?.text, currentDirective?.rule, directivesLoading, directivesError]);
@@ -1537,7 +2109,8 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic }) {
         if (value === null) continue;
         const patch = { outcome_metric: value, outcome_at: new Date().toISOString() };
         const { error } = await supabase.from("directives").update(patch).eq("id", d.id);
-        if (!error) setDirectives(ds => ds.map(x => x.id === d.id ? { ...x, ...patch } : x));
+        if (error) console.error("Failed to record directive outcome:", error);
+        else setDirectives(ds => ds.map(x => x.id === d.id ? { ...x, ...patch } : x));
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1547,6 +2120,12 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic }) {
   const needsAcknowledgement = !!(latestDirective && !latestDirective.acknowledged_at &&
     (Date.now() - new Date(latestDirective.issued_at).getTime()) >= 7 * 86400000);
 
+  const alerts = buildAlerts({
+    hasData: hasData || historyLoading, missedObligations, currentDirective, needsAcknowledgement, latestDirective,
+    lastTxnDate: history.length > 0 ? lastTxnDate : null, today: todayStr, showForwardRunway, forwardRunway, directives,
+  });
+
+  // ── AI advisor ──
   const runAI = async () => {
     setAiLoad(true); setAiRec(null); setAiError("");
     // Aggregate expense categories from uploaded bank data if available
@@ -1621,14 +2200,14 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic }) {
           // bills against current cash) alongside the flat average-burn
           // figure above — null when no obligations have been detected yet.
           forwardCalendar: activeObligations.length > 0 ? {
-            weeklyTotals: summarizeCalendarByWeek(projectForwardCalendar(activeObligations, todayStr, 90), todayStr, 90)
+            weeklyTotals: summarizeCalendarByWeek(upcoming, todayStr, 90)
               .map(w => ({ weekStart: w.weekStart, total: Math.round(w.total) })),
             obligationAwareRunway: forwardRunway ? {
               crossesZero: forwardRunway.crossesZero,
               monthsUntilCross: forwardRunway.monthsUntilCross,
               crossDate: forwardRunway.crossDate,
             } : null,
-            missedObligations: missedObligations.map(m => ({ label: m.label, daysPast: m.daysPast })),
+            missedObligations: missedObligations.map(o => ({ label: o.label, daysPast: o.daysPast })),
             committedCosts: activeObligations.slice(0, 10).map(o => ({
               label: o.label, cadence: o.cadence, typicalAmount: o.typical_amount,
               nextExpected: o.next_expected, confidence: o.confidence,
@@ -1672,750 +2251,1009 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic }) {
     setAiLoad(false);
   };
 
-  const navItems = [
-    { id:"overview",  label:"Overview",    locked:false },
-    { id:"advisor",   label:"AI Advisor",  locked:false },
-    { id:"scenarios", label:"Scenarios",   locked:false },
-    { id:"data",      label:"Connect Data",locked:false },
+  // ── Presentation helpers shared by sections ──
+  const periodLabel = periodLabelOf(periodFilter);
+  const statusLine = !hasData
+    ? (historyLoading ? "Loading your history" : "No data connected")
+    : [
+        history.length > 0 ? `${txns.length.toLocaleString()} transactions` : (dataSource || "Manual entry"),
+        history.length > 0 ? periodLabel : null,
+        `${capitalize(dataConfidence)} confidence`,
+      ].filter(Boolean).join(" · ");
+
+  const runwayText = cashFlowPositive ? "No burn" : (runwayConfidence.shown && burnMonths > 0) ? `${safe(burnMonths).toFixed(1)} mo` : "---";
+
+  // KPI tiles. The first tile is chosen by severity, not fixed by position —
+  // when free cash or runway turns critical, that is what leads the row.
+  const tiles = {
+    revenue: { key:"revenue", lbl:"Monthly revenue", val:fmtCompact(latest.revenue), title:fmt(latest.revenue),
+      sub:`${vel >= 0 ? "+" : ""}${pc(vel)} vs prior month`, col:C.cream },
+    margin:  { key:"margin", lbl:"Profit margin", val:pc(margin), col: margin > 0 ? C.green : C.red,
+      sub:`${fmtCompact(totPro)} net in period` },
+    free:    { key:"free", lbl:"True free cash", val:fmtCompact(free), title:fmt(free), col: free >= 0 ? C.gold : C.red,
+      sub:"After tax and safety reserves" },
+    runway:  { key:"runway", lbl:"Runway", val:runwayText, conf:runwayConfidence,
+      col: cashFlowPositive || burnMonths >= 6 ? C.green : burnMonths >= 3 ? C.amber : runwayText === "---" ? C.inkDim : C.red,
+      sub: cashFlowPositive ? "Revenue covers costs" : !runwayConfidence.shown ? "Add a cash balance to calculate" : burnMonths >= 6 ? "Above the 6-month threshold" : burnMonths >= 3 ? "Build toward 6 months" : "Below 3 months" },
+    risk:    { key:"risk", lbl:"Risk score", val:risk.score.toFixed(0), unit:"/100",
+      col: risk.label === "Low" ? C.green : risk.label === "Watch" ? C.gold : risk.label === "Elevated" ? C.amber : C.red,
+      sub:`${risk.label}. Weighted from runway, margin and trend` },
+    hiring:  { key:"hiring", lbl:"Hiring capacity", conf:hiringCapacityConfidence,
+      val: !hiringCapacityConfidence.shown ? "---" : hiringCapacity > 0 ? fmtCompact(hiringCapacity) : "None",
+      unit: hiringCapacityConfidence.shown && hiringCapacity > 0 ? "/mo" : null, title: fmt(hiringCapacity),
+      col: hiringCapacity > 0 ? C.green : C.amber,
+      sub: hiringCapacity > 0 ? "Fully-loaded cost profit covers" : "Costs exceed revenue on average" },
+  };
+  const hero = safe(free) < 0
+    ? { ...tiles.free, sev:"critical", sub:"Overhead exceeds liquidity after reserves. Act on this first." }
+    : (!cashFlowPositive && runwayConfidence.shown && safe(burnMonths) > 0 && safe(burnMonths) < 3)
+      ? { ...tiles.runway, sev:"critical", sub:"Below the 3-month danger line. Protect cash now." }
+      : (!cashFlowPositive && runwayConfidence.shown && safe(burnMonths) > 0 && safe(burnMonths) < 6)
+        ? { ...tiles.runway, sev:"warning", sub:"Below the 6-month safety line. Build it back." }
+        : { ...tiles.revenue, sev:"positive", sub:`${vel >= 0 ? "+" : ""}${pc(vel)} vs prior month. Stable enough to grow, not defend.` };
+  const supporting = ["revenue","margin","free","runway","risk","hiring"].filter(k => k !== hero.key).map(k => tiles[k]);
+
+  const reportSummary = [
+    ["Latest month revenue", fmt(latest.revenue)],
+    ["Profit margin", pc(margin)],
+    ["Net profit", fmt(totPro)],
+    ["True free cash", fmt(free)],
+    ["Runway", cashFlowPositive ? "No burn" : runwayConfidence.shown && burnMonths > 0 ? `${safe(burnMonths).toFixed(1)} months` : "Not enough data"],
+    ["Break-even monthly revenue", breakEvenConfidence.shown && breakEven > 0 ? fmt(breakEven) : "Not enough data"],
+    ["90-day revenue projection", proj90Confidence.shown && proj90 > 0 ? fmt(proj90) : "Not enough data"],
+    ["Hiring capacity", hiringCapacityConfidence.shown ? (hiringCapacity > 0 ? `${fmt(hiringCapacity)}/month` : "None from profit") : "Not enough data"],
+    ["Risk score", `${risk.score.toFixed(0)}/100 (${risk.label})`],
+    ["Growth score", `${growth.score.toFixed(0)}/100 (${growth.label})`],
+    ["Largest client share", concentrationData?.shown ? pc(concentrationData.largestPct) : "Not enough data"],
+    ["Data confidence", capitalize(dataConfidence)],
+    ["Reserve mode", mode === "safe" ? "Safe (30% tax, 20% safety)" : "Growth (25% tax, 10% safety)"],
   ];
 
-  return (
-    <div className="dash">
-      <aside className="sidebar">
-        <div className="sidebar-logo">
-          <div className="logomark">C</div>
-          <div><div className="wordmark" style={{ fontSize:15 }}>Command Ledger</div><div className="wordmark-sub">Financial Intelligence</div></div>
-        </div>
-        <nav className="sb-nav">
-          <div className="sb-sec">Navigation</div>
-          {navItems.map(n => (
-            <div key={n.id} className={`sb-item${tab===n.id?" on":""}${n.locked?" locked":""}`}
-              aria-current={tab===n.id ? "page" : undefined}
-              {...clickableProps(() => setTab(n.id), { disabled:n.locked })}>
-              <span className="sb-icon" style={{ fontFamily:"'JetBrains Mono',monospace", fontSize:10, color:tab===n.id?C.gold:C.goldDim }}>#</span>
-              {n.label}
-              {n.locked && <span style={{ fontSize:10, marginLeft:"auto", opacity:0.5 }}>Pro+</span>}
-            </div>
-          ))}
-          <div className="sb-sec" style={{ marginTop:8 }}>Plan</div>
-          <div className="sb-item" style={{ color:plan==="advisory"?C.gold:C.blue, cursor:"default" }}>
-            <span style={{ fontSize:10, marginRight:4, fontFamily:"'JetBrains Mono',monospace" }}>-</span>
-            {PLANS[plan].name}
-          </div>
-          {plan === "software" && (
-            <div className="sb-item" style={{ color:C.gold }} {...clickableProps(onUpgrade)}>
-              <span style={{ fontSize:10, marginRight:4, fontFamily:"'JetBrains Mono',monospace" }}>+</span>Add Advisory
-            </div>
-          )}
-          <div className="sb-sec" style={{ marginTop:8 }}>Account</div>
-          <div className="sb-item" {...clickableProps(onLogout)}>
-            <span style={{ fontSize:10, marginRight:4, color:C.inkDim, fontFamily:"'JetBrains Mono',monospace" }}>-</span>Sign Out
-          </div>
-        </nav>
-        <div className="sb-foot">
-          <div className="sb-user">
-            <div className="sb-av">{userAvatar ? <img src={userAvatar} alt=""/> : userName[0]?.toUpperCase()}</div>
-            <div><div className="sb-name">{userName}</div><div className="sb-plan">{PLANS[plan].name}</div></div>
-          </div>
-        </div>
-      </aside>
+  const ctx = {
+    user, profile, plan, userName, onUpgrade, onBuyDiagnostic, onProfileChange, go, mode, setMode,
+    rows, txns, history, historyLoading, batches, dataSource, statusLine, periodLabel, todayStr,
+    m, metrics, hero, supporting, tiles, runwayText, concentrationData, obligations, activeObligations, missedObligations, upcoming,
+    forwardRunway, showForwardRunway, currentDirective, directives, directivesLoading, latestDirective, needsAcknowledgement,
+    ackNote, setAckNote, acknowledgeDirective, setObligationActive,
+    affordInput, setAffordInput, setAffordAmount, affordResult, checkAfford,
+    scenario, scenarioRunway, scRevPct, setScRevPct, scExpPct, setScExpPct, scHire, setScHire, scCash, setScCash,
+    manual: { mRev, setMRev, mExp, setMExp, mCash, setMCash, mCac, setMCac, mLtv, setMLtv, mLeads, setMLeads, mClose, setMClose },
+    handleDataLoaded, uploadBusy, uploadStatus, uploadErr, deleteBatch,
+    txQuery, setTxQuery, txDirection, setTxDirection, txLimit, setTxLimit,
+    aiRec, aiError, aiLoad, runAI, reportSummary,
+    tr, sr, taxV, safV, hasConversionData, sov, sovLbl, activeCac, activeLtv, cogsRatio, mktRatio,
+    seasonalPattern, historicalConfidence, founderNarrative, growth, growthConfidence, risk, trends,
+  };
 
-      <header className="topbar">
-        <div className="breadcrumb">Command Ledger / <span>{tab==="data"?"Connect Data":tab==="advisor"?"AI Advisor":tab==="scenarios"?"Scenarios":PLANS[plan].name}</span></div>
-        <div className="tb-right">
-          <div className="live-badge" title={hasData ? `Data confidence: ${dataConfidence} (${dataConfidence==="low"?"single manual entry, no history":dataConfidence==="medium"?"uploaded data, under 3 months":"uploaded data, 3+ months"})` : ""}>
-            <div className="live-dot" style={{ background:hasData?C.green:C.amber, boxShadow:`0 0 8px ${hasData?C.green:C.amber}` }}/>
-            <span style={{ color:hasData?C.green:C.amber }}>{hasData ? `Live - ${dataSource||"Manual Input"} - ${dataConfidence[0].toUpperCase()}${dataConfidence.slice(1)} confidence` : "No data"}</span>
-          </div>
-          <div className="mode-pills">
-            <button className={`mpill${mode==="safe"?" on":""}`} onClick={() => setMode("safe")}>Safe</button>
-            <button className={`mpill${mode==="growth"?" on":""}`} onClick={() => setMode("growth")}>Growth</button>
-          </div>
-          {/* Mobile only (see .dash-account-wrap) — the sidebar carrying
-              plan/upgrade/sign-out disappears below 960px, so those
-              actions live here instead of vanishing with it. */}
-          <div className="dash-account-wrap">
-            <button className="dash-account-btn" onClick={() => setAccountMenuOpen(o => !o)} aria-label="Account menu" aria-expanded={accountMenuOpen} aria-haspopup="true">
-              {userAvatar ? <img src={userAvatar} alt=""/> : userName[0]?.toUpperCase()}
-            </button>
-            {accountMenuOpen && (
-              <>
-                <div style={{ position:"fixed", inset:0, zIndex:240 }} onClick={() => setAccountMenuOpen(false)}/>
-                <div className="dash-account-menu" role="menu">
-                  <div className="dash-account-menu-item" style={{ cursor:"default", color:C.cream, fontWeight:600 }}>{userName}</div>
-                  <div className="dash-account-menu-item" style={{ cursor:"default", color: plan==="advisory"?C.gold:C.blue }}>{PLANS[plan].name}</div>
-                  {plan === "software" && (
-                    <div className="dash-account-menu-item" style={{ color:C.gold }} role="menuitem" tabIndex={0}
-                      onClick={() => { setAccountMenuOpen(false); onUpgrade(); }}
-                      onKeyDown={e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setAccountMenuOpen(false); onUpgrade(); } }}>
-                      Add Advisory
-                    </div>
-                  )}
-                  <div className="dash-account-menu-item" role="menuitem" tabIndex={0}
-                    onClick={() => { setAccountMenuOpen(false); onLogout(); }}
-                    onKeyDown={e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setAccountMenuOpen(false); onLogout(); } }}>
-                    Sign Out
-                  </div>
-                </div>
-              </>
-            )}
-          </div>
+  const current = sectionById(section);
+  const groupLabel = current.group === "account" ? "Account" : "Workspace";
+
+  return (
+    <div className="app">
+      <a className="skip-link" href="#app-main">Skip to content</a>
+      <header className="app-header">
+        <button ref={menuBtnRef} className="hdr-icon-btn hdr-menu" aria-label={drawerOpen ? "Close navigation" : "Open navigation"}
+          aria-expanded={drawerOpen} aria-controls="app-nav" onClick={() => setDrawerOpen(o => !o)}>
+          <Icon name={drawerOpen ? "close" : "menu"}/>
+        </button>
+        <a className="app-brand" href="/dashboard" onClick={e => { e.preventDefault(); go("dashboard"); }} aria-label="Command Ledger dashboard">
+          <div className="logomark">C</div>
+          <div className="app-brand-txt"><div className="wordmark">Command Ledger</div><div className="wordmark-sub">Financial Intelligence</div></div>
+        </a>
+        <div className="app-crumb" aria-label="Breadcrumb">{groupLabel} <span aria-hidden="true">/</span> <b>{current.label}</b></div>
+        <HeaderSearch transactions={txns} onNavigate={go} onShowTransactions={showTransactions}
+          mobileOpen={mobileSearchOpen} onMobileClose={closeMobileSearch} inputRef={searchRef}/>
+        <div className="hdr-tools">
+          <button className="hdr-icon-btn hdr-search-toggle" aria-label="Search" onClick={() => setMobileSearchOpen(true)}><Icon name="search"/></button>
+          <label className="hdr-period">
+            <span className="sr-only">Reporting period</span>
+            <select className="hdr-select" value={periodFilter} onChange={e => setPeriodFilter(e.target.value)}
+              title="Reporting period for uploaded history">
+              {PERIOD_OPTIONS.map(([v, long, short]) => <option key={v} value={v} data-short={short}>{long}</option>)}
+            </select>
+          </label>
+          <AlertsMenu alerts={alerts} onNavigate={go}/>
+          <AccountMenu name={userName} role={`Owner · ${PLANS[plan].name}`} avatar={userAvatar} email={user?.email}
+            canUpgrade={plan === "software"} onNavigate={go} onUpgrade={onUpgrade} onLogout={logout}/>
         </div>
       </header>
 
-      <main className="dash-body">
+      <AppSidebar section={section} onNavigate={go} onLogout={logout} open={drawerOpen} onClose={closeDrawer}
+        planName={PLANS[plan].name} canUpgrade={plan === "software"} onUpgrade={onUpgrade} firstLinkRef={firstNavRef}/>
+
+      <main id="app-main" className="app-main" tabIndex={-1}>
         {actionErr && (
           <div className="d-alert crit" role="alert" style={{ justifyContent:"space-between", alignItems:"center" }}>
             <span>{actionErr}</span>
             <button className="modal-x" aria-label="Dismiss" onClick={() => setActionErr("")}>×</button>
           </div>
         )}
-
-        {tab === "data" && (
-          <>
-            <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:28, fontWeight:300, color:C.cream }}>Connect Your Data</div>
-            <div className="card">
-              <div className="card-sec">Upload File or Sync Google Sheet</div>
-              <DataUpload
-                hasData={!!rows}
-                onDataLoaded={handleDataLoaded}
-              />
-              {uploadBusy && (
-                <div style={{ marginTop:14, display:"flex", alignItems:"center", gap:10, fontSize:12, color:C.inkDim, fontFamily:"'JetBrains Mono',monospace" }}>
-                  <span className="spinner"/>Saving to your transaction history...
-                </div>
-              )}
-              {!uploadBusy && uploadStatus && <div className="d-alert ok" style={{ marginTop:14 }}>{uploadStatus}</div>}
-              {!uploadBusy && uploadErr && <div className="d-alert warn" style={{ marginTop:14 }}>{uploadErr}</div>}
-            </div>
-
-            <div className="card">
-              <div className="card-sec">Upload History</div>
-              {batches.length === 0 ? (
-                <div style={{ fontSize:12, color:C.inkDim, fontFamily:"'Cormorant Garamond',serif" }}>No files uploaded yet. Every upload you make is listed here, with exactly how many transactions it added versus how many were already on file.</div>
-              ) : (
-                <div style={{ display:"flex", flexDirection:"column", gap:2 }}>
-                  {batches.map(b => (
-                    <div key={b.id} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:12, padding:"12px 0", borderBottom:`1px solid ${C.border}` }}>
-                      <div>
-                        <div style={{ fontSize:12.5, color:C.cream }}>{b.filename || "Untitled upload"}</div>
-                        <div style={{ fontSize:10.5, color:C.inkDim, fontFamily:"'JetBrains Mono',monospace", marginTop:2 }}>
-                          {new Date(b.uploaded_at).toLocaleDateString()} · {b.period_start} to {b.period_end} · {b.inserted_count ?? "—"} added, {b.duplicate_count ?? "—"} duplicate
-                        </div>
-                      </div>
-                      <button className="modal-x" title="Delete this upload and its transactions" aria-label={`Delete upload ${b.filename || "Untitled upload"}`}
-                        onClick={() => { if (window.confirm(`Delete "${b.filename}" and every transaction it added? This cannot be undone.`)) deleteBatch(b.id); }}>
-                        ×
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            <div className="card">
-              <div className="card-sec">Or Enter Numbers Manually</div>
-              <div style={{ fontSize:13, color:C.ink, fontFamily:"'Cormorant Garamond',serif", lineHeight:1.7, marginBottom:20 }}>
-                No file ready? Enter this month's numbers below. Your dashboard updates in real time.
-              </div>
-              <div className="input-grid">
-                {[
-                  { lbl:"Monthly Revenue ($)",        v:mRev,   s:setMRev },
-                  { lbl:"Monthly Expenses ($)",        v:mExp,   s:setMExp },
-                  { lbl:"Cash Balance ($)",            v:mCash,  s:setMCash },
-                  { lbl:"Customer Acquisition Cost ($)",v:mCac,  s:setMCac },
-                  { lbl:"Customer Lifetime Value ($)", v:mLtv,  s:setMLtv },
-                  { lbl:"Leads This Month",            v:mLeads, s:setMLeads },
-                  { lbl:"Deals Closed",                v:mClose, s:setMClose },
-                ].map((f, i) => (
-                  <div key={i} className="input-group">
-                    <label className="di-lbl">{f.lbl}</label>
-                    <input className="di" type="number" min="0" value={f.v} onChange={e => f.s(Math.max(0, Number(e.target.value) || 0))}/>
-                  </div>
-                ))}
-              </div>
-              {mRev > 0 && (
-                <button className="btn btn-primary" style={{ padding:"10px 24px", fontSize:11 }} onClick={() => setTab("overview")}>
-                  View My Dashboard
-                </button>
-              )}
-            </div>
-          </>
-        )}
-
-        {tab === "advisor" && (
-          <>
-            <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:28, fontWeight:300, color:C.cream }}>AI Strategic Advisor</div>
-            <div className="card" style={{ padding:0 }}>
-              <div className="ai-top">
-                <div className="ai-lbl"><div className="ai-glow"/>Command Ledger Intelligence - Powered by Claude</div>
-                <button className="ai-btn" onClick={runAI} disabled={aiLoad}>{aiLoad ? "Analyzing..." : "Generate Brief"}</button>
-              </div>
-              <div className="ai-body" style={{ padding: aiRec ? 0 : undefined }}>
-                {aiLoad ? (
-                  <div style={{ display:"flex", alignItems:"center", gap:12, color:C.inkDim, fontSize:12, fontFamily:"'JetBrains Mono',monospace", padding:"20px" }}>
-                    <div className="ai-dots"><span/><span/><span/></div>Analyzing your financial position...
-                  </div>
-                ) : aiRec ? (
-                  <AIRecommendation rec={aiRec}/>
-                ) : aiError ? (
-                  <div className="ai-txt" style={{ padding:"20px" }}>{aiError}</div>
-                ) : (
-                  <div className="ai-txt" style={{ padding:"20px" }}>Click Generate Brief to receive your personalised weekly strategic directive.</div>
-                )}
-              </div>
-            </div>
-            {!hasData && (
-              <div className="d-alert info">Connect your financial data first. The AI brief uses your real numbers, not generic advice.</div>
-            )}
-          </>
-        )}
-
-        {tab === "scenarios" && (
-          <>
-            <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:28, fontWeight:300, color:C.cream }}>Scenario Planning</div>
-            {!hasData ? (
-              <div className="d-alert info">Connect your financial data first. Scenarios are built from your real latest-month numbers.</div>
-            ) : (
-              <>
-                <div className="card">
-                  <div className="card-sec">Adjust the Assumptions</div>
-                  <div className="input-grid">
-                    <div className="input-group">
-                      <label className="di-lbl">Revenue Change (%)</label>
-                      <input className="di" type="number" value={scRevPct} onChange={e => setScRevPct(Number(e.target.value))}/>
-                    </div>
-                    <div className="input-group">
-                      <label className="di-lbl">Expense Change (%)</label>
-                      <input className="di" type="number" value={scExpPct} onChange={e => setScExpPct(Number(e.target.value))}/>
-                    </div>
-                    <div className="input-group">
-                      <label className="di-lbl">New Hire, Monthly Cost ($)</label>
-                      <input className="di" type="number" min="0" value={scHire} onChange={e => setScHire(Number(e.target.value))}/>
-                    </div>
-                    <div className="input-group">
-                      <label className="di-lbl">One-Time Cash Change ($)</label>
-                      <input className="di" type="number" value={scCash} onChange={e => setScCash(Number(e.target.value))}/>
-                    </div>
-                  </div>
-                  {(scRevPct !== 0 || scExpPct !== 0 || scHire !== 0 || scCash !== 0) && (
-                    <button className="btn btn-outline" style={{ padding:"8px 18px", fontSize:11, marginTop:16 }}
-                      onClick={() => { setScRevPct(0); setScExpPct(0); setScHire(0); setScCash(0); }}>
-                      Reset to Current
-                    </button>
-                  )}
-                  <div style={{ fontSize:11, color:C.inkDim, marginTop:14, fontFamily:"'Cormorant Garamond',serif" }}>
-                    Nothing here is saved — this recomputes your real calculation engine against a hypothetical month, purely to explore before you decide.
-                  </div>
-                </div>
-
-                <div className="card">
-                  <div className="card-sec">Before vs. After</div>
-                  <div className="kpi4" style={{ gap:16 }}>
-                    {[
-                      { lbl:"Margin", before:pc(scenario.before.margin), after:pc(scenario.after.margin), better: scenario.after.margin >= scenario.before.margin },
-                      { lbl:"True Free Cash", before:fmt(scenario.before.free), after:fmt(scenario.after.free), better: scenario.after.free >= scenario.before.free },
-                      { lbl:"Cash Position", before: scenarioRunway(scenario.before), after: scenarioRunway(scenario.after),
-                        better: scenario.after.cashFlowPositive || scenario.after.burnMonths >= scenario.before.burnMonths },
-                      { lbl:"Risk Score", before:`${scenario.before.risk.score.toFixed(0)} - ${scenario.before.risk.label}`, after:`${scenario.after.risk.score.toFixed(0)} - ${scenario.after.risk.label}`, better: scenario.after.risk.score <= scenario.before.risk.score },
-                    ].map((row, i) => (
-                      <div key={i} style={{ background:C.surfaceHigh, border:`1px solid ${C.border}`, padding:"14px 16px" }}>
-                        <div className="card-lbl">{row.lbl}</div>
-                        <div style={{ fontSize:12, color:C.inkDim, fontFamily:"'JetBrains Mono',monospace", marginTop:6 }}>{row.before}</div>
-                        <div style={{ fontSize:18, color: row.better ? C.green : C.red, fontFamily:"'JetBrains Mono',monospace", marginTop:2 }}>→ {row.after}</div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </>
-            )}
-          </>
-        )}
-
-        {tab === "overview" && (
-          <>
-            {history.length > 0 && (
-              <div style={{ display:"flex", justifyContent:"flex-end", marginBottom:-8 }}>
-                <div className="mode-pills">
-                  {[["3","3mo"],["6","6mo"],["12","12mo"],["all","All time"]].map(([val,lbl]) => (
-                    <button key={val} className={`mpill${periodFilter===val?" on":""}`} onClick={() => setPeriodFilter(val)}>{lbl}</button>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* The directive is the single most valuable output in the
-                product — it renders first, before any other message, with
-                nothing competing in its visual zone. The generic status
-                banner below only appears when there's no directive to show
-                (no data connected yet), never alongside one. */}
-            {hasData && <Directive metrics={metrics} concentration={concentrationData}/>}
-
-            {/* Only ever shown when there is nothing real to display yet:
-                the skeleton while history is still in flight, the status
-                banner once it has landed empty. A founder on manual entry
-                (or a fresh upload) has real numbers immediately, so
-                neither one may sit above their populated vitals. */}
-            {!hasData && (historyLoading
-              ? <SkeletonKPIRow/>
-              : <div className={`d-alert ${alert.t}`}>{alert.msg}</div>
-            )}
-
-            {missedObligations.length > 0 && (
-              <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
-                {missedObligations.map((m, i) => (
-                  <div key={i} className="d-alert crit">{m.message}</div>
-                ))}
-              </div>
-            )}
-
-            {needsAcknowledgement && (
-              <div className="card" style={{ borderLeft:`3px solid ${C.gold}` }}>
-                <div className="card-sec">Did you act on this?</div>
-                <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:15, color:C.cream, marginBottom:14, lineHeight:1.5 }}>
-                  Last directive ({new Date(latestDirective.issued_at).toLocaleDateString()}): "{latestDirective.directive_text}"
-                </div>
-                <div style={{ display:"flex", gap:8, flexWrap:"wrap", marginBottom:10 }}>
-                  {[["acted","Acted"],["partially","Partially"],["ignored","Ignored"],["disagreed","I disagreed"]].map(([val,lbl]) => (
-                    <button key={val} className="btn btn-primary" style={{ fontSize:11, padding:"8px 16px" }}
-                      onClick={() => acknowledgeDirective(latestDirective.id, val)}>{lbl}</button>
-                  ))}
-                </div>
-                <textarea className="di" placeholder="Optional note — why you did (or didn't) act..."
-                  value={ackNote} onChange={e => setAckNote(e.target.value)}
-                  style={{ minHeight:56, resize:"vertical", fontFamily:"'Cormorant Garamond',serif", fontSize:13 }}/>
-              </div>
-            )}
-
-            {hasData && (() => {
-              // The primary KPI is chosen by severity, not fixed by
-              // position — when runway or free cash turns critical, that
-              // is what dominates the page instead of revenue.
-              const heroCandidates = {
-                free: { key:"free", lbl:"True Free Cash", val:fmt(free),
-                  sub:"Overhead exceeds liquidity after obligations. This is the number that matters right now, not revenue.",
-                  sev:"critical" },
-                runwayCrit: { key:"runway", lbl:"Burn Runway", val:`${safe(burnMonths).toFixed(1)} months`,
-                  sub:"Below the 3-month danger threshold. Protect cash immediately — this is the number that matters right now.",
-                  sev:"critical" },
-                runwayWarn: { key:"runway", lbl:"Burn Runway", val:`${safe(burnMonths).toFixed(1)} months`,
-                  sub:"Below the 6-month safety threshold — worth building back up before it needs full attention.",
-                  sev:"warning" },
-                revenue: { key:"revenue", lbl:"Monthly Revenue", val:fmt(latest.revenue),
-                  sub:`${pc(vel)} velocity month-over-month. Fundamentals are stable enough that revenue is the number to grow, not defend.`,
-                  sev:"positive" },
-              };
-              const hero = safe(free) < 0 ? heroCandidates.free
-                : (!cashFlowPositive && safe(burnMonths) > 0 && safe(burnMonths) < 3) ? heroCandidates.runwayCrit
-                : (!cashFlowPositive && safe(burnMonths) > 0 && safe(burnMonths) < 6) ? heroCandidates.runwayWarn
-                : heroCandidates.revenue;
-
-              const supporting = [
-                { key:"revenue", lbl:"Monthly Revenue",  val:fmt(latest.revenue), col:"g",  d:`${pc(vel)} velocity`,     dt:vel>=0?"up":"dn" },
-                { key:"margin",  lbl:"Profit Margin",    val:pc(margin),          col:"gr", d:`${fmt(totPro)} net profit`, dt:margin>0?"up":"dn" },
-                { key:"free",    lbl:"True Free Cash",   val:fmt(free),           col:free>=0?"g":"r", d:"After tax + safety", dt:free>=0?"up":"dn" },
-                { key:"runway",  lbl:"Burn Runway",      val:cashFlowPositive?"No burn":(runwayConfidence.shown && burnMonths>0)?`${safe(burnMonths).toFixed(1)}mo`:"---",
-                  col:cashFlowPositive?"gr":burnMonths>=6?"gr":burnMonths>=3?"a":"r",
-                  d:cashFlowPositive?"Cash flow positive":burnMonths>=6?"Safe":"Needs attention",
-                  dt:cashFlowPositive||burnMonths>=6?"up":"dn", conf:runwayConfidence },
-              ].filter(m => m.key !== hero.key);
-
-              // A founder with one month of data must not see the same
-              // confident presentation as one with eighteen — the dashed
-              // frame and explicit tag are the visible difference.
-              const isThinData = dataConfidence === "low";
-
-              return (
-                <div>
-                  <div className="card-sec">Core Vitals</div>
-                  {isThinData && (
-                    <div className="data-thin-tag">Early data — trajectory not yet assessable</div>
-                  )}
-                  <div className={`kpi-hero-row${isThinData ? " data-thin" : ""}`}>
-                    <div className="hero-metric" style={{ "--sev": SEVERITY_STYLE[hero.sev].color }}>
-                      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", gap:12, marginBottom:4 }}>
-                        <div className="card-lbl" style={{ marginBottom:0 }}>{hero.lbl}</div>
-                        <SeverityTag level={hero.sev}/>
-                      </div>
-                      <div className="hero-metric-val" style={{ color: SEVERITY_STYLE[hero.sev].color }}>{hero.val}</div>
-                      <div className="hero-metric-sub">{hero.sub}</div>
-                    </div>
-                    <div className="kpi-hero-sub">
-                      {supporting.map((m, i) => (
-                        <div key={i} className="card"
-                          onMouseEnter={e => e.currentTarget.style.transform = "translateY(-2px)"}
-                          onMouseLeave={e => e.currentTarget.style.transform = ""}
-                          style={{ transition:"transform 0.2s", cursor:"default" }}>
-                          <div className="card-lbl">{m.lbl}</div>
-                          <div className={`val ${m.col}`}>{m.val}</div>
-                          <div className={`delta ${m.dt}`}>{m.dt==="up"?"+":"-"} {m.d}</div>
-                          <ConfidenceLine c={m.conf}/>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                  {showForwardRunway && (
-                    <div className="d-alert warn" style={{ marginTop:12 }}>
-                      {cashFlowPositive ? `No burn on average — but ` : `${safe(burnMonths).toFixed(1)} months on average burn. `}
-                      {forwardRunway.monthsUntilCross.toFixed(1)} months against your known obligations (around {forwardRunway.crossDate}). The second is the real number.
-                    </div>
-                  )}
-                </div>
-              );
-            })()}
-
-            {/* Trajectory — Growth Score, Risk Score, detected trends, and
-                the long-run business narrative as one coherent "direction
-                of travel" unit. This is the product's differentiator over
-                a generic dashboard, so it reads as one deliberate section
-                immediately below the vitals, not three scattered cards
-                further down the page. */}
-            {hasData && (
-              <div className="trajectory-zone">
-                <div className="trajectory-head">
-                  <div className="card-sec" style={{ marginBottom:0 }}>Trajectory</div>
-                  <div style={{ display:"flex", gap:8 }}>
-                    <SeverityTag level={growth.score>=60?"positive":growth.score>=40?"warning":"critical"} label={growth.label}/>
-                    <SeverityTag level={risk.label==="Low"?"positive":risk.label==="Watch"?"warning":"critical"} label={risk.label}/>
-                  </div>
-                </div>
-                <div className="trajectory-body">
-                  <div className="trajectory-row">
-                    <Ring score={growth.score}/>
-                    <div style={{ flex:1, minWidth:0 }}>
-                      <div className="card-lbl">Growth Score</div>
-                      <div style={{ fontSize:12, color:C.ink, lineHeight:1.7, fontFamily:"'Cormorant Garamond',serif", marginTop:4 }}>
-                        {growth.seasonallyAdjusted
-                          ? <>Compared to {seasonalPattern.month} a year ago ({pc(growth.rate)} year-over-year), not last month — {seasonalPattern.month} has run {Math.abs(seasonalPattern.avgDeltaPct).toFixed(0)}% {seasonalPattern.avgDeltaPct<0?"below":"above"} average for {seasonalPattern.occurrences} years running, so a plain month-over-month reading would call a normal season a decline.</>
-                          : rows && rows.length>=3
-                            ? <>Trailing growth rate ({pc(growth.rate)}/mo), weighted with how consistently recent months grew ({Math.round(growth.consistency*100)}% of the last few were up).</>
-                            : <>Based on a single growth reading — connect 3+ months of data for a consistency-weighted score.</>}
-                      </div>
-                      <ConfidenceLine c={growthConfidence}/>
-                    </div>
-                  </div>
-
-                  <div className="trajectory-row">
-                    <Ring score={100-risk.score}/>
-                    <div style={{ flex:1, minWidth:0 }}>
-                      <div className="card-lbl">Risk Score</div>
-                      <div style={{ fontSize:12, color:C.ink, lineHeight:1.7, fontFamily:"'Cormorant Garamond',serif", marginTop:4 }}>
-                        Weighted from runway, margin, your trend direction, revenue concentration, and LTV:CAC — each only counts when there's real data behind it. A business can look fine today and still score risk from a multi-month decline that hasn't crossed a threshold yet.
-                      </div>
-                    </div>
-                  </div>
-
-                  {trends.length > 0 && (
-                    <div className="trajectory-row" style={{ flexDirection:"column", gap:10 }}>
-                      <div className="card-lbl">Trends Detected</div>
-                      {trends.map((t, i) => (
-                        <div key={i} className={`d-alert ${t.direction==="improving"?"ok":"warn"}`}>{t.message}</div>
-                      ))}
-                    </div>
-                  )}
-
-                  {founderNarrative && (
-                    <div className="trajectory-row" style={{ flexDirection:"column", gap:8 }}>
-                      <div className="card-lbl">Business History</div>
-                      <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:14, color:C.cream, lineHeight:1.7 }}>
-                        {founderNarrative}
-                      </div>
-                      {seasonalPattern && (
-                        <div style={{ fontSize:12, color:C.ink, lineHeight:1.6, fontFamily:"'Cormorant Garamond',serif" }}>
-                          {seasonalPattern.month} has run {Math.abs(seasonalPattern.avgDeltaPct).toFixed(0)}% {seasonalPattern.avgDeltaPct<0?"below":"above"} your average for {seasonalPattern.occurrences} years running — a repeating seasonal pattern, not a new signal.
-                        </div>
-                      )}
-                      <ConfidenceLine c={{
-                        shown: true,
-                        level: { low:"low", medium:"moderate", high:"high", "very high":"high" }[historicalConfidence?.label] || "low",
-                        reason: historicalConfidence?.reason || "",
-                      }}/>
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
-
-            <div className="g2">
-              <div className="card"><div className="card-sec">Revenue vs Expenses</div><BChart data={rows}/></div>
-              <div className="card">
-                <div className="card-sec">Sovereignty Index</div>
-                <div style={{ display:"flex", gap:20, alignItems:"center" }}>
-                  <Ring score={sov}/>
-                  <div>
-                    <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:22, color:sov>=75?C.gold:sov>=50?C.amber:C.red, marginBottom:6 }}>{sovLbl}</div>
-                    <div style={{ fontSize:12, color:C.ink, lineHeight:1.7, fontFamily:"'Cormorant Garamond',serif" }}>
-                      {hasConversionData
-                        ? <>Margin ({pc(margin*0.6)}) + Conversion ({pc(conv*0.4)}). Above 75 triggers aggressive scale posture.</>
-                        : <>Based on margin alone ({pc(margin)}) — no lead/conversion data connected yet. Add it in Connect Data for the full score.</>}
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <div>
-              <div className="card-sec">Business Intelligence</div>
-              <div className="g3">
-                {[
-                  {
-                    lbl:"Burn Runway",
-                    val: cashFlowPositive ? "No burn" : (runwayConfidence.shown && burnMonths > 0) ? `${safe(burnMonths).toFixed(1)} months` : "---",
-                    sub: cashFlowPositive?"Revenue covers expenses - no cash burn":!runwayConfidence.shown?"Enter cash balance to calculate":burnMonths>=6?"Safe - above 6-month threshold":burnMonths>=3?"Caution - build to 6 months":burnMonths>0?"Danger - act immediately":"Enter cash balance to calculate",
-                    cls: cashFlowPositive?"green":burnMonths>=6?"green":burnMonths>=3?"amber":burnMonths>0?"red":"gold",
-                    col: cashFlowPositive?C.green:burnMonths>=6?C.green:burnMonths>=3?C.amber:burnMonths>0?C.red:C.gold,
-                    conf: runwayConfidence,
-                  },
-                  {
-                    lbl:"Hiring Capacity",
-                    val: !hiringCapacityConfidence.shown ? "---" : hiringCapacity > 0 ? `${fmt(hiringCapacity)}/mo` : "None from profit",
-                    sub: !hiringCapacityConfidence.shown ? "Enter revenue and expenses to calculate"
-                      : hiringCapacity > 0 ? "The largest fully-loaded monthly cost your average profit covers, after the safety buffer. Test a specific salary under Committed Costs."
-                      : "Costs exceed revenue on average, so any hire would be paid from cash. Test a specific salary under Committed Costs.",
-                    cls: hiringCapacity > 0 ? "green" : "amber",
-                    col: hiringCapacity > 0 ? C.green : C.amber,
-                    conf: hiringCapacityConfidence,
-                  },
-                  {
-                    lbl:"LTV : CAC Ratio",
-                    val: ltvcacConfidence.shown ? `${safe(ltvcac).toFixed(1)}x` : "---",
-                    sub: ltvcacConfidence.shown ? (ltvcac>=3?"Healthy - above 3x threshold":"Below 3x - fix before scaling") : "Enter CAC and LTV in data",
-                    cls: ltvcac>=3?"green":ltvcac>0?"amber":"gold",
-                    col: ltvcac>=3?C.green:ltvcac>0?C.amber:C.gold,
-                    conf: ltvcacConfidence,
-                  },
-                ].map((ind, i) => (
-                  <div key={i} className={`indicator ${ind.cls}`}>
-                    <div className="card-lbl">{ind.lbl}</div>
-                    <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:28, color:ind.col, marginBottom:6 }}>{ind.val}</div>
-                    <div style={{ fontSize:12, color:C.ink, fontFamily:"'Cormorant Garamond',serif", lineHeight:1.5 }}>{ind.sub}</div>
-                    <ConfidenceLine c={ind.conf}/>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            <div>
-              <div className="card-sec">Revenue Concentration</div>
-              <div className="card">
-                {!concentrationData?.shown ? (
-                  <div style={{ fontSize:13, color:C.ink, fontFamily:"'Cormorant Garamond',serif", lineHeight:1.6 }}>
-                    {concentrationData?.confidenceLevel === "low"
-                      ? `Not enough payer names could be reliably read from your transactions to show this safely. ${concentrationData.reason}`
-                      : "Upload transaction history to see how concentrated your revenue is in your largest clients."}
-                  </div>
-                ) : (
-                  <>
-                    <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
-                      {concentrationData.payers.slice(0, 5).map((p, i) => {
-                        const isLargest = i === 0;
-                        const barColor = isLargest ? (p.pct > 60 ? C.red : p.pct > 40 ? C.amber : C.green) : C.gold;
-                        return (
-                          <div key={p.name}>
-                            <div style={{ display:"flex", justifyContent:"space-between", fontSize:12, color:C.ink, marginBottom:4, fontFamily:"'Cormorant Garamond',serif" }}>
-                              <span style={{ textTransform:"capitalize" }}>{p.name}</span>
-                              <span style={{ color: barColor }}>{p.pct.toFixed(1)}%</span>
-                            </div>
-                            <div style={{ height:8, background:C.border, borderRadius:4, overflow:"hidden" }}>
-                              <div style={{ width:`${Math.min(100, p.pct)}%`, height:"100%", background:barColor }}/>
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                    <ConfidenceLine c={{ shown:true, level:concentrationData.confidenceLevel, reason:concentrationData.reason }}/>
-                    {concentrationData.aggregatorPct > 0.5 && (
-                      <div style={{ fontSize:11, color:C.inkDim, marginTop:12, fontFamily:"'Cormorant Garamond',serif" }}>
-                        {concentrationData.aggregatorPct.toFixed(0)}% of revenue arrives through a payment processor (Shopify, Stripe, PayPal) and can't be attributed to a single client — excluded from the figures above.
-                      </div>
-                    )}
-                  </>
-                )}
-              </div>
-            </div>
-
-            <div>
-              <div className="card-sec">Committed Costs</div>
-              <div className="card">
-                {activeObligations.length === 0 ? (
-                  <div style={{ fontSize:13, color:C.ink, fontFamily:"'Cormorant Garamond',serif", lineHeight:1.6 }}>
-                    No recurring obligations detected yet. At least 3 similar payments on a consistent schedule (rent, payroll, a quarterly VAT payment) are needed before one shows up here.
-                  </div>
-                ) : (
-                  <div style={{ display:"flex", flexDirection:"column", gap:14 }}>
-                    {activeObligations.map(o => (
-                      <div key={o.id} style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", borderBottom:`1px solid ${C.border}`, paddingBottom:12 }}>
-                        <div>
-                          <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:15, color:C.cream, textTransform:"capitalize" }}>{o.label}</div>
-                          <div style={{ fontSize:11, color:C.ink, fontFamily:"'JetBrains Mono',monospace", marginTop:2, textTransform:"capitalize" }}>
-                            {o.cadence}{o.amount_variance === "variable" ? " · variable" : ""} · next expected {o.next_expected}
-                          </div>
-                          <ConfidenceLine c={{ shown:true, level:o.confidence, reason:`${o.occurrences} occurrences observed` }}/>
-                        </div>
-                        <div style={{ textAlign:"right", flexShrink:0, marginLeft:16 }}>
-                          <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:16, color:C.gold }}>{fmt(o.typical_amount)}</div>
-                          <button className="btn" style={{ fontSize:10, padding:"4px 10px", marginTop:6 }} onClick={() => setObligationActive(o.id, false)}>Mark ended</button>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-
-                <div style={{ marginTop:20, paddingTop:16, borderTop:`1px solid ${C.border}` }}>
-                  <div className="card-lbl">Can I afford a hire, or any recurring cost, of $___ per month?</div>
-                  <div style={{ display:"flex", gap:8, marginTop:8 }}>
-                    <input type="number" min="0" className="di" placeholder={hiringCapacity > 0 ? `e.g. ${Math.round(hiringCapacity)}` : "e.g. 1500"} aria-label="Monthly cost to test"
-                      value={affordInput} onChange={e => setAffordInput(e.target.value)}
-                      style={{ maxWidth:160 }}/>
-                    <button className="btn btn-primary" style={{ fontSize:11, padding:"8px 16px" }} onClick={checkAfford}>Check</button>
-                  </div>
-                  {affordResult && (
-                    <div className={`d-alert ${affordResult.affordable ? "ok" : "crit"}`} style={{ marginTop:12 }}>
-                      {affordResult.message}
-                    </div>
-                  )}
-                </div>
-              </div>
-            </div>
-
-            <div>
-              <div className="card-sec">Decision History</div>
-              <div className="card">
-                {directives.length === 0 ? (
-                  <div style={{ fontSize:13, color:C.ink, fontFamily:"'Cormorant Garamond',serif", lineHeight:1.6 }}>
-                    No directives issued yet. Once Command Ledger issues its first call, it's logged here permanently — along with whether you acted on it and what happened to the metric it targeted afterward.
-                  </div>
-                ) : (
-                  <div style={{ display:"flex", flexDirection:"column", gap:16 }}>
-                    {directives.map((d, i) => {
-                      const uc = { critical:C.red, warn:C.amber, go:C.green, stable:C.gold }[d.severity] || C.gold;
-                      const outcome = describeDirectiveOutcome(d);
-                      const actionLabel = { acted:"Acted", partially:"Partially acted", ignored:"Ignored", disagreed:"Disagreed" }[d.action_taken] || "Awaiting response";
-                      const outcomeColor = outcome.status === "measured"
-                        ? (outcome.improved === true ? C.green : outcome.improved === false ? C.red : C.ink)
-                        : C.inkDim;
-                      return (
-                        <div key={d.id} style={{ borderLeft:`3px solid ${uc}`, paddingLeft:14, paddingBottom: i < directives.length - 1 ? 16 : 0, borderBottom: i < directives.length - 1 ? `1px solid ${C.border}` : "none" }}>
-                          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"baseline", flexWrap:"wrap", gap:8 }}>
-                            <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:15, color:C.cream }}>{d.directive_text}</div>
-                            <div style={{ fontSize:10.5, color:C.inkDim, fontFamily:"'JetBrains Mono',monospace", whiteSpace:"nowrap" }}>{new Date(d.issued_at).toLocaleDateString()}</div>
-                          </div>
-                          <div style={{ fontSize:11, color:C.ink, marginTop:4, fontFamily:"'Cormorant Garamond',serif" }}>
-                            {actionLabel}{d.founder_note ? ` — "${d.founder_note}"` : ""}
-                          </div>
-                          <div style={{ fontSize:11, color:outcomeColor, marginTop:4, fontFamily:"'Cormorant Garamond',serif" }}>
-                            {outcome.message}
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-            </div>
-
-            <div className="g21">
-              <div className="card">
-                <div className="card-sec">Capital Allocator</div>
-                {[
-                  { name:"Tax Vault",      pct:tr*100, amt:taxV, col:C.red,  bg:C.redGlow },
-                  { name:"Safety Buffer",  pct:sr*100, amt:safV, col:C.blue, bg:C.blueGlow },
-                  { name:"True Free Cash", pct:totPro>0?Math.max(0,(free/totPro)*100):0, amt:free, col:free>=0?C.gold:C.red, bg:free>=0?C.goldGlow:C.redGlow },
-                ].map((a, i) => (
-                  <div className="alloc-row" key={i}>
-                    <div className="alloc-icon" style={{ background:a.bg, fontFamily:"'JetBrains Mono',monospace", color:a.col, fontSize:12 }}>-</div>
-                    <div className="alloc-meta">
-                      <div className="alloc-name">{a.name}</div>
-                      <div className="alloc-pct">{safe(a.pct).toFixed(0)}% of profit</div>
-                      <div className="alloc-track"><div className="alloc-fill" style={{ width:`${Math.min(100,safe(a.pct))}%`, background:a.col }}/></div>
-                    </div>
-                    <div className="alloc-amt" style={{ color:a.col }}>{fmt(a.amt)}</div>
-                  </div>
-                ))}
-              </div>
-              <div className="card">
-                <div className="card-sec">Break-Even Analysis</div>
-                <div className="card-lbl">Monthly revenue to cover all costs</div>
-                <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:32, color:C.cream, margin:"12px 0 8px" }}>
-                  {breakEvenConfidence.shown && breakEven > 0 ? fmt(breakEven) : "---"}
-                </div>
-                <div style={{ fontSize:12, color:C.ink, fontFamily:"'Cormorant Garamond',serif", lineHeight:1.6 }}>
-                  {breakEvenConfidence.shown && latest.revenue > 0 && breakEven > 0
-                    ? latest.revenue >= breakEven
-                      ? `You are ${fmt(latest.revenue - breakEven)} above break-even.`
-                      : `You are ${fmt(breakEven - latest.revenue)} below break-even.`
-                    : "Enter revenue and expenses to calculate."}
-                </div>
-                <ConfidenceLine c={breakEvenConfidence}/>
-                {proj90Confidence.shown && safe(proj90) > 0 && (
-                  <div style={{ marginTop:16 }}>
-                    <div className="card-lbl">90-Day Revenue Projection</div>
-                    <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:22, color:C.gold }}>{fmt(proj90)}</div>
-                    <div style={{ fontSize:11, color:C.ink, fontFamily:"'Cormorant Garamond',serif" }}>At current {pc(vel)}/month velocity</div>
-                    <ConfidenceLine c={proj90Confidence}/>
-                  </div>
-                )}
-              </div>
-            </div>
-
-            {plan === "software" && (
-              <div className="nudge">
-                <div className="nudge-title">You have the system. Command Advisory adds the person who reads it with you.</div>
-                <div className="nudge-sub">Done-for-you data configuration, a monthly 1:1 call, a written board report every month, and a direct advisory line with priority response. Six seats, because one person delivers it.</div>
-                <button className="btn btn-lg btn-primary" onClick={onUpgrade}>Add Command Advisory</button>
-                <div className="price-diag-note" style={{ marginTop:14 }}>
-                  Or start with a one-time Financial Diagnostic, ${DIAGNOSTIC.usd.toLocaleString()}, credited in full to your first Advisory month.{" "}
-                  <button className="btn-link" onClick={onBuyDiagnostic}>Buy the diagnostic</button>
-                </div>
-              </div>
-            )}
-
-            {plan === "advisory" && (
-              <div className="card">
-                <div className="card-sec">Direct Access</div>
-                <div className="g2" style={{ gap:16 }}>
-                  <div className="elite-box">
-                    <div className="elite-title">Direct Advisory Line</div>
-                    <div style={{ fontSize:13, color:C.ink, fontFamily:"'Cormorant Garamond',serif", lineHeight:1.6, marginBottom:12 }}>
-                      Direct access for capital decisions and growth strategy. Response within 4 hours.
-                    </div>
-                    <button className="wa-btn" onClick={() => window.open("mailto:commandledger@gmail.com?subject=Advisory%20support%20request","_blank")}>
-                      Email Advisory Support
-                    </button>
-                  </div>
-                  <div className="elite-box">
-                    <div className="elite-title">Monthly Strategy Call</div>
-                    <div style={{ fontSize:13, color:C.ink, fontFamily:"'Cormorant Garamond',serif", lineHeight:1.6, marginBottom:12 }}>
-                      60-minute session. Bring your numbers. Leave with a written 30-day capital plan.
-                    </div>
-                    <button className="cal-btn" onClick={() => window.open("https://calendly.com/commandledger","_blank")}>Book a Session</button>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            <div style={{ borderTop:`1px solid ${C.border}`, paddingTop:14, display:"flex", justifyContent:"space-between", fontSize:10, color:C.inkDim, fontFamily:"'JetBrains Mono',monospace" }}>
-              <span>Command Ledger - {PLANS[plan].name} - 2026</span>
-              <span>{mode==="safe"?"Conservative allocation":"Aggressive deployment"}</span>
-            </div>
-          </>
-        )}
+        {section === "dashboard"    && <DashboardHome ctx={ctx}/>}
+        {section === "transactions" && <TransactionsSection ctx={ctx}/>}
+        {section === "financials"   && <FinancialsSection ctx={ctx}/>}
+        {section === "advisor"      && <AdvisorSection ctx={ctx}/>}
+        {section === "reports"      && <ReportsSection ctx={ctx}/>}
+        {section === "decisions"    && <DecisionLogSection ctx={ctx}/>}
+        {section === "forecasts"    && <ForecastsSection ctx={ctx}/>}
+        {section === "settings"     && <SettingsSection ctx={ctx}/>}
+        {section === "help"         && <HelpSection ctx={ctx}/>}
       </main>
-
-      {/* Mobile only (see .dash-tabbar) — the sidebar is the app's only
-          navigation and disappears entirely below 960px with nothing
-          replacing it; this keeps every tab reachable without scrolling. */}
-      <nav className="dash-tabbar">
-        {navItems.map(n => (
-          <button key={n.id} className={`dash-tabbar-item${tab===n.id?" on":""}`}
-            onClick={() => !n.locked && setTab(n.id)} disabled={n.locked}
-            aria-current={tab===n.id ? "page" : undefined}>
-            <span className="dash-tabbar-glyph">#</span>
-            {n.label}
-          </button>
-        ))}
-      </nav>
     </div>
+  );
+}
+
+// ─── SECTION: DASHBOARD ───────────────────────────────────────
+// Compact horizontal rows, most decision-relevant first: the directive, the
+// six vital numbers, then trend and what is coming. Detail lives on the
+// section pages each panel links to.
+function DashboardHome({ ctx }) {
+  const { m, hero, supporting, go, mode, setMode, statusLine, historyLoading, rows, concentrationData,
+    currentDirective, needsAcknowledgement, missedObligations, showForwardRunway, forwardRunway, upcoming,
+    directives, plan, onUpgrade, onBuyDiagnostic, growth, growthConfidence, risk, trends, seasonalPattern } = ctx;
+  const { hasData, dataConfidence, cashFlowPositive, burnMonths } = m;
+
+  if (!hasData) {
+    return (
+      <>
+        <PageHead title="Dashboard" meta={statusLine}/>
+        {historyLoading ? <SkeletonKPIRow/> : (
+          <Panel title="Connect your financial data">
+            <p className="panel-copy">Upload a bank, QuickBooks, Xero or Wave export and every number on this page is computed from your real transactions. No file ready? Enter this month's figures by hand instead.</p>
+            <div style={{ display:"flex", gap:10, flexWrap:"wrap", marginTop:14 }}>
+              <button className="btn btn-primary btn-md" onClick={() => go("transactions")}><Icon name="upload" size={16}/>Upload a file</button>
+              <button className="btn btn-outline btn-md" onClick={() => go("transactions")}>Enter numbers manually</button>
+            </div>
+          </Panel>
+        )}
+      </>
+    );
+  }
+
+  const isThinData = dataConfidence === "low";
+  const recentDirectives = directives.slice(0, 3);
+  const actionLabel = d => ({ acted:"Acted", partially:"Partially acted", ignored:"Ignored", disagreed:"Disagreed" }[d.action_taken] || "Awaiting response");
+  const total90 = upcoming.reduce((s, e) => s + e.amount, 0);
+
+  return (
+    <>
+      <PageHead title="Dashboard" meta={statusLine}>
+        <ReserveModeToggle mode={mode} setMode={setMode}/>
+        <button className="btn btn-outline btn-md" onClick={() => go("transactions")}><Icon name="upload" size={16}/>Upload data</button>
+      </PageHead>
+
+      {currentDirective && (
+        <DirectiveStrip d={currentDirective}>
+          {needsAcknowledgement
+            ? <button className="btn btn-primary btn-md" onClick={() => go("decisions")}>Respond to last directive</button>
+            : <PanelLink to="decisions" onNavigate={go}>Decision log</PanelLink>}
+        </DirectiveStrip>
+      )}
+
+      {missedObligations.length > 0 && (
+        <div className="alert-row" role="status">
+          {missedObligations.slice(0, 3).map((o, i) => <div key={i} className="d-alert crit">{o.message}</div>)}
+        </div>
+      )}
+
+      <div>
+        {isThinData && <div className="data-thin-tag">Early data — trajectory not yet assessable</div>}
+        <div className={`kpi-row${isThinData ? " data-thin" : ""}`}>
+          <KpiTile t={hero} hero/>
+          {supporting.map(t => <KpiTile key={t.key} t={t}/>)}
+        </div>
+        {showForwardRunway && (
+          <div className="d-alert warn" style={{ marginTop:12 }}>
+            {cashFlowPositive ? "No burn on average — but " : `${safe(burnMonths).toFixed(1)} months on average burn. `}
+            {forwardRunway.monthsUntilCross.toFixed(1)} months against your known obligations (around {forwardRunway.crossDate}). The second is the real number.
+          </div>
+        )}
+      </div>
+
+      <div className="row row-21">
+        <Panel title="Revenue vs expenses" action={<PanelLink to="financials" onNavigate={go}>Monthly detail</PanelLink>}>
+          <BChart data={rows}/>
+        </Panel>
+        <Panel title="Trajectory" action={<PanelLink to="financials" onNavigate={go}>History</PanelLink>}>
+          <div className="traj-pair">
+            <div className="traj-cell">
+              <Ring score={growth.score} size={76} sw={5}/>
+              <div><div className="card-lbl">Growth</div><div className="traj-lbl">{growth.label}</div></div>
+            </div>
+            <div className="traj-cell">
+              <Ring score={100 - risk.score} size={76} sw={5}/>
+              <div><div className="card-lbl">Safety</div><div className="traj-lbl">{risk.label} risk</div></div>
+            </div>
+          </div>
+          <div className="traj-note">
+            {growth.seasonallyAdjusted && seasonalPattern
+              ? `Growth compares ${seasonalPattern.month} with a year ago, because ${seasonalPattern.month} is seasonal for you.`
+              : trends.length > 0 ? null : "No multi-month trend detected in this period."}
+          </div>
+          {trends.slice(0, 2).map((t, i) => (
+            <div key={i} className={`d-alert ${t.direction === "improving" ? "ok" : "warn"}`} style={{ marginTop:8 }}>{t.message}</div>
+          ))}
+          <ConfidenceLine c={growthConfidence}/>
+        </Panel>
+      </div>
+
+      <div className="row row-3">
+        <Panel title="Committed costs · 90 days" action={<PanelLink to="forecasts" onNavigate={go}>Forecasts</PanelLink>}>
+          {upcoming.length === 0 ? (
+            <p className="panel-copy">No recurring obligations detected yet. Three similar payments on a steady schedule (rent, payroll, a quarterly tax payment) are needed before one shows here.</p>
+          ) : (
+            <>
+              <ul className="mini-list">
+                {upcoming.slice(0, 4).map((e, i) => (
+                  <li key={i}><span className="mini-date">{e.date}</span><span className="mini-main">{capitalize(e.label)}</span><span className="mini-amt">{fmt(e.amount)}</span></li>
+                ))}
+              </ul>
+              <div className="mini-foot">{upcoming.length} payment{upcoming.length === 1 ? "" : "s"} due · {fmt(total90)} over 90 days</div>
+            </>
+          )}
+        </Panel>
+
+        <Panel title="Revenue concentration" action={<PanelLink to="financials" onNavigate={go}>All clients</PanelLink>}>
+          {!concentrationData?.shown ? (
+            <p className="panel-copy">
+              {concentrationData?.confidenceLevel === "low"
+                ? `Not enough payer names could be read reliably to show this safely. ${concentrationData.reason}`
+                : "Upload transaction history to see how concentrated your revenue is in your largest clients."}
+            </p>
+          ) : (
+            <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+              {concentrationData.payers.slice(0, 3).map((p, i) => {
+                const barColor = i === 0 ? (p.pct > 60 ? C.red : p.pct > 40 ? C.amber : C.green) : C.gold;
+                return (
+                  <div key={p.name}>
+                    <div className="bar-row-lbl"><span style={{ textTransform:"capitalize" }}>{p.name}</span><span style={{ color:barColor }}>{p.pct.toFixed(1)}%</span></div>
+                    <div className="bar-track"><div style={{ width:`${Math.min(100, p.pct)}%`, background:barColor }}/></div>
+                  </div>
+                );
+              })}
+              <ConfidenceLine c={{ shown:true, level:concentrationData.confidenceLevel, reason:concentrationData.reason }}/>
+            </div>
+          )}
+        </Panel>
+
+        <Panel title="Decision log" action={<PanelLink to="decisions" onNavigate={go}>Full log</PanelLink>}>
+          {recentDirectives.length === 0 ? (
+            <p className="panel-copy">No directives issued yet. Each one is logged here with whether you acted on it and what happened to its metric afterward.</p>
+          ) : (
+            <ul className="mini-list">
+              {recentDirectives.map(d => (
+                <li key={d.id} className="mini-stack">
+                  <span className="mini-main">{d.directive_text}</span>
+                  <span className="mini-date">{new Date(d.issued_at).toLocaleDateString()} · {actionLabel(d)}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </Panel>
+      </div>
+
+      {plan === "software" && (
+        <div className="nudge-row">
+          <div>
+            <div className="nudge-row-title">Command Advisory adds the person who reads these numbers with you.</div>
+            <div className="nudge-row-sub">Monthly 1:1 call, a written board report every month, and a direct advisory line. Or start with a one-time ${DIAGNOSTIC.usd.toLocaleString()} Financial Diagnostic, credited to your first Advisory month.</div>
+          </div>
+          <div style={{ display:"flex", gap:10, flexWrap:"wrap" }}>
+            <button className="btn btn-primary btn-md" onClick={onUpgrade}>Add Command Advisory</button>
+            <button className="btn btn-outline btn-md" onClick={onBuyDiagnostic}>Buy the diagnostic</button>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+// ─── SECTION: TRANSACTIONS ────────────────────────────────────
+function TransactionsSection({ ctx }) {
+  const { txns, history, historyLoading, batches, handleDataLoaded, uploadBusy, uploadStatus, uploadErr, deleteBatch,
+    txQuery, setTxQuery, txDirection, setTxDirection, txLimit, setTxLimit, periodLabel, manual, go, m } = ctx;
+
+  const filtered = useMemo(() => {
+    let list = filterTransactions(txns, txQuery);
+    if (txDirection === "in") list = list.filter(t => Number(t.amount) > 0);
+    else if (txDirection === "out") list = list.filter(t => Number(t.amount) < 0);
+    return list.slice().sort((a, b) => String(b.txn_date).localeCompare(String(a.txn_date)));
+  }, [txns, txQuery, txDirection]);
+  const totIn  = filtered.reduce((s, t) => s + Math.max(0, Number(t.amount) || 0), 0);
+  const totOut = filtered.reduce((s, t) => s + Math.max(0, -(Number(t.amount) || 0)), 0);
+  const shown = filtered.slice(0, txLimit);
+
+  const manualFields = [
+    { lbl:"Monthly revenue ($)",           v:manual.mRev,   s:manual.setMRev },
+    { lbl:"Monthly expenses ($)",          v:manual.mExp,   s:manual.setMExp },
+    { lbl:"Cash balance ($)",              v:manual.mCash,  s:manual.setMCash },
+    { lbl:"Customer acquisition cost ($)", v:manual.mCac,   s:manual.setMCac },
+    { lbl:"Customer lifetime value ($)",   v:manual.mLtv,   s:manual.setMLtv },
+    { lbl:"Leads this month",              v:manual.mLeads, s:manual.setMLeads },
+    { lbl:"Deals closed",                  v:manual.mClose, s:manual.setMClose },
+  ];
+
+  return (
+    <>
+      <PageHead title="Transactions" meta={history.length > 0 ? `${txns.length.toLocaleString()} transactions · ${periodLabel}` : "No uploaded history yet"}/>
+
+      <div className="row row-21">
+        <Panel title="Upload a file or sync a sheet">
+          <DataUpload hasData={m.hasData} onDataLoaded={handleDataLoaded}/>
+          {uploadBusy && (
+            <div className="busy-line"><span className="spinner"/>Saving to your transaction history...</div>
+          )}
+          {!uploadBusy && uploadStatus && (
+            <div className="d-alert ok" style={{ marginTop:12, justifyContent:"space-between", alignItems:"center" }}>
+              <span>{uploadStatus}</span>
+              <button className="panel-link" onClick={() => go("dashboard")}>View dashboard<Icon name="arrow" size={14}/></button>
+            </div>
+          )}
+          {!uploadBusy && uploadErr && <div className="d-alert warn" style={{ marginTop:12 }}>{uploadErr}</div>}
+        </Panel>
+
+        <Panel title="Upload history">
+          {batches.length === 0 ? (
+            <p className="panel-copy">No files uploaded yet. Each upload is listed here with how many transactions it added and how many were already on file. Deleting an upload deletes every transaction it added.</p>
+          ) : (
+            <ul className="batch-list">
+              {batches.map(b => (
+                <li key={b.id}>
+                  <div style={{ minWidth:0 }}>
+                    <div className="batch-name">{b.filename || "Untitled upload"}</div>
+                    <div className="batch-meta">
+                      {new Date(b.uploaded_at).toLocaleDateString()} · {b.period_start} to {b.period_end} · {b.inserted_count ?? "—"} added, {b.duplicate_count ?? "—"} duplicate
+                    </div>
+                  </div>
+                  <button className="modal-x" title="Delete this upload and its transactions" aria-label={`Delete upload ${b.filename || "Untitled upload"}`}
+                    onClick={() => { if (window.confirm(`Delete "${b.filename}" and every transaction it added? This cannot be undone.`)) deleteBatch(b.id); }}>
+                    ×
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </Panel>
+      </div>
+
+      <Panel title="All transactions">
+        <div className="tx-tools">
+          <input className="di" type="search" placeholder="Filter by description, category, date or amount" aria-label="Filter transactions"
+            value={txQuery} onChange={e => { setTxQuery(e.target.value); setTxLimit(100); }} style={{ flex:"1 1 260px" }}/>
+          <select className="di" aria-label="Money in or out" value={txDirection} onChange={e => { setTxDirection(e.target.value); setTxLimit(100); }} style={{ flex:"0 0 150px" }}>
+            <option value="all">In and out</option>
+            <option value="in">Money in</option>
+            <option value="out">Money out</option>
+          </select>
+          <div className="tx-sum">
+            {filtered.length.toLocaleString()} shown · <span style={{ color:C.green }}>{fmt(totIn)} in</span> · <span>{fmt(totOut)} out</span>
+          </div>
+        </div>
+        {historyLoading ? (
+          <div className="busy-line"><span className="spinner"/>Loading transactions...</div>
+        ) : filtered.length === 0 ? (
+          <p className="panel-copy" style={{ marginTop:12 }}>
+            {txns.length === 0 ? `No uploaded transactions in ${periodLabel.toLowerCase()}. Change the period in the header, or upload a file above.` : "No transactions match this filter."}
+          </p>
+        ) : (
+          <>
+            <div className="tbl-wrap">
+              <table className="tbl">
+                <thead><tr><th scope="col">Date</th><th scope="col">Description</th><th scope="col">Category</th><th scope="col" className="num">Amount</th></tr></thead>
+                <tbody>
+                  {shown.map((t, i) => (
+                    <tr key={t.id ?? i}>
+                      <td className="mono">{t.txn_date}</td>
+                      <td>{t.description || "—"}</td>
+                      <td className="muted">{t.category ? capitalize(t.category) : "—"}</td>
+                      <td className="num" style={{ color: Number(t.amount) >= 0 ? C.green : C.cream }}>{fmt(t.amount)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            {filtered.length > shown.length && (
+              <button className="btn btn-outline btn-md" style={{ marginTop:12, alignSelf:"flex-start" }} onClick={() => setTxLimit(l => l + 100)}>
+                Show 100 more ({(filtered.length - shown.length).toLocaleString()} remaining)
+              </button>
+            )}
+          </>
+        )}
+      </Panel>
+
+      <Panel title="Enter numbers manually">
+        <details open={!m.hasData}>
+          <summary className="details-summary">No file ready? Enter this month's figures. They are used for this session only and are not saved.</summary>
+          <div className="input-grid input-grid-4" style={{ marginTop:14 }}>
+            {manualFields.map((f, i) => (
+              <div key={i} className="input-group">
+                <label className="di-lbl" htmlFor={`manual-${i}`}>{f.lbl}</label>
+                <input id={`manual-${i}`} className="di" type="number" min="0" value={f.v} onChange={e => f.s(Math.max(0, Number(e.target.value) || 0))}/>
+              </div>
+            ))}
+          </div>
+          {manual.mRev > 0 && <button className="btn btn-primary btn-md" onClick={() => go("dashboard")}>View my dashboard</button>}
+        </details>
+      </Panel>
+    </>
+  );
+}
+
+// ─── SECTION: FINANCIALS ──────────────────────────────────────
+function FinancialsSection({ ctx }) {
+  const { m, rows, mode, setMode, tr, sr, taxV, safV, concentrationData, statusLine, hasConversionData, sov, sovLbl,
+    activeCac, activeLtv, cogsRatio, mktRatio, founderNarrative, seasonalPattern, historicalConfidence, go } = ctx;
+  const { hasData, latest, totPro, free, margin, conv, ltvcac, ltvcacConfidence, breakEven, breakEvenConfidence } = m;
+  if (!hasData) return <><PageHead title="Financials" meta={statusLine}/><EmptyData go={go}/></>;
+
+  const monthly = (rows || []).slice().reverse();
+  const totals = (rows || []).reduce((a, r) => ({ rev:a.rev + (r.revenue || 0), exp:a.exp + (r.expenses || 0) }), { rev:0, exp:0 });
+
+  return (
+    <>
+      <PageHead title="Financials" meta={statusLine}>
+        <ReserveModeToggle mode={mode} setMode={setMode}/>
+      </PageHead>
+
+      <div className="row row-21">
+        <Panel title="Profit and loss by month">
+          <div className="tbl-wrap" style={{ maxHeight:340 }}>
+            <table className="tbl">
+              <thead><tr><th scope="col">Month</th><th scope="col" className="num">Revenue</th><th scope="col" className="num">Expenses</th><th scope="col" className="num">Net</th><th scope="col" className="num">Margin</th></tr></thead>
+              <tbody>
+                {monthly.map((r, i) => {
+                  const net = (r.revenue || 0) - (r.expenses || 0);
+                  return (
+                    <tr key={i}>
+                      <td>{r.month}</td>
+                      <td className="num">{fmt(r.revenue)}</td>
+                      <td className="num">{fmt(r.expenses)}</td>
+                      <td className="num" style={{ color: net >= 0 ? C.green : C.red }}>{fmt(net)}</td>
+                      <td className="num muted">{r.revenue > 0 ? pc((net / r.revenue) * 100) : "---"}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+              <tfoot><tr>
+                <th scope="row">Total</th><td className="num">{fmt(totals.rev)}</td><td className="num">{fmt(totals.exp)}</td>
+                <td className="num" style={{ color: totals.rev - totals.exp >= 0 ? C.green : C.red }}>{fmt(totals.rev - totals.exp)}</td>
+                <td className="num muted">{totals.rev > 0 ? pc(((totals.rev - totals.exp) / totals.rev) * 100) : "---"}</td>
+              </tr></tfoot>
+            </table>
+          </div>
+        </Panel>
+
+        <Panel title="Capital allocator">
+          {[
+            { name:"Tax vault",      pct:tr * 100, amt:taxV, col:C.red },
+            { name:"Safety buffer",  pct:sr * 100, amt:safV, col:C.blue },
+            { name:"True free cash", pct:totPro > 0 ? Math.max(0, (free / totPro) * 100) : 0, amt:free, col:free >= 0 ? C.gold : C.red },
+          ].map((a, i) => (
+            <div className="alloc-row" key={i}>
+              <div className="alloc-meta">
+                <div className="alloc-name">{a.name}</div>
+                <div className="alloc-pct">{safe(a.pct).toFixed(0)}% of profit</div>
+                <div className="alloc-track"><div className="alloc-fill" style={{ width:`${Math.min(100, safe(a.pct))}%`, background:a.col }}/></div>
+              </div>
+              <div className="alloc-amt" style={{ color:a.col }}>{fmt(a.amt)}</div>
+            </div>
+          ))}
+          <p className="panel-copy" style={{ marginTop:10 }}>
+            {totPro > 0 ? `${mode === "safe" ? "Safe" : "Growth"} mode reserves are taken from ${fmt(totPro)} net profit in the period.` : "A loss in the period: nothing is reserved, and free cash is the full loss."}
+          </p>
+        </Panel>
+      </div>
+
+      <div className="row row-3">
+        <Panel title="Break-even">
+          <div className="big-num">{breakEvenConfidence.shown && breakEven > 0 ? fmt(breakEven) : "---"}</div>
+          <p className="panel-copy">
+            {breakEvenConfidence.shown && latest.revenue > 0 && breakEven > 0
+              ? latest.revenue >= breakEven ? `Monthly revenue needed to cover average costs. You are ${fmt(latest.revenue - breakEven)} above it.` : `Monthly revenue needed to cover average costs. You are ${fmt(breakEven - latest.revenue)} below it.`
+              : "Enter revenue and expenses to calculate."}
+          </p>
+          <ConfidenceLine c={breakEvenConfidence}/>
+        </Panel>
+
+        <Panel title="Unit economics">
+          <dl className="kv">
+            <dt>LTV : CAC</dt><dd>{ltvcacConfidence.shown ? `${safe(ltvcac).toFixed(1)}x` : "---"}</dd>
+            <dt>Acquisition cost</dt><dd>{activeCac > 0 ? fmt(activeCac) : "---"}</dd>
+            <dt>Lifetime value</dt><dd>{activeLtv > 0 ? fmt(activeLtv) : "---"}</dd>
+            <dt>Lead conversion</dt><dd>{hasConversionData ? pc(conv) : "---"}</dd>
+            <dt>COGS / revenue</dt><dd>{pc(cogsRatio)}</dd>
+            <dt>Marketing / revenue</dt><dd>{pc(mktRatio)}</dd>
+          </dl>
+          <ConfidenceLine c={ltvcacConfidence}/>
+        </Panel>
+
+        <Panel title="Sovereignty index">
+          <div style={{ display:"flex", gap:16, alignItems:"center" }}>
+            <Ring score={sov} size={84} sw={5}/>
+            <div>
+              <div className="traj-lbl" style={{ color: sov >= 75 ? C.gold : sov >= 50 ? C.amber : C.red }}>{sovLbl}</div>
+              <p className="panel-copy">
+                {hasConversionData
+                  ? <>Margin ({pc(margin * 0.6)}) plus conversion ({pc(conv * 0.4)}). Above 75 supports an aggressive scale posture.</>
+                  : <>Based on margin alone ({pc(margin)}); no lead or conversion data yet.</>}
+              </p>
+            </div>
+          </div>
+        </Panel>
+      </div>
+
+      <div className="row row-2">
+        <Panel title="Revenue concentration">
+          {!concentrationData?.shown ? (
+            <p className="panel-copy">
+              {concentrationData?.confidenceLevel === "low"
+                ? `Not enough payer names could be read reliably to show this safely. ${concentrationData.reason}`
+                : "Upload transaction history to see how concentrated your revenue is in your largest clients."}
+            </p>
+          ) : (
+            <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+              {concentrationData.payers.slice(0, 5).map((p, i) => {
+                const barColor = i === 0 ? (p.pct > 60 ? C.red : p.pct > 40 ? C.amber : C.green) : C.gold;
+                return (
+                  <div key={p.name}>
+                    <div className="bar-row-lbl"><span style={{ textTransform:"capitalize" }}>{p.name}</span><span style={{ color:barColor }}>{p.pct.toFixed(1)}%</span></div>
+                    <div className="bar-track"><div style={{ width:`${Math.min(100, p.pct)}%`, background:barColor }}/></div>
+                  </div>
+                );
+              })}
+              <ConfidenceLine c={{ shown:true, level:concentrationData.confidenceLevel, reason:concentrationData.reason }}/>
+              {concentrationData.aggregatorPct > 0.5 && (
+                <p className="panel-copy">{concentrationData.aggregatorPct.toFixed(0)}% of revenue arrives through a payment processor (Shopify, Stripe, PayPal) and can't be attributed to a single client — excluded above.</p>
+              )}
+            </div>
+          )}
+        </Panel>
+
+        <Panel title="Business history">
+          {founderNarrative ? (
+            <>
+              <p className="narrative">{founderNarrative}</p>
+              {seasonalPattern && (
+                <p className="panel-copy">{seasonalPattern.month} has run {Math.abs(seasonalPattern.avgDeltaPct).toFixed(0)}% {seasonalPattern.avgDeltaPct < 0 ? "below" : "above"} your average for {seasonalPattern.occurrences} years running — a repeating seasonal pattern, not a new signal.</p>
+              )}
+              <ConfidenceLine c={{
+                shown: true,
+                level: { low:"low", medium:"moderate", high:"high", "very high":"high" }[historicalConfidence?.label] || "low",
+                reason: historicalConfidence?.reason || "",
+              }}/>
+            </>
+          ) : (
+            <p className="panel-copy">Builds once you have two or more months of uploaded transaction history.</p>
+          )}
+        </Panel>
+      </div>
+    </>
+  );
+}
+
+function EmptyData({ go }) {
+  return (
+    <Panel title="No data yet">
+      <p className="panel-copy">This page is computed from your transactions. Upload an export or enter this month's figures to fill it in.</p>
+      <button className="btn btn-primary btn-md" style={{ marginTop:12, alignSelf:"flex-start" }} onClick={() => go("transactions")}><Icon name="upload" size={16}/>Go to Transactions</button>
+    </Panel>
+  );
+}
+
+// ─── SECTION: AI ADVISOR ──────────────────────────────────────
+function AdvisorSection({ ctx }) {
+  const { aiRec, aiError, aiLoad, runAI, m, go } = ctx;
+  return (
+    <>
+      <PageHead title="AI Advisor" meta="A structured brief from your real numbers, generated on request"/>
+      <div className="card" style={{ padding:0 }}>
+        <div className="ai-top">
+          <div className="ai-lbl"><div className="ai-glow"/>Command Ledger Intelligence - Powered by Claude</div>
+          <button className="ai-btn" onClick={runAI} disabled={aiLoad || !m.hasData}>{aiLoad ? "Analyzing..." : "Generate Brief"}</button>
+        </div>
+        <div className="ai-body" style={{ padding: aiRec ? 0 : undefined }}>
+          {aiLoad ? (
+            <div style={{ display:"flex", alignItems:"center", gap:12, color:C.inkDim, fontSize:12, fontFamily:"'JetBrains Mono',monospace", padding:"20px" }}>
+              <div className="ai-dots"><span/><span/><span/></div>Analyzing your financial position...
+            </div>
+          ) : aiRec ? (
+            <AIRecommendation rec={aiRec}/>
+          ) : aiError ? (
+            <div className="ai-txt" style={{ padding:"20px" }}>{aiError}</div>
+          ) : (
+            <div className="ai-txt" style={{ padding:"20px" }}>Click Generate Brief to receive a structured recommendation: what happened, why, the business impact, the risk, the one action to take, and how confident to be in it.</div>
+          )}
+        </div>
+      </div>
+      {!m.hasData && (
+        <div className="d-alert info" style={{ justifyContent:"space-between", alignItems:"center" }}>
+          <span>Connect your financial data first. The brief uses your real numbers, not generic advice.</span>
+          <button className="panel-link" onClick={() => go("transactions")}>Transactions<Icon name="arrow" size={14}/></button>
+        </div>
+      )}
+      <p className="panel-copy">Sent to Claude (Anthropic) only when you click Generate Brief: your computed metrics, the names of your largest payers and recurring costs, and any notes you left on past directives — never your transaction list.</p>
+    </>
+  );
+}
+
+// ─── SECTION: REPORTS ─────────────────────────────────────────
+// A monthly summary the founder can hand to an accountant, investor or
+// board: the same profit-and-loss table and metrics shown in the app,
+// downloadable as CSV or printed to PDF from the browser.
+function ReportsSection({ ctx }) {
+  const { m, rows, reportSummary, periodLabel, todayStr, profile, userName, plan, statusLine, go } = ctx;
+  if (!m.hasData) return <><PageHead title="Reports" meta={statusLine}/><EmptyData go={go}/></>;
+
+  const monthly = rows || [];
+  const totals = monthly.reduce((a, r) => ({ rev:a.rev + (r.revenue || 0), exp:a.exp + (r.expenses || 0) }), { rev:0, exp:0 });
+  const downloadCsv = () => {
+    const csv = buildReportCsv({ periodLabel, generatedAt: todayStr, rows: monthly, summary: reportSummary });
+    const url = URL.createObjectURL(new Blob([csv], { type:"text/csv;charset=utf-8" }));
+    const a = document.createElement("a");
+    a.href = url; a.download = `command-ledger-summary-${todayStr}.csv`;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+
+  return (
+    <>
+      <PageHead title="Reports" meta="Monthly financial summary">
+        <button className="btn btn-outline btn-md" onClick={downloadCsv}><Icon name="download" size={16}/>Download CSV</button>
+        <button className="btn btn-primary btn-md" onClick={() => window.print()}><Icon name="print" size={16}/>Print or save PDF</button>
+      </PageHead>
+
+      <div className="panel print-area">
+        <div className="report-head">
+          <div>
+            <div className="report-title">Financial summary</div>
+            <div className="page-meta">{profile?.business || userName} · {periodLabel} · generated {todayStr}</div>
+          </div>
+          <div className="page-meta">Command Ledger</div>
+        </div>
+        <div className="row row-12" style={{ marginTop:16 }}>
+          <div>
+            <h2 className="panel-title" style={{ marginBottom:10 }}>Key metrics</h2>
+            <dl className="kv kv-wide">
+              {reportSummary.map(([k, v]) => <div key={k} style={{ display:"contents" }}><dt>{k}</dt><dd>{v}</dd></div>)}
+            </dl>
+          </div>
+          <div style={{ minWidth:0 }}>
+            <h2 className="panel-title" style={{ marginBottom:10 }}>Profit and loss by month</h2>
+            <div className="tbl-wrap">
+              <table className="tbl">
+                <thead><tr><th scope="col">Month</th><th scope="col" className="num">Revenue</th><th scope="col" className="num">Expenses</th><th scope="col" className="num">Net</th><th scope="col" className="num">Margin</th></tr></thead>
+                <tbody>
+                  {monthly.map((r, i) => {
+                    const net = (r.revenue || 0) - (r.expenses || 0);
+                    return <tr key={i}><td>{r.month}</td><td className="num">{fmt(r.revenue)}</td><td className="num">{fmt(r.expenses)}</td><td className="num">{fmt(net)}</td><td className="num">{r.revenue > 0 ? pc((net / r.revenue) * 100) : "---"}</td></tr>;
+                  })}
+                </tbody>
+                <tfoot><tr><th scope="row">Total</th><td className="num">{fmt(totals.rev)}</td><td className="num">{fmt(totals.exp)}</td><td className="num">{fmt(totals.rev - totals.exp)}</td><td className="num">{totals.rev > 0 ? pc(((totals.rev - totals.exp) / totals.rev) * 100) : "---"}</td></tr></tfoot>
+              </table>
+            </div>
+          </div>
+        </div>
+        <p className="panel-copy" style={{ marginTop:14 }}>Figures are computed from the transactions on file for this period. A metric shown as "Not enough data" lacks the inputs to be stated honestly; it is not zero.</p>
+      </div>
+
+      {plan === "advisory" && (
+        <p className="panel-copy">Your written monthly board report is prepared by your advisor and delivered by email; this page is the self-serve summary.</p>
+      )}
+    </>
+  );
+}
+
+// ─── SECTION: DECISION LOG ────────────────────────────────────
+function DecisionLogSection({ ctx }) {
+  const { currentDirective, directives, directivesLoading, latestDirective, needsAcknowledgement, ackNote, setAckNote, acknowledgeDirective } = ctx;
+  return (
+    <>
+      <PageHead title="Decision Log" meta="Every directive issued, what you did, and what happened next"/>
+      {currentDirective && <DirectiveStrip d={currentDirective}/>}
+
+      {needsAcknowledgement && (
+        <Panel title="Did you act on this?" style={{ borderLeft:`3px solid ${C.gold}` }}>
+          <p className="narrative" style={{ marginBottom:12 }}>
+            Last directive ({new Date(latestDirective.issued_at).toLocaleDateString()}): "{latestDirective.directive_text}"
+          </p>
+          <div style={{ display:"flex", gap:8, flexWrap:"wrap", marginBottom:10 }}>
+            {[["acted","Acted"],["partially","Partially"],["ignored","Ignored"],["disagreed","I disagreed"]].map(([val, lbl]) => (
+              <button key={val} className="btn btn-primary btn-md" onClick={() => acknowledgeDirective(latestDirective.id, val)}>{lbl}</button>
+            ))}
+          </div>
+          <label className="sr-only" htmlFor="ack-note">Note</label>
+          <textarea id="ack-note" className="di" placeholder="Optional note — why you did (or didn't) act..."
+            value={ackNote} onChange={e => setAckNote(e.target.value)}
+            style={{ minHeight:56, resize:"vertical", fontFamily:"'Cormorant Garamond',serif", fontSize:14 }}/>
+        </Panel>
+      )}
+
+      <Panel title="History">
+        {directivesLoading ? (
+          <div className="busy-line"><span className="spinner"/>Loading decision history...</div>
+        ) : directives.length === 0 ? (
+          <p className="panel-copy">No directives issued yet. Once Command Ledger issues its first call, it's logged here permanently — with whether you acted on it and what happened to the metric it targeted.</p>
+        ) : (
+          <ul className="log-list">
+            {directives.map(d => {
+              const uc = { critical:C.red, warn:C.amber, go:C.green, stable:C.gold }[d.severity] || C.gold;
+              const outcome = describeDirectiveOutcome(d);
+              const actionLabel = { acted:"Acted", partially:"Partially acted", ignored:"Ignored", disagreed:"Disagreed" }[d.action_taken] || "Awaiting response";
+              const outcomeColor = outcome.status === "measured"
+                ? (outcome.improved === true ? C.green : outcome.improved === false ? C.red : C.ink)
+                : C.inkDim;
+              return (
+                <li key={d.id} style={{ borderLeftColor:uc }}>
+                  <div className="log-top">
+                    <span className="log-text">{d.directive_text}</span>
+                    <span className="mini-date">{new Date(d.issued_at).toLocaleDateString()}</span>
+                  </div>
+                  <div className="log-meta">{actionLabel}{d.founder_note ? ` — "${d.founder_note}"` : ""}</div>
+                  <div className="log-meta" style={{ color:outcomeColor }}>{outcome.message}</div>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </Panel>
+    </>
+  );
+}
+
+// ─── SECTION: FORECASTS ───────────────────────────────────────
+function ForecastsSection({ ctx }) {
+  const { m, statusLine, go, runwayText, forwardRunway, activeObligations, upcoming, todayStr, setObligationActive,
+    affordInput, setAffordInput, setAffordAmount, affordResult, checkAfford, scenario, scenarioRunway,
+    scRevPct, setScRevPct, scExpPct, setScExpPct, scHire, setScHire, scCash, setScCash } = ctx;
+  const { hasData, proj90, proj90Confidence, vel, runwayConfidence, hiringCapacity } = m;
+  if (!hasData) return <><PageHead title="Forecasts" meta={statusLine}/><EmptyData go={go}/></>;
+
+  const weeks = summarizeCalendarByWeek(upcoming, todayStr, 91);
+  const maxWeek = Math.max(1, ...weeks.map(w => w.total));
+
+  return (
+    <>
+      <PageHead title="Forecasts" meta="Projections, committed costs and what-if scenarios"/>
+
+      <div className="row row-3">
+        <Panel title="90-day revenue projection">
+          <div className="big-num">{proj90Confidence.shown && safe(proj90) > 0 ? fmt(proj90) : "---"}</div>
+          <p className="panel-copy">Monthly revenue in three months at your trailing growth rate ({pc(vel)} last month), capped at ±50% a month.</p>
+          <ConfidenceLine c={proj90Confidence}/>
+        </Panel>
+        <Panel title="Runway on average burn">
+          <div className="big-num">{runwayText}</div>
+          <p className="panel-copy">Cash divided by average monthly net burn, less the reserve mode's safety share.</p>
+          <ConfidenceLine c={runwayConfidence}/>
+        </Panel>
+        <Panel title="Runway against known bills">
+          <div className="big-num">{!forwardRunway ? "---" : forwardRunway.crossesZero ? `${forwardRunway.monthsUntilCross} mo` : "12+ mo"}</div>
+          <p className="panel-copy">
+            {!forwardRunway ? "Needs a cash balance and at least one detected recurring obligation."
+              : forwardRunway.crossesZero ? `Cash reaches zero around ${forwardRunway.crossDate}, counting recurring bills on their real dates.`
+              : "Cash holds for the next 12 months against your recurring bills on their real dates."}
+          </p>
+        </Panel>
+      </div>
+
+      <div className="row row-21">
+        <Panel title="Committed costs">
+          {activeObligations.length === 0 ? (
+            <p className="panel-copy">No recurring obligations detected yet. Three similar payments on a steady schedule (rent, payroll, a quarterly tax payment) are needed before one shows here.</p>
+          ) : (
+            <ul className="batch-list">
+              {activeObligations.map(o => (
+                <li key={o.id}>
+                  <div style={{ minWidth:0 }}>
+                    <div className="batch-name" style={{ textTransform:"capitalize" }}>{o.label}</div>
+                    <div className="batch-meta" style={{ textTransform:"capitalize" }}>{o.cadence}{o.amount_variance === "variable" ? " · variable" : ""} · next {o.next_expected}</div>
+                    <ConfidenceLine c={{ shown:true, level:o.confidence, reason:`${o.occurrences} occurrences observed` }}/>
+                  </div>
+                  <div style={{ textAlign:"right", flexShrink:0 }}>
+                    <div className="mini-amt">{fmt(o.typical_amount)}</div>
+                    <button className="panel-link" style={{ marginTop:4 }} onClick={() => setObligationActive(o.id, false)}>Mark ended</button>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </Panel>
+
+        <Panel title="Next 13 weeks">
+          {upcoming.length === 0 ? (
+            <p className="panel-copy">The week-by-week calendar fills in once recurring obligations are detected.</p>
+          ) : (
+            <ul className="week-list" aria-label="Committed costs by week">
+              {weeks.map(w => (
+                <li key={w.weekStart}>
+                  <span className="mini-date">{w.weekStart.slice(5)}</span>
+                  <span className="bar-track week-bar"><span style={{ width:`${(w.total / maxWeek) * 100}%`, background: w.total > 0 ? C.gold : "transparent" }}/></span>
+                  <span className="mini-amt">{w.total > 0 ? fmt(w.total) : "—"}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </Panel>
+      </div>
+
+      <div className="row row-12">
+        <Panel title="Can I afford it?">
+          <label className="di-lbl" htmlFor="afford-input">A hire, or any recurring cost, per month ($)</label>
+          <div style={{ display:"flex", gap:8 }}>
+            <input id="afford-input" type="number" min="0" className="di" placeholder={hiringCapacity > 0 ? `e.g. ${Math.round(hiringCapacity)}` : "e.g. 1500"}
+              value={affordInput} onChange={e => { setAffordInput(e.target.value); setAffordAmount(null); }} onKeyDown={e => e.key === "Enter" && checkAfford()}/>
+            <button className="btn btn-primary btn-md" onClick={checkAfford}>Check</button>
+          </div>
+          {affordResult && <div className={`d-alert ${affordResult.affordable ? "ok" : "crit"}`} style={{ marginTop:12 }}>{affordResult.message}</div>}
+          <p className="panel-copy" style={{ marginTop:10 }}>Tested over 12 months against your cash and recurring bills on their real dates.{hiringCapacity > 0 ? ` Your average profit alone covers up to ${fmt(hiringCapacity)}/month.` : ""}</p>
+        </Panel>
+
+        <Panel title="Scenario planning" action={(scRevPct !== 0 || scExpPct !== 0 || scHire !== 0 || scCash !== 0)
+          ? <button className="panel-link" onClick={() => { setScRevPct(0); setScExpPct(0); setScHire(0); setScCash(0); }}>Reset</button> : null}>
+          <div className="input-grid input-grid-4">
+            {[
+              { id:"sc-rev",  lbl:"Revenue change (%)",         v:scRevPct, s:setScRevPct },
+              { id:"sc-exp",  lbl:"Expense change (%)",         v:scExpPct, s:setScExpPct },
+              { id:"sc-hire", lbl:"New hire, monthly cost ($)", v:scHire,   s:setScHire, min:0 },
+              { id:"sc-cash", lbl:"One-time cash change ($)",   v:scCash,   s:setScCash },
+            ].map(f => (
+              <div key={f.id} className="input-group">
+                <label className="di-lbl" htmlFor={f.id}>{f.lbl}</label>
+                <input id={f.id} className="di" type="number" min={f.min} value={f.v} onChange={e => f.s(Number(e.target.value))}/>
+              </div>
+            ))}
+          </div>
+          <div className="kpi4" style={{ gap:12 }}>
+            {[
+              { lbl:"Margin", before:pc(scenario.before.margin), after:pc(scenario.after.margin), better: scenario.after.margin >= scenario.before.margin },
+              { lbl:"True free cash", before:fmt(scenario.before.free), after:fmt(scenario.after.free), better: scenario.after.free >= scenario.before.free },
+              { lbl:"Cash position", before:scenarioRunway(scenario.before), after:scenarioRunway(scenario.after),
+                better: scenario.after.cashFlowPositive || scenario.after.burnMonths >= scenario.before.burnMonths },
+              { lbl:"Risk score", before:`${scenario.before.risk.score.toFixed(0)} - ${scenario.before.risk.label}`, after:`${scenario.after.risk.score.toFixed(0)} - ${scenario.after.risk.label}`, better: scenario.after.risk.score <= scenario.before.risk.score },
+            ].map((row, i) => (
+              <div key={i} className="scenario-cell">
+                <div className="card-lbl">{row.lbl}</div>
+                <div className="scenario-before">{row.before}</div>
+                <div className="scenario-after" style={{ color: row.better ? C.green : C.red }}>→ {row.after}</div>
+              </div>
+            ))}
+          </div>
+          <p className="panel-copy" style={{ marginTop:10 }}>Nothing here is saved. It reruns your real calculation engine on a hypothetical month.</p>
+        </Panel>
+      </div>
+    </>
+  );
+}
+
+// ─── SECTION: SETTINGS ────────────────────────────────────────
+function SettingsSection({ ctx }) {
+  const { user, profile, plan, mode, setMode, onUpgrade, onBuyDiagnostic, onProfileChange, go } = ctx;
+  const [name, setName] = useState(profile?.name || "");
+  const [business, setBusiness] = useState(profile?.business || "");
+  const [saving, setSaving] = useState(false);
+  const [msg, setMsg] = useState(null);
+  const dirty = name.trim() !== (profile?.name || "") || business.trim() !== (profile?.business || "");
+
+  const save = async e => {
+    e.preventDefault();
+    setSaving(true); setMsg(null);
+    // plan, status and paypal_subscription_id are never sent: the database
+    // guard would discard them anyway, and only the PayPal webhook sets them.
+    const { data, error } = await supabase.from("profiles")
+      .update({ name: name.trim() || null, business: business.trim() || null, updated_at: new Date().toISOString() })
+      .eq("id", user.id).select().single();
+    setSaving(false);
+    if (error) { console.error("Profile update failed:", error); setMsg({ t:"crit", text:"Your profile could not be saved. Nothing was changed — try again." }); return; }
+    onProfileChange(data);
+    setMsg({ t:"ok", text:"Saved." });
+  };
+
+  const statusText = { active:"Active", suspended:"Suspended — a payment failed; PayPal will retry", canceled:"Cancelled", expired:"Expired" }[profile?.status] || "Active";
+
+  return (
+    <>
+      <PageHead title="Settings" meta={user?.email}/>
+      <div className="row row-2">
+        <Panel title="Profile">
+          <form onSubmit={save} className="form-stack">
+            <div className="input-group">
+              <label className="di-lbl" htmlFor="set-name">Name</label>
+              <input id="set-name" className="di" value={name} maxLength={120} onChange={e => setName(e.target.value)}/>
+            </div>
+            <div className="input-group">
+              <label className="di-lbl" htmlFor="set-business">Business name</label>
+              <input id="set-business" className="di" value={business} maxLength={160} onChange={e => setBusiness(e.target.value)} placeholder="Shown on your reports"/>
+            </div>
+            <div className="input-group">
+              <label className="di-lbl" htmlFor="set-email">Email</label>
+              <input id="set-email" className="di" value={user?.email || ""} readOnly aria-readonly="true"/>
+            </div>
+            <div style={{ display:"flex", alignItems:"center", gap:12 }}>
+              <button className="btn btn-primary btn-md" type="submit" disabled={saving || !dirty}>{saving ? "Saving..." : "Save changes"}</button>
+              {msg && <span role="status" style={{ fontSize:12.5, color: msg.t === "ok" ? C.green : C.red }}>{msg.text}</span>}
+            </div>
+          </form>
+        </Panel>
+
+        <Panel title="Plan and billing">
+          <dl className="kv">
+            <dt>Plan</dt><dd>{PLANS[plan].name}</dd>
+            <dt>Price</dt><dd>${PLANS[plan].usd.toLocaleString()} {PLANS[plan].period}</dd>
+            <dt>Status</dt><dd>{statusText}</dd>
+          </dl>
+          <div style={{ display:"flex", gap:10, flexWrap:"wrap", marginTop:14 }}>
+            {plan === "software" && <button className="btn btn-primary btn-md" onClick={onUpgrade}>Add Command Advisory</button>}
+            <a className="btn btn-outline btn-md" href="https://www.paypal.com/myaccount/autopay/" target="_blank" rel="noopener noreferrer">Manage or cancel in PayPal</a>
+          </div>
+          <p className="panel-copy" style={{ marginTop:12 }}>
+            Subscriptions are billed and cancelled through PayPal. Upgrading cancels your current subscription automatically once the new one is active.
+            {plan === "software" && " Annual billing ($990/year) is arranged by email."}
+          </p>
+          <button className="panel-link" style={{ marginTop:8 }} onClick={onBuyDiagnostic}>Buy a one-time ${DIAGNOSTIC.usd.toLocaleString()} Financial Diagnostic<Icon name="arrow" size={14}/></button>
+        </Panel>
+      </div>
+
+      <div className="row row-2">
+        <Panel title="Reserve mode">
+          <div style={{ marginBottom:12 }}><ReserveModeToggle mode={mode} setMode={setMode}/></div>
+          <p className="panel-copy">
+            Safe mode holds back 30% of profit for tax and 20% as a safety buffer; Growth mode holds back 25% and 10%. It changes True Free Cash, runway and hiring capacity everywhere. Saved on this device.
+          </p>
+        </Panel>
+        <Panel title="Your data">
+          <p className="panel-copy">
+            Transactions you upload are stored in your private history, readable only by your login. The uploaded file itself is not kept. Deleting an upload removes every transaction it added.
+          </p>
+          <div style={{ display:"flex", gap:10, flexWrap:"wrap", marginTop:12 }}>
+            <button className="btn btn-outline btn-md" onClick={() => go("transactions")}>Manage uploads</button>
+            <a className="btn btn-outline btn-md" href="mailto:commandledger@gmail.com?subject=Delete%20my%20account">Request account deletion</a>
+          </div>
+        </Panel>
+      </div>
+    </>
+  );
+}
+
+// ─── SECTION: HELP & SUPPORT ──────────────────────────────────
+const HELP_FAQ = [
+  ["How is runway calculated?", "Your cash balance divided by average monthly net burn (expenses minus revenue), less the reserve mode's safety share. If revenue covers costs, there is no burn and runway shows \"No burn\". Forecasts also shows runway against your recurring bills on their real dates, which catches a large bill landing soon."],
+  ["What is True Free Cash?", "Net profit for the selected period, after the reserve mode's tax and safety shares. A loss reserves nothing, so free cash is the full loss."],
+  ["What is Hiring Capacity?", "The largest fully-loaded monthly cost (salary, payroll tax, benefits) your average monthly profit covers after the safety share. It scales with your business. To test a specific salary against your cash and bills, use Can I afford it? under Forecasts."],
+  ["Why do some numbers show ---?", "A metric whose inputs are missing is shown as ---, never as zero, because a zero would be a claim. Add the missing input (for example a cash balance) and it appears."],
+  ["What do the confidence labels mean?", "Each metric is graded on how many months of data stand behind it and how recent your latest transaction is. Under three months is low confidence; data older than 45 days lowers it a level."],
+  ["What does the period selector change?", "Which uploaded transactions feed the metrics and tables: the last 3, 6 or 12 months, or all time. Recurring obligations are always detected from your full history."],
+];
+
+function HelpSection({ ctx }) {
+  const { plan } = ctx;
+  return (
+    <>
+      <PageHead title="Help & Support" meta="How the numbers work, and how to reach us"/>
+      <div className="row row-12">
+        <Panel title="Contact">
+          <p className="panel-copy">Questions about your numbers, your data or your subscription:</p>
+          <a className="btn btn-primary btn-md" style={{ marginTop:12, alignSelf:"flex-start" }} href="mailto:commandledger@gmail.com?subject=Command%20Ledger%20support">Email support</a>
+          {plan === "advisory" && (
+            <>
+              <p className="panel-copy" style={{ marginTop:16 }}>Command Advisory: direct line for capital decisions, priority 4-hour response, and your monthly 60-minute strategy call.</p>
+              <div style={{ display:"flex", gap:10, flexWrap:"wrap", marginTop:12 }}>
+                <a className="btn btn-outline btn-md" href="mailto:commandledger@gmail.com?subject=Advisory%20support%20request">Email the advisory line</a>
+                <a className="btn btn-outline btn-md" href="https://calendly.com/commandledger" target="_blank" rel="noopener noreferrer">Book a session</a>
+              </div>
+            </>
+          )}
+        </Panel>
+        <Panel title="How the numbers work">
+          <div className="faq-list">
+            {HELP_FAQ.map(([q, a]) => (
+              <details key={q} className="faq-d">
+                <summary>{q}</summary>
+                <p>{a}</p>
+              </details>
+            ))}
+          </div>
+        </Panel>
+      </div>
+    </>
   );
 }
 
@@ -3114,19 +3952,26 @@ export default function App() {
     }
   }, []);
 
+  // Workspace paths (/dashboard, /reports ...) belong to the signed-in app.
+  // A signed-out visitor on one is shown the marketing site at "/".
+  const showMarketing = useCallback(() => {
+    if (isAppPath(window.location.pathname)) window.history.replaceState(null, "", "/");
+    setAppState("marketing");
+  }, []);
+
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
       if (session?.user) loadProfile(session.user);
-      else setAppState("marketing");
+      else showMarketing();
     });
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_e, session) => {
       if (session?.user) loadProfile(session.user);
-      else { setUser(null); setProfile(null); setAppState("marketing"); }
+      else { setUser(null); setProfile(null); showMarketing(); }
     });
 
     return () => subscription.unsubscribe();
-  }, [loadProfile]);
+  }, [loadProfile, showMarketing]);
 
   // Access is granted by the PayPal webhook, which can land seconds or minutes
   // after the buyer approves. Reloading the profile once, a second later, used
@@ -3224,6 +4069,7 @@ export default function App() {
             onLogout={async () => { await supabase.auth.signOut(); }}
             onUpgrade={() => { if (resolvePlanKey(profile.plan) === "software") openSubscription("advisory"); }}
             onBuyDiagnostic={() => setPayModal("diagnostic")}
+            onProfileChange={setProfile}
           />
         ) : (
           <PaywallGate
@@ -3239,3 +4085,4 @@ export default function App() {
     </>
   );
 }
+
