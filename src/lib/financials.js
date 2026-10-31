@@ -1248,7 +1248,7 @@ export function detectTrends(rows, seasonalPattern = null) {
   }
 
   if (seasonalPattern) {
-    const note = ` This may reflect a recurring seasonal pattern for ${seasonalPattern.month} rather than a new problem — it has moved this way for ${seasonalPattern.occurrences} years running.`;
+    const note = ` This may reflect a recurring seasonal pattern for ${seasonalPattern.month} rather than a new problem: it has moved this way for ${seasonalPattern.occurrences} years running.`;
     return trends.map(t => (t.type === "margin" || t.type === "burn") ? { ...t, message: t.message + note, seasonallyAnnotated: true } : t);
   }
 
@@ -1439,7 +1439,7 @@ export function computeMetrics(rows, manual, mode, context = {}) {
 
   const runwayConfidence = metricConfidence(
     cashFlowPositive || hasCashData,
-    "no cash balance entered — add it in Connect Data to calculate runway",
+    "no cash balance entered. Add it under Transactions to calculate runway",
     n, lastTxnDate
   );
   const breakEvenConfidence = metricConfidence(hasData, "no revenue/expense data yet", n, lastTxnDate);
@@ -1630,10 +1630,10 @@ export function computeSeasonallyAdjustedVelocity(rows) {
 // weight as a year of verified trend data.
 export function computeHistoricalConfidence(monthsOfHistory) {
   const n = monthsOfHistory || 0;
-  if (n <= 1)  return { score: 40, label: "low",       reason: "based on a single month — no trend context available" };
-  if (n <= 5)  return { score: 60, label: "medium",     reason: `based on ${n} months of history — an early trend signal` };
-  if (n <= 11) return { score: 80, label: "high",       reason: `based on ${n} months of history — a real trend, not yet a full year` };
-  return          { score: 92, label: "very high",  reason: `based on ${n} months of history — enough to account for seasonality` };
+  if (n <= 1)  return { score: 40, label: "low",       reason: "based on a single month, with no trend context yet" };
+  if (n <= 5)  return { score: 60, label: "medium",     reason: `based on ${n} months of history, an early trend signal` };
+  if (n <= 11) return { score: 80, label: "high",       reason: `based on ${n} months of history, a real trend but not yet a full year` };
+  return          { score: 92, label: "very high",  reason: `based on ${n} months of history, enough to account for seasonality` };
 }
 
 // Turns the computed trajectory into the kind of sentence a CFO would
@@ -1641,7 +1641,7 @@ export function computeHistoricalConfidence(monthsOfHistory) {
 // computed streak above; nothing is invented.
 export function buildFounderNarrative(trajectory, currentMargin) {
   if (!trajectory) {
-    return `Margin is ${pc(currentMargin)} this period. Connect more months of history for trend context — one data point isn't a trend.`;
+    return `Margin is ${pc(currentMargin)} this period. Connect more months of history for trend context: one data point isn't a trend.`;
   }
   const parts = [];
 
@@ -1659,7 +1659,7 @@ export function buildFounderNarrative(trajectory, currentMargin) {
   }
 
   if (trajectory.cashFlow.direction === "deteriorating" && trajectory.cashFlow.streak.length >= 2) {
-    parts.push(`Net burn has worsened for ${trajectory.cashFlow.streak.length + 1} straight months — this is a trend, not a one-off.`);
+    parts.push(`Net burn has worsened for ${trajectory.cashFlow.streak.length + 1} straight months. This is a trend, not a one-off.`);
   }
 
   return parts.join(" ");
@@ -1699,7 +1699,7 @@ export function computeDirective({ margin, burnMonths, free, vel, conv, ltvcac, 
             : "Reduce reliance on your largest client before it becomes a crisis.",
         reason: tooFewPayers
           ? `You have ${concentration.distinctPayers} distinct paying client${concentration.distinctPayers === 1 ? "" : "s"} this period. Losing any one of them is a material hit to revenue, regardless of how the dollars split.`
-          : `${concentration.largestPct.toFixed(0)}% of revenue comes from your single largest client. One client exit or contract loss exposes the business at this concentration — this is not visible until it is catastrophic.`,
+          : `${concentration.largestPct.toFixed(0)}% of revenue comes from your single largest client. One client exit or contract loss exposes the business at this concentration, and the risk stays invisible until it is catastrophic.`,
         severity: isCritical ? "critical" : "warn", rule: "client_concentration", targetMetric: "concentration",
       };
     }
@@ -1715,7 +1715,7 @@ export function computeDirective({ margin, burnMonths, free, vel, conv, ltvcac, 
     };
     if (safe(margin) > 40 && safe(conv) > 20) return {
       text: "Scale lead acquisition now. Your funnel is ready.",
-      reason: `Margin at ${pc(margin)} and conversion at ${pc(conv)} are both above threshold. This is a deployment window. Increase lead volume 30% --- the economics support it.`,
+      reason: `Margin at ${pc(margin)} and conversion at ${pc(conv)} are both above threshold. This is a deployment window. Increase lead volume 30%; the economics support it.`,
       severity: "go", rule: "scale_window", targetMetric: "vel",
     };
     // There is no "hire now" directive. Telling a founder to hire needs a
@@ -1725,7 +1725,7 @@ export function computeDirective({ margin, burnMonths, free, vel, conv, ltvcac, 
     // with checkAffordability().
     if (safe(vel) < 5 && safe(vel) >= 0) return {
       text: "Revenue growth has stalled. Find the constraint this week.",
-      reason: `Velocity at ${pc(vel)}/month signals a blockage --- pipeline, conversion, or retention. Diagnose before spending more on growth.`,
+      reason: `Velocity at ${pc(vel)}/month signals a blockage in pipeline, conversion or retention. Diagnose before spending more on growth.`,
       severity: "warn", rule: "stalled_growth", targetMetric: "vel",
     };
     return {
@@ -1775,8 +1775,8 @@ export function describeDirectiveOutcome(directive) {
     return {
       status: "pending",
       message: daysRemaining > 0
-        ? `Pending — measured 60 days after issue (${daysRemaining} day${daysRemaining === 1 ? "" : "s"} remaining).`
-        : "Pending — outcome not yet measured.",
+        ? `Pending: measured 60 days after issue (${daysRemaining} day${daysRemaining === 1 ? "" : "s"} remaining).`
+        : "Pending: outcome not yet measured.",
     };
   }
 
@@ -1788,7 +1788,7 @@ export function describeDirectiveOutcome(directive) {
     status: "measured",
     improved: unchanged ? null : improved,
     message: unchanged
-      ? `${meta.label} has not moved — still ${meta.fmt(after)}.`
+      ? `${meta.label} has not moved: still ${meta.fmt(after)}.`
       : `${meta.label} moved from ${meta.fmt(before)} to ${meta.fmt(after)}.`,
   };
 }
@@ -1908,7 +1908,7 @@ export function buildAlerts({
     (directives || [])
       .filter(d => d.outcome_at && daysBetween(String(d.outcome_at).slice(0, 10), today) <= 14)
       .forEach(d => alerts.push({ id: `outcome-${d.id}`, severity: "info", title: "Directive outcome measured",
-        detail: `"${d.directive_text}" — ${describeDirectiveOutcome(d).message}`, section: "decisions" }));
+        detail: `"${d.directive_text}": ${describeDirectiveOutcome(d).message}`, section: "decisions" }));
   }
   const rank = { critical: 0, warning: 1, info: 2 };
   return alerts.sort((a, b) => rank[a.severity] - rank[b.severity]);

@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { createClient } from "@supabase/supabase-js";
-import { fmt, pc, safe, parseAnyCSV, computeMetrics, runScenario, parseTransactions, computeDedupeHash, aggregateTransactionsByMonth, computeRevenueConcentration, detectRecurringObligations, computeForwardRunway, checkAffordability, detectMissedObligations, projectForwardCalendar, summarizeCalendarByWeek, computeDirective, getDirectiveMetricValue, describeDirectiveOutcome, checkoutBlockReason, fmtCompact, filterTransactions, searchWorkspace, buildAlerts, buildReportCsv } from "./lib/financials.js";
+import { fmt, pc, safe, parseAnyCSV, computeMetrics, runScenario, parseTransactions, computeDedupeHash, aggregateTransactionsByMonth, computeRevenueConcentration, detectRecurringObligations, computeForwardRunway, checkAffordability, detectMissedObligations, projectForwardCalendar, summarizeCalendarByWeek, computeDirective, getDirectiveMetricValue, describeDirectiveOutcome, checkoutBlockReason, computeConfidence, fmtCompact, filterTransactions, searchWorkspace, buildAlerts, buildReportCsv } from "./lib/financials.js";
 
 const supabase = createClient(
   import.meta.env.VITE_SUPABASE_URL,
@@ -61,490 +61,537 @@ const LEGACY_PLAN_KEYS = { essentials:"software", pro:"advisory", elite:"advisor
 const resolvePlanKey = (key) => (key && PLANS[key]) ? key : (LEGACY_PLAN_KEYS[key] || "software");
 const planOf = (key) => PLANS[resolvePlanKey(key)];
 
+// Colour tokens for inline styles. Each is a CSS variable defined once in
+// :root (see CSS below), so inline styles and the stylesheet share one
+// source of truth, sampled from the brand mark. See DESIGN.md.
 const C = {
-  bg:"#050709",surface:"#0A0D14",surfaceHigh:"#0F1320",
-  border:"#161C2E",borderBright:"#243050",
-  gold:"#D8DADE",goldBright:"#EDEEF1",goldDim:"#5A5D64",goldGlow:"rgba(216,218,222,0.12)",
-  cream:"#F0E8D8",blue:"#4A7CF7",blueGlow:"rgba(74,124,247,0.1)",
-  green:"#2ABF85",greenGlow:"rgba(42,191,133,0.1)",
-  red:"#E84855",redGlow:"rgba(232,72,85,0.1)",
-  amber:"#E8A020",amberGlow:"rgba(232,160,32,0.1)",
-  ink:"#8898B8",inkDim:"#7A7E88",white:"#F4F7FF",
+  bg:"var(--bg)", panel:"var(--panel)", panel2:"var(--panel-2)", panel3:"var(--panel-3)",
+  line:"var(--line)", lineStrong:"var(--line-strong)",
+  text:"var(--text)", text2:"var(--text-2)", text3:"var(--text-3)",
+  platinum:"var(--platinum)", platinumHi:"var(--platinum-hi)", silver:"var(--silver)", pewter:"var(--pewter)",
+  positive:"var(--positive)", warning:"var(--warning)", danger:"var(--danger)",
 };
 
 const CSS = `
-@import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,500;0,600;1,300;1,400&family=Syne:wght@400;500;600;700;800&family=JetBrains+Mono:wght@300;400;500&display=swap');
-*,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
-html{scroll-behavior:smooth;}
-body{background:#050709;color:#F4F7FF;font-family:'Syne',sans-serif;-webkit-font-smoothing:antialiased;overflow-x:hidden;}
-::selection{background:#5A5D64;color:#F0E8D8;}
-::-webkit-scrollbar{width:3px;}::-webkit-scrollbar-track{background:#050709;}::-webkit-scrollbar-thumb{background:#161C2E;}
-@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.3}}
-@keyframes fadeUp{from{opacity:0;transform:translateY(24px)}to{opacity:1;transform:translateY(0)}}
-@keyframes fadeIn{from{opacity:0}to{opacity:1}}
-@keyframes slideDown{from{opacity:0;transform:translateY(-10px)}to{opacity:1;transform:translateY(0)}}
-@keyframes dotPulse{0%,80%,100%{transform:scale(0.6);opacity:0.4}40%{transform:scale(1);opacity:1}}
-@keyframes spin{to{transform:rotate(360deg)}}
-@keyframes scrollLine{0%{transform:scaleY(0);transform-origin:top}50%{transform:scaleY(1);transform-origin:top}51%{transform-origin:bottom}100%{transform:scaleY(0);transform-origin:bottom}}
-@keyframes gridDrift{from{background-position:0 0}to{background-position:80px 80px}}
-.reveal{opacity:1;transform:none;}
-@media(prefers-reduced-motion:no-preference){
-  .reveal{opacity:0;transform:translateY(28px);transition:opacity 0.7s cubic-bezier(0.16,1,0.3,1),transform 0.7s cubic-bezier(0.16,1,0.3,1);}
-  .reveal.in{opacity:1;transform:translateY(0);}
-  .hero-grid{animation:gridDrift 44s linear infinite;}
+@import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,500;0,600;1,400&family=Syne:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap');
+
+/* ── Design tokens: the single source of truth (DESIGN.md). Every colour
+   is sampled from the brand mark, assets/Logo.png: its near-black field
+   and its brushed-silver ramp. The three financial colours carry meaning
+   only, and are never decoration. Components read these variables; no
+   component hardcodes a colour of its own. ── */
+:root{
+  --bg:#0D0D0F;
+  --panel:#151517;
+  --panel-2:#1C1C1F;
+  --panel-3:#232327;
+  --line:#2A2A2E;
+  --line-strong:#3F3F41;
+  --text:#EDEDEE;
+  --text-2:#AAAAAC;
+  --text-3:#8C8C8D;
+  --platinum:#DEDEDE;
+  --platinum-hi:#F4F4F5;
+  --silver:#AAAAAC;
+  --pewter:#626264;
+  --on-platinum:#0D0D0F;
+  --metal:linear-gradient(180deg,#FFFFFF 0%,#EDEDEE 50%,#C4C4C6 100%);
+  --positive:#28A879;
+  --warning:#D4A34F;
+  --danger:#E05252;
+  --f-display:'Cormorant Garamond',Georgia,'Times New Roman',serif;
+  --f-ui:'Syne',system-ui,-apple-system,'Segoe UI',sans-serif;
+  --f-num:'JetBrains Mono',ui-monospace,Consolas,monospace;
+  --radius:3px;
+  --wrap:1200px;
+  --gutter:32px;
+  --section:clamp(72px,9vw,128px);
 }
-.nav{position:fixed;top:0;left:0;right:0;z-index:300;height:64px;display:flex;align-items:center;justify-content:space-between;padding:0 48px;border-bottom:1px solid transparent;transition:all 0.4s;}
-.nav.scrolled{background:rgba(5,7,9,0.96);border-color:#161C2E;backdrop-filter:blur(24px);}
-.nav-logo{display:flex;align-items:center;gap:12px;cursor:pointer;}
-.logomark{width:36px;height:36px;border:1px solid #D8DADE;display:flex;align-items:center;justify-content:center;font-family:'Cormorant Garamond',serif;font-size:18px;color:#D8DADE;position:relative;flex-shrink:0;}
-.logomark::after{content:'';position:absolute;inset:4px;border:0.5px solid #5A5D64;}
-.wordmark{font-family:'Cormorant Garamond',serif;font-size:20px;font-weight:500;color:#F0E8D8;letter-spacing:0.04em;}
-.wordmark-sub{font-size:9px;color:#D8DADE;letter-spacing:0.14em;text-transform:uppercase;}
-.nav-links{display:flex;align-items:center;gap:32px;list-style:none;}
-.nav-links a{font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:#8898B8;text-decoration:none;transition:color 0.2s;cursor:pointer;}
-.nav-links a:hover{color:#F0E8D8;}
-.nav-cta{display:flex;align-items:center;gap:10px;}
-.nav-burger{display:none;flex-direction:column;justify-content:center;gap:5px;width:36px;height:36px;background:transparent;border:1px solid transparent;cursor:pointer;padding:0;}
-.nav-burger span{width:20px;height:1.5px;background:#D8DADE;transition:transform 0.25s ease,opacity 0.25s ease;}
-.nav-burger.open span:nth-child(1){transform:translateY(6.5px) rotate(45deg);}
-.nav-burger.open span:nth-child(2){opacity:0;}
-.nav-burger.open span:nth-child(3){transform:translateY(-6.5px) rotate(-45deg);}
-.nav-mobile{position:fixed;top:64px;left:0;right:0;z-index:299;background:rgba(5,7,9,0.98);backdrop-filter:blur(24px);border-bottom:1px solid #161C2E;padding:8px 24px 20px;display:flex;flex-direction:column;animation:slideDown 0.25s ease both;}
-.nav-mobile a{font-size:13px;letter-spacing:0.1em;text-transform:uppercase;color:#8898B8;text-decoration:none;padding:16px 4px;border-bottom:1px solid #161C2E;cursor:pointer;}
-.nav-mobile a:hover{color:#F0E8D8;}
-.btn{font-family:'Syne',sans-serif;font-weight:700;cursor:pointer;border-radius:1px;transition:all 0.2s;letter-spacing:0.12em;text-transform:uppercase;border:none;}
-.btn-ghost{font-size:11px;padding:8px 20px;background:transparent;border:1px solid #161C2E!important;color:#8898B8;}
-.btn-ghost:hover{border-color:#D8DADE!important;color:#D8DADE;}
-.btn-gold{font-size:11px;padding:8px 24px;background:#D8DADE;border:1px solid #D8DADE!important;color:#050709;}
-.btn-gold:hover{background:#EDEEF1;}
-.btn-lg{font-size:12px;padding:14px 40px;}
-.btn-full{width:100%;padding:13px;font-size:11px;display:flex;align-items:center;justify-content:center;gap:8px;}
-.btn-primary{background:#D8DADE;border:1px solid #D8DADE!important;color:#050709;}
-.btn-primary:hover{background:#EDEEF1;transform:translateY(-1px);}
-.btn-outline{background:transparent;border:1px solid #161C2E!important;color:#8898B8;}
-.btn-outline:hover{border-color:#D8DADE!important;color:#D8DADE;}
-.btn:disabled{opacity:0.45;cursor:default;transform:none!important;}
-.spinner{width:16px;height:16px;border:2px solid #161C2E;border-top-color:#D8DADE;border-radius:50%;animation:spin 0.7s linear infinite;display:inline-block;flex-shrink:0;}
-.hero{min-height:100vh;display:grid;grid-template-columns:1.05fr 1fr;gap:56px;align-items:center;text-align:left;padding:150px 48px 80px;position:relative;overflow:hidden;}
-.hero-bg{position:absolute;inset:0;pointer-events:none;background:radial-gradient(ellipse 70% 60% at 50% 0%,rgba(216,218,222,0.07) 0%,transparent 60%);}
-.hero-grid{position:absolute;inset:0;pointer-events:none;background-image:linear-gradient(#161C2E 1px,transparent 1px),linear-gradient(90deg,#161C2E 1px,transparent 1px);background-size:80px 80px;mask-image:radial-gradient(ellipse 80% 80% at 50% 50%,black 0%,transparent 70%);opacity:0.4;}
-.hero-copy{position:relative;z-index:1;}
-.eyebrow{display:inline-flex;align-items:center;gap:10px;font-size:10px;letter-spacing:0.2em;text-transform:uppercase;color:#D8DADE;font-weight:600;border:1px solid #5A5D64;padding:6px 16px;margin-bottom:40px;animation:fadeUp 0.8s ease both;}
-.eyebrow-dot{width:5px;height:5px;border-radius:50%;background:#D8DADE;box-shadow:0 0 8px #D8DADE;animation:pulse 2s infinite;}
-.hero-title{font-family:'Cormorant Garamond',serif;font-size:clamp(38px,4.6vw,64px);font-weight:300;line-height:1.04;color:#F0E8D8;letter-spacing:-0.02em;margin-bottom:24px;animation:fadeUp 0.8s 0.1s ease both;}
-.hero-title em{font-style:italic;color:#D8DADE;}
-.hero-sub{font-size:16px;line-height:1.75;color:#8898B8;max-width:480px;margin:0 0 40px;font-family:'Cormorant Garamond',serif;font-weight:300;animation:fadeUp 0.8s 0.2s ease both;}
-.hero-cta{display:flex;gap:16px;justify-content:flex-start;flex-wrap:wrap;animation:fadeUp 0.8s 0.3s ease both;}
-.hero-proof{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:28px;font-family:'JetBrains Mono',monospace;font-size:10.5px;letter-spacing:0.05em;color:#7A7E88;animation:fadeUp 0.8s 0.35s ease both;}
-.hero-proof-sep{color:#243050;}
-.hero-preview{position:relative;z-index:1;background:#0A0D14;border:1px solid #243050;box-shadow:0 24px 64px -24px rgba(0,0,0,0.6);animation:fadeUp 0.8s 0.4s ease both;}
-.hero-preview-bar{display:flex;align-items:center;gap:8px;padding:12px 16px;border-bottom:1px solid #161C2E;background:#0F1320;}
-.hero-preview-live{width:auto;height:auto;border-radius:0;background:transparent;margin-left:auto;display:flex;align-items:center;gap:6px;font-family:'JetBrains Mono',monospace;font-size:9px;letter-spacing:0.12em;text-transform:uppercase;color:#2ABF85;flex-shrink:0;}
-.hero-preview-live::before{content:'';width:5px;height:5px;border-radius:50%;background:#2ABF85;box-shadow:0 0 6px #2ABF85;animation:pulse 1.6s infinite;}
-.hero-preview-bar span{width:8px;height:8px;border-radius:50%;background:#243050;}
-.hero-preview-title{margin-left:8px;font-family:'JetBrains Mono',monospace;font-size:10px;color:#7A7E88;letter-spacing:0.04em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-.hero-preview-body{padding:24px;min-height:280px;}
-.hero-preview-empty{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;min-height:232px;border:2px dashed #161C2E;text-align:center;padding:24px;cursor:pointer;transition:border-color 0.2s;}
-.hero-preview-empty:hover{border-color:#5A5D64;}
-.hero-preview-cta{font-family:'Syne',sans-serif;font-size:12.5px;font-weight:600;color:#8898B8;line-height:1.6;max-width:260px;cursor:pointer;}
-.hero-preview-cta b{color:#D8DADE;}
-.hero-preview-or{font-size:10px;letter-spacing:0.12em;text-transform:uppercase;color:#5A5D64;}
-.hero-preview-try{font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:0.06em;text-transform:uppercase;color:#D8DADE;border:1px solid #5A5D64;padding:7px 14px;cursor:pointer;background:transparent;}
-.hero-preview-err{font-size:11px;color:#E84855;}
-.hero-preview-kpis{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:#161C2E;border:1px solid #161C2E;margin-bottom:1px;}
-.hpk{background:#0A0D14;padding:16px 18px;}
-.hpk-lbl{font-size:9px;letter-spacing:0.14em;text-transform:uppercase;color:#7A7E88;font-weight:600;margin-bottom:6px;}
-.hpk-val{font-family:'JetBrains Mono',monospace;font-size:20px;color:#F0E8D8;}
-.hero-preview-note{font-size:10.5px;color:#7A7E88;padding:12px 16px;border-top:1px solid #161C2E;font-family:'JetBrains Mono',monospace;}
-.hero-preview-reset{color:#D8DADE;cursor:pointer;text-decoration:underline;}
-.hero-scroll{position:absolute;bottom:40px;left:50%;transform:translateX(-50%);display:flex;flex-direction:column;align-items:center;gap:8px;font-size:9px;letter-spacing:0.2em;text-transform:uppercase;color:#7A7E88;}
-.scroll-line{width:1px;height:40px;background:linear-gradient(to bottom,#D8DADE,transparent);animation:scrollLine 2s ease-in-out infinite;}
-.stats-bar{display:grid;grid-template-columns:repeat(3,1fr);border-top:1px solid #161C2E;border-bottom:1px solid #161C2E;background:#0A0D14;}
-.stat{padding:32px 40px;border-right:1px solid #161C2E;}
-.stat:last-child{border-right:none;}
-.stat-n{font-family:'Cormorant Garamond',serif;font-size:42px;font-weight:300;color:#D8DADE;line-height:1;margin-bottom:8px;}
-.stat-l{font-size:10px;letter-spacing:0.16em;text-transform:uppercase;color:#8898B8;font-weight:600;}
-.sec{padding:100px 48px;}
-.sec-eye{font-size:10px;letter-spacing:0.2em;text-transform:uppercase;color:#D8DADE;font-weight:600;margin-bottom:16px;display:flex;align-items:center;gap:12px;justify-content:center;}
-.sec-eye::before,.sec-eye::after{content:'';flex:1;max-width:60px;height:1px;background:linear-gradient(to left,#5A5D64,transparent);}
-.sec-title{font-family:'Cormorant Garamond',serif;font-size:clamp(36px,5vw,58px);font-weight:300;line-height:1.08;color:#F0E8D8;letter-spacing:-0.01em;margin-bottom:20px;text-align:center;}
-.sec-title em{font-style:italic;color:#D8DADE;}
-.sec-body{font-size:15px;line-height:1.85;color:#8898B8;max-width:560px;font-family:'Cormorant Garamond',serif;margin:0 auto;text-align:center;}
-.feat-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:#161C2E;border:1px solid #161C2E;margin-top:64px;}
-.feat-card{background:#0A0D14;padding:40px 36px;transition:background 0.3s,transform 0.3s;position:relative;}
-.feat-card:hover{background:#0F1320;transform:translateY(-2px);}
-.feat-card::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:linear-gradient(to right,transparent,#5A5D64,transparent);opacity:0;transition:opacity 0.3s;}
-.feat-card:hover::before{opacity:1;}
-.feat-tag{display:inline-block;font-family:'JetBrains Mono',monospace;font-size:9px;letter-spacing:0.12em;text-transform:uppercase;color:#050709;background:#D8DADE;padding:3px 9px;margin-bottom:16px;}
-.feat-num{font-family:'JetBrains Mono',monospace;font-size:11px;color:#5A5D64;letter-spacing:0.1em;margin-bottom:24px;}
-.feat-title{font-family:'Cormorant Garamond',serif;font-size:22px;font-weight:500;color:#F0E8D8;margin-bottom:12px;}
-.feat-desc{font-size:13px;line-height:1.75;color:#8898B8;font-family:'Cormorant Garamond',serif;}
-.price-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:24px;margin-top:64px;max-width:1100px;margin-left:auto;margin-right:auto;}
-.price-card{background:#0A0D14;border:1px solid #161C2E;padding:36px 32px;position:relative;overflow:hidden;transition:transform 0.3s,box-shadow 0.3s;}
-.price-card:hover{transform:translateY(-4px);}
-.price-card.hot{border-color:#D8DADE;transform:scale(1.03);box-shadow:0 24px 64px -24px rgba(216,218,222,0.18);z-index:1;}
-.price-card.hot:hover{transform:scale(1.03) translateY(-4px);}
-.price-card.hot::after{content:'6 Seats';position:absolute;top:16px;right:16px;font-size:9px;letter-spacing:0.14em;text-transform:uppercase;color:#050709;background:#D8DADE;padding:4px 10px;font-weight:700;font-family:'Syne',sans-serif;}
-.price-tier{font-size:10px;letter-spacing:0.2em;text-transform:uppercase;color:#D8DADE;font-weight:600;margin-bottom:8px;}
-.price-tagline{font-family:'Cormorant Garamond',serif;font-size:13px;color:#8898B8;margin-bottom:16px;font-style:italic;}
-.price-usd{font-family:'Cormorant Garamond',serif;font-size:52px;font-weight:300;color:#F0E8D8;line-height:1;}
-.price-usd sup{font-size:22px;vertical-align:top;margin-top:10px;display:inline-block;}
-.price-zar{font-size:12px;color:#5A5D64;margin:4px 0;font-family:'JetBrains Mono',monospace;}
-.price-period{font-size:12px;color:#8898B8;margin-bottom:12px;font-family:'Cormorant Garamond',serif;}
-.price-grid-two{grid-template-columns:repeat(2,1fr);max-width:760px;}
-.price-note{font-size:11px;color:#7A7E88;margin-bottom:6px;font-family:'JetBrains Mono',monospace;letter-spacing:0.02em;}
-.price-diag{max-width:760px;margin:28px auto 0;background:#0A0D14;border:1px solid #161C2E;padding:26px 30px;display:flex;align-items:center;justify-content:space-between;gap:28px;text-align:left;}
-.price-diag-name{font-size:11px;letter-spacing:0.16em;text-transform:uppercase;color:#D8DADE;font-weight:600;margin-bottom:8px;}
-.price-diag-body{font-family:'Cormorant Garamond',serif;font-size:14px;color:#8898B8;line-height:1.6;}
-.price-diag-note{font-size:11px;color:#7A7E88;margin-top:8px;font-family:'JetBrains Mono',monospace;}
-.btn-link{background:none;border:0;padding:0;margin:0;font:inherit;color:#D8DADE;text-decoration:underline;text-underline-offset:3px;cursor:pointer;}
-.btn-link:hover{color:#EDEEF1;}
-.price-divider{height:1px;background:#161C2E;margin-bottom:24px;}
-.price-list{list-style:none;margin-bottom:28px;}
-.price-list li{display:flex;align-items:flex-start;gap:10px;font-size:13px;color:#8898B8;margin-bottom:10px;font-family:'Cormorant Garamond',serif;line-height:1.5;}
-.price-list li::before{content:'---';color:#D8DADE;flex-shrink:0;font-family:'JetBrains Mono',monospace;font-size:11px;margin-top:2px;}
-.excel-grid{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:#161C2E;border:1px solid #161C2E;text-align:left;margin-bottom:64px;position:relative;}
-.excel-arrow{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:40px;height:40px;border-radius:50%;background:#050709;border:1px solid #5A5D64;display:flex;align-items:center;justify-content:center;font-family:'JetBrains Mono',monospace;font-size:16px;color:#D8DADE;z-index:2;}
-@media(max-width:720px){.excel-grid{grid-template-columns:1fr;}.excel-arrow{display:none;}}
-.cta-sec{padding:120px 48px;text-align:center;position:relative;overflow:hidden;border-top:1px solid #161C2E;}
-.cta-sec::before{content:'';position:absolute;inset:0;background:radial-gradient(ellipse 60% 60% at 50% 50%,rgba(216,218,222,0.07) 0%,transparent 70%);}
-.cta-title{font-family:'Cormorant Garamond',serif;font-size:clamp(40px,6vw,72px);font-weight:300;color:#F0E8D8;line-height:1.08;margin-bottom:20px;}
-.cta-title em{font-style:italic;color:#D8DADE;}
-.footer{border-top:1px solid #161C2E;padding:40px 48px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:16px;}
-.footer-copy{font-size:11px;color:#7A7E88;font-family:'JetBrains Mono',monospace;}
-.footer-links{display:flex;gap:24px;list-style:none;}
-.footer-links a{font-size:11px;letter-spacing:0.1em;text-transform:uppercase;color:#7A7E88;text-decoration:none;transition:color 0.2s;cursor:pointer;}
-.footer-links a:hover{color:#8898B8;}
-.overlay{position:fixed;inset:0;z-index:500;background:rgba(5,7,9,0.94);backdrop-filter:blur(16px);display:flex;align-items:center;justify-content:center;padding:24px;animation:fadeIn 0.2s ease;}
-.modal{background:#0A0D14;border:1px solid #161C2E;width:100%;max-width:500px;position:relative;overflow:hidden;animation:slideDown 0.3s ease;}
-.modal::before{content:'';position:absolute;top:0;left:0;right:0;height:1px;background:linear-gradient(to right,transparent,#D8DADE,transparent);}
-.modal-head{padding:22px 28px 18px;border-bottom:1px solid #161C2E;display:flex;align-items:center;justify-content:space-between;}
-.modal-title{font-family:'Cormorant Garamond',serif;font-size:22px;color:#F0E8D8;}
-.modal-x{background:none;border:none;color:#7A7E88;font-size:24px;cursor:pointer;line-height:1;padding:4px;transition:color 0.2s;}
-.modal-x:hover{color:#F0E8D8;}
-.modal-body{padding:28px;}
-.plan-badge{background:#0F1320;border:1px solid #161C2E;padding:14px 18px;margin-bottom:22px;}
-.plan-badge-name{font-size:10px;text-transform:uppercase;letter-spacing:0.14em;color:#D8DADE;margin-bottom:4px;font-weight:600;}
-.plan-badge-price{font-family:'Cormorant Garamond',serif;font-size:26px;color:#F0E8D8;}
-.plan-badge-sub{font-size:11px;color:#7A7E88;font-family:'JetBrains Mono',monospace;margin-top:2px;}
-.modal-secure{font-size:11px;color:#7A7E88;text-align:center;margin-top:14px;font-family:'Cormorant Garamond',serif;}
-.pay-status{text-align:center;padding:28px 0;color:#8898B8;font-size:12px;font-family:'JetBrains Mono',monospace;}
-.pay-err{background:rgba(232,72,85,0.1);border:1px solid #E84855;padding:10px 14px;font-size:12px;color:#E8A0A8;margin-top:12px;border-radius:2px;}
-.auth-page{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;position:relative;background:#050709;}
-.auth-page::before{content:'';position:absolute;inset:0;background:radial-gradient(ellipse 60% 50% at 50% 30%,rgba(216,218,222,0.06) 0%,transparent 60%);}
-.auth-card{background:#0A0D14;border:1px solid #161C2E;width:100%;max-width:420px;position:relative;overflow:hidden;animation:slideDown 0.4s ease;z-index:1;}
-.auth-card::before{content:'';position:absolute;top:0;left:0;right:0;height:1px;background:linear-gradient(to right,transparent,#D8DADE,transparent);}
-.auth-logo-row{padding:28px 32px 0;display:flex;align-items:center;gap:12px;}
-.auth-h{padding:20px 32px 0;}
-.auth-title{font-family:'Cormorant Garamond',serif;font-size:28px;color:#F0E8D8;margin-bottom:6px;}
-.auth-sub{font-size:13px;color:#8898B8;font-family:'Cormorant Garamond',serif;line-height:1.6;}
-.auth-form{padding:28px 32px 36px;}
-.a-err{background:rgba(232,72,85,0.1);border:1px solid #E84855;padding:10px 14px;font-size:12px;color:#E8A0A8;margin-bottom:16px;}
-.a-ok{background:rgba(42,191,133,0.1);border:1px solid #2ABF85;padding:10px 14px;font-size:12px;color:#80C8A8;margin-bottom:16px;}
-.a-div{display:flex;align-items:center;gap:12px;margin:20px 0;}
-.a-div-line{flex:1;height:1px;background:#161C2E;}
-.a-link{font-size:12px;color:#8898B8;text-align:center;margin-top:14px;cursor:pointer;}
-.a-link span{color:#D8DADE;text-decoration:underline;}
-.fl{font-size:10px;text-transform:uppercase;letter-spacing:0.12em;color:#8898B8;margin-bottom:6px;display:block;font-weight:600;}
-.fi{width:100%;background:#0F1320;border:1px solid #161C2E;color:#F4F7FF;padding:10px 14px;font-size:13px;font-family:'JetBrains Mono',monospace;outline:none;transition:border-color 0.2s;margin-bottom:14px;}
-.fi:focus{border-color:#D8DADE;}
-.loading-screen{min-height:100vh;display:flex;align-items:center;justify-content:center;background:#050709;flex-direction:column;gap:16px;}
-.loading-logo{font-family:'Cormorant Garamond',serif;font-size:48px;color:#D8DADE;}
-.loading-text{font-size:11px;letter-spacing:0.2em;text-transform:uppercase;color:#7A7E88;}
-.mode-pills{display:flex;border:1px solid #161C2E;overflow:hidden;}
-.mpill{padding:5px 14px;font-size:10px;letter-spacing:0.1em;text-transform:uppercase;background:transparent;border:none;color:#7A7E88;cursor:pointer;font-family:'Syne',sans-serif;transition:all 0.15s;}
-.mpill.on{background:#0F1320;color:#D8DADE;}
-.card{background:#0A0D14;border:1px solid #161C2E;padding:22px;position:relative;overflow:hidden;transition:border-color 0.2s;}
-.card::before{content:'';position:absolute;top:0;left:0;right:0;height:1px;background:linear-gradient(to right,transparent,rgba(216,218,222,0.12),transparent);}
-.card:hover{border-color:#243050;}
-.card-sec{font-size:10px;letter-spacing:0.14em;text-transform:uppercase;color:#D8DADE;font-weight:600;margin-bottom:14px;display:flex;align-items:center;gap:8px;}
-.card-sec::after{content:'';flex:1;height:1px;background:linear-gradient(to right,#5A5D64,transparent);max-width:80px;}
-.card-lbl{font-size:9px;letter-spacing:0.18em;text-transform:uppercase;color:#7A7E88;font-weight:600;margin-bottom:4px;}
-.val{font-family:'Cormorant Garamond',serif;font-size:36px;font-weight:300;line-height:1;letter-spacing:-0.01em;}
-.val.g{color:#D8DADE;}.val.gr{color:#2ABF85;}.val.b{color:#4A7CF7;}.val.r{color:#E84855;}.val.a{color:#E8A020;}
-.delta{margin-top:8px;font-size:11px;font-family:'JetBrains Mono',monospace;display:flex;align-items:center;gap:4px;}
-.up{color:#2ABF85;}.dn{color:#E84855;}.nu{color:#7A7E88;}
-.kpi4{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;}
-.kpi3{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;}
-.g2{display:grid;grid-template-columns:1fr 1fr;gap:20px;}
-.g21{display:grid;grid-template-columns:2fr 1fr;gap:20px;}
-.g3{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;}
-.d-alert{padding:12px 16px;display:flex;align-items:flex-start;gap:10px;font-size:12px;line-height:1.5;border-left:2px solid;}
-.d-alert.crit{background:rgba(232,72,85,0.1);border-color:#E84855;color:#E8A0A8;}
-.d-alert.ok{background:rgba(42,191,133,0.1);border-color:#2ABF85;color:#80C8A8;}
-.d-alert.warn{background:rgba(232,160,32,0.1);border-color:#E8A020;color:#C89050;}
-.d-alert.info{background:rgba(74,124,247,0.1);border-color:#4A7CF7;color:#80A0E8;}
-/* Post-checkout activation notice. Fixed above every screen, because the
-   buyer may be on the paywall or the dashboard when it matters. */
-.activation-banner{position:fixed;top:0;left:0;right:0;z-index:400;display:flex;align-items:center;justify-content:center;gap:12px;padding:12px 16px;background:#1A1608;border-bottom:1px solid #E8A020;color:#E8D6B0;font-size:12.5px;line-height:1.5;}
-.activation-banner a{color:#E8A020;}
-@media(max-width:600px){.activation-banner{flex-direction:column;align-items:flex-start;}}
-.trend-bar{height:4px;border-radius:1px;overflow:hidden;background:#161C2E;margin-top:8px;}
-.trend-fill{height:100%;border-radius:1px;transition:width 0.8s ease;}
-.alloc-row{display:flex;align-items:center;gap:12px;padding:11px 0;border-bottom:1px solid #161C2E;}
-.alloc-row:last-child{border-bottom:none;}
-.alloc-icon{width:30px;height:30px;display:flex;align-items:center;justify-content:center;font-size:14px;flex-shrink:0;}
-.alloc-meta{flex:1;}
-.alloc-name{font-size:12px;color:#F0E8D8;font-weight:600;margin-bottom:2px;}
-.alloc-pct{font-size:10px;color:#8898B8;font-family:'JetBrains Mono',monospace;}
-.alloc-track{height:2px;background:#161C2E;margin-top:4px;}
-.alloc-fill{height:100%;transition:width 0.8s ease;}
-.alloc-amt{font-family:'Cormorant Garamond',serif;font-size:18px;}
-.ai-top{padding:12px 20px;border-bottom:1px solid #161C2E;display:flex;align-items:center;justify-content:space-between;}
-.ai-lbl{display:flex;align-items:center;gap:8px;font-size:10px;text-transform:uppercase;letter-spacing:0.14em;color:#7A7E88;font-weight:600;}
-.ai-glow{width:6px;height:6px;border-radius:50%;background:#D8DADE;box-shadow:0 0 10px #D8DADE;}
-.ai-body{padding:20px;min-height:90px;}
-.ai-txt{font-family:'Cormorant Garamond',serif;font-size:15px;line-height:2;color:#8898B8;font-style:italic;}
-.ai-txt p{margin-bottom:14px;}.ai-txt p:last-child{margin-bottom:0;}
-.ai-txt strong{color:#F0E8D8;font-style:normal;font-weight:500;}
-.ai-dots{display:flex;gap:6px;align-items:center;}
-.ai-dots span{width:6px;height:6px;border-radius:50%;background:#5A5D64;animation:dotPulse 1.4s ease-in-out infinite;}
-.ai-dots span:nth-child(2){animation-delay:0.2s;}.ai-dots span:nth-child(3){animation-delay:0.4s;}
-.ai-btn{background:transparent;border:1px solid #161C2E;color:#7A7E88;font-size:10px;letter-spacing:0.1em;text-transform:uppercase;padding:5px 14px;cursor:pointer;font-family:'Syne',sans-serif;transition:all 0.2s;}
-.ai-rec-field{padding:16px 20px;border-bottom:1px solid #161C2E;}
-.ai-rec-field:last-child{border-bottom:none;}
-.ai-rec-lbl{font-family:'JetBrains Mono',monospace;font-size:9.5px;letter-spacing:0.1em;text-transform:uppercase;margin-bottom:6px;}
-.ai-rec-body{font-size:14px;line-height:1.75;color:#8898B8;font-family:'Cormorant Garamond',serif;}
-.ai-rec-footer{display:flex;justify-content:space-between;align-items:center;gap:16px;padding:14px 20px;background:#0F1320;flex-wrap:wrap;}
-.ai-rec-chip{font-family:'JetBrains Mono',monospace;font-size:10px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;padding:4px 10px;border-radius:2px;}
-.ai-rec-conf{font-size:11px;color:#8898B8;font-family:'JetBrains Mono',monospace;}
-.ai-btn:hover{border-color:#D8DADE;color:#D8DADE;}
-.ai-btn:disabled{opacity:0.4;cursor:default;}
-.di-lbl{font-size:9px;letter-spacing:0.14em;text-transform:uppercase;color:#8898B8;margin-bottom:5px;display:block;}
-.di{background:#0F1320;border:1px solid #161C2E;color:#F4F7FF;padding:8px 12px;font-size:12px;font-family:'JetBrains Mono',monospace;outline:none;transition:border-color 0.2s;width:100%;}
-.di:focus{border-color:#D8DADE;}
+
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
+html{scroll-behavior:smooth;-webkit-text-size-adjust:100%;}
+body{background:var(--bg);color:var(--text);font-family:var(--f-ui);font-size:16px;line-height:1.6;-webkit-font-smoothing:antialiased;overflow-x:hidden;}
+::selection{background:var(--pewter);color:var(--text);}
+::-webkit-scrollbar{width:8px;height:8px;}
+::-webkit-scrollbar-track{background:var(--bg);}
+::-webkit-scrollbar-thumb{background:var(--line);border-radius:4px;}
+img{max-width:100%;display:block;}
+button,input,select,textarea{font-family:inherit;}
+a{color:inherit;}
+.tnum{font-variant-numeric:lining-nums tabular-nums;}
+@keyframes fadeIn{from{opacity:0}to{opacity:1}}
+@keyframes rise{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+@keyframes spin{to{transform:rotate(360deg)}}
+@keyframes dotPulse{0%,80%,100%{transform:scale(0.6);opacity:0.4}40%{transform:scale(1);opacity:1}}
+@keyframes skeletonPulse{0%,100%{opacity:0.45}50%{opacity:0.85}}
+@media(prefers-reduced-motion:reduce){
+  html{scroll-behavior:auto;}
+  *,*::before,*::after{animation-duration:0.01ms!important;animation-iteration-count:1!important;transition-duration:0.01ms!important;}
+}
+.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0;}
+.skip-link{position:absolute;left:12px;top:-60px;z-index:500;background:var(--platinum);color:var(--on-platinum);padding:8px 14px;font-size:13px;font-weight:700;text-decoration:none;}
+.skip-link:focus{top:8px;}
+:focus-visible{outline:2px solid var(--platinum);outline-offset:2px;}
+
+/* ── Brand. The logo is shown whole, at its own square proportions. Its
+   field is the same near-black as the page, and lighten blending lets its
+   darker vignette take on whatever surface holds it, so the square never
+   reads as a box; the mark itself is untouched. ── */
+.brand-mark{mix-blend-mode:lighten;flex-shrink:0;}
+.brand-plate{display:block;border:1px solid var(--line-strong);border-radius:6px;overflow:hidden;background:var(--bg);flex-shrink:0;}
+.brand-plate .brand-mark{mix-blend-mode:normal;}
+.brand-lockup{display:flex;align-items:center;gap:12px;text-decoration:none;color:var(--text);min-width:0;}
+.brand-name{font-family:var(--f-display);font-weight:500;font-size:19px;letter-spacing:0.16em;text-transform:uppercase;line-height:1;white-space:nowrap;}
+/* The signature: the logo's own device, a tracked caption set between
+   hairline rules, used as the kicker for every major section. */
+.ledger-rule{display:flex;align-items:center;justify-content:center;gap:16px;font-size:12px;font-weight:600;letter-spacing:0.3em;text-transform:uppercase;color:var(--text-2);}
+.ledger-rule::before,.ledger-rule::after{content:'';height:1px;width:48px;background:var(--line-strong);flex-shrink:0;}
+.ledger-rule.start{justify-content:flex-start;}
+.ledger-rule.start::before{display:none;}
+/* Brushed silver, as on the monogram. Used once per page at most. */
+.metal-text{font-style:italic;background:var(--metal);-webkit-background-clip:text;background-clip:text;color:transparent;-webkit-box-decoration-break:clone;box-decoration-break:clone;}
+
+/* ── Buttons and form controls ── */
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;padding:11px 20px;font-size:14px;font-weight:600;letter-spacing:0.01em;line-height:1.2;border-radius:var(--radius);border:1px solid transparent;cursor:pointer;text-decoration:none;white-space:nowrap;transition:background 0.15s,border-color 0.15s,color 0.15s;}
+.btn-primary,.btn-gold{background:var(--platinum);border-color:var(--platinum);color:var(--on-platinum);}
+.btn-primary:hover,.btn-gold:hover{background:var(--platinum-hi);border-color:var(--platinum-hi);}
+.btn-outline{background:transparent;border-color:var(--line-strong);color:var(--text);}
+.btn-outline:hover{border-color:var(--text-2);}
+.btn-ghost{background:transparent;color:var(--text-2);}
+.btn-ghost:hover{color:var(--text);}
+.btn-lg{padding:14px 26px;font-size:15px;}
+.btn-md{padding:9px 16px;font-size:13px;}
+.btn-full{width:100%;}
+.btn:disabled{opacity:0.45;cursor:default;}
+.btn-link{background:none;border:0;padding:0;font:inherit;color:var(--text);text-decoration:underline;text-underline-offset:3px;cursor:pointer;}
+.spinner{width:16px;height:16px;border:2px solid var(--line);border-top-color:var(--platinum);border-radius:50%;animation:spin 0.7s linear infinite;display:inline-block;flex-shrink:0;}
+.di-lbl,.fl{display:block;font-size:12.5px;font-weight:600;color:var(--text-2);margin-bottom:6px;}
+.di,.fi{width:100%;background:var(--panel-2);border:1px solid var(--line);color:var(--text);padding:10px 12px;font-size:14px;border-radius:var(--radius);outline:none;transition:border-color 0.15s;}
+.di:focus,.fi:focus{border-color:var(--text-2);}
+.fi{margin-bottom:14px;}
 .input-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:20px;}
 .input-group{display:flex;flex-direction:column;}
-.drop-zone{border:2px dashed #161C2E;background:#0F1320;padding:40px 24px;text-align:center;cursor:pointer;transition:all 0.2s;border-radius:2px;}
-.drop-zone:hover,.drop-zone.drag{border-color:#D8DADE;background:rgba(216,218,222,0.06);}
-.drop-zone-title{font-family:'Cormorant Garamond',serif;font-size:20px;color:#F0E8D8;margin-bottom:8px;}
-.drop-zone-sub{font-size:12px;color:#8898B8;line-height:1.6;}
-.upload-ok{background:rgba(42,191,133,0.1);border:1px solid #2ABF85;padding:14px 18px;display:flex;align-items:center;gap:12px;}
-.upload-ok-txt{font-size:13px;color:#80C8A8;font-family:'Cormorant Garamond',serif;}
-.page-wrap{max-width:760px;margin:0 auto;padding:120px 48px 80px;}
-.page-title{font-family:'Cormorant Garamond',serif;font-size:clamp(36px,5vw,56px);font-weight:300;color:#F0E8D8;margin-bottom:8px;}
-.page-date{font-size:11px;color:#7A7E88;font-family:'JetBrains Mono',monospace;margin-bottom:48px;}
-.page-h2{font-family:'Cormorant Garamond',serif;font-size:24px;color:#F0E8D8;margin:40px 0 12px;}
-.page-p{font-size:14px;line-height:1.85;color:#8898B8;font-family:'Cormorant Garamond',serif;margin-bottom:16px;}
-.page-back{display:inline-flex;align-items:center;gap:8px;font-size:11px;letter-spacing:0.1em;text-transform:uppercase;color:#8898B8;cursor:pointer;margin-bottom:40px;transition:color 0.2s;}
-.page-back:hover{color:#D8DADE;}
-.faq-item{outline:none;}
-.faq-item:focus-visible{outline:1px solid #5A5D64;outline-offset:6px;}
 
-/* ── Severity language beyond colour: an explicit text tag rides with
-   every colour cue, so meaning survives greyscale/screenshot/colour-
-   blindness. Colour is styled inline per instance (reusing the same
-   {color, background} pattern already used by .ai-rec-chip), this class
-   only carries shape/type. ── */
-.severity-tag{display:inline-flex;align-items:center;gap:6px;font-family:'JetBrains Mono',monospace;font-size:9.5px;font-weight:700;letter-spacing:0.14em;text-transform:uppercase;padding:3px 9px;border-radius:2px;flex-shrink:0;}
+/* ── Marketing site ── */
+.mk-wrap{width:100%;max-width:var(--wrap);margin:0 auto;padding:0 var(--gutter);}
+.mk-nav{position:sticky;top:0;z-index:300;height:76px;border-bottom:1px solid transparent;transition:background 0.2s,border-color 0.2s;}
+.mk-nav.solid{background:rgba(13,13,15,0.94);backdrop-filter:blur(14px);border-bottom-color:var(--line);}
+.mk-nav-in{height:100%;display:flex;align-items:center;gap:28px;}
+.mk-nav-links{display:flex;align-items:center;gap:28px;list-style:none;margin-left:auto;}
+.mk-nav-links a{font-size:14.5px;font-weight:500;color:var(--text-2);text-decoration:none;transition:color 0.15s;}
+.mk-nav-links a:hover{color:var(--text);}
+.mk-nav-actions{display:flex;align-items:center;gap:8px;}
+.mk-burger{display:none;width:40px;height:40px;align-items:center;justify-content:center;background:transparent;border:1px solid var(--line);border-radius:var(--radius);color:var(--text);cursor:pointer;}
+.mk-menu{position:fixed;top:76px;left:0;right:0;z-index:299;background:var(--bg);border-bottom:1px solid var(--line);padding:8px var(--gutter) 24px;animation:fadeIn 0.15s ease;}
+.mk-menu a{display:block;padding:14px 0;border-bottom:1px solid var(--line);font-size:16px;color:var(--text);text-decoration:none;}
+.mk-menu-actions{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:20px;}
 
+.mk-hero{padding:48px 0 var(--section);border-bottom:1px solid var(--line);}
+.mk-hero-grid{display:grid;grid-template-columns:minmax(0,5fr) minmax(0,6fr);gap:64px;align-items:center;}
+.mk-h1{font-family:var(--f-display);font-weight:400;font-size:clamp(46px,5.4vw,76px);line-height:1.02;letter-spacing:-0.015em;color:var(--text);margin:26px 0 24px;}
+.mk-lead{font-size:clamp(17px,1.35vw,19px);line-height:1.6;color:var(--text-2);max-width:520px;}
+.mk-cta-row{display:flex;flex-wrap:wrap;gap:12px;margin-top:34px;}
+.mk-trust{display:flex;flex-wrap:wrap;gap:10px 22px;margin-top:30px;font-size:14px;color:var(--text-3);}
+.mk-trust span{display:inline-flex;align-items:center;gap:9px;}
+.mk-trust span::before{content:'';width:5px;height:5px;border-radius:50%;background:var(--silver);flex-shrink:0;}
 
+.mk-demo{background:var(--panel);border:1px solid var(--line-strong);border-radius:6px;box-shadow:0 30px 80px -40px rgba(0,0,0,0.9);overflow:hidden;animation:rise 0.6s 0.1s ease both;}
+.mk-demo-bar{display:flex;align-items:center;gap:10px;padding:10px 16px;border-bottom:1px solid var(--line);background:var(--bg);}
+.mk-demo-title{font-size:13.5px;font-weight:600;color:var(--text);}
+.mk-demo-tag{margin-left:auto;font-family:var(--f-num);font-size:11.5px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:var(--text-2);border:1px solid var(--line-strong);padding:3px 8px;border-radius:2px;white-space:nowrap;max-width:60%;overflow:hidden;text-overflow:ellipsis;}
+.mk-demo-body{padding:16px;display:flex;flex-direction:column;gap:12px;}
+.mk-demo-kpis{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;}
+.mk-demo-foot{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:10px;padding:12px 16px;border-top:1px solid var(--line);font-size:13px;color:var(--text-3);}
+.mk-demo-foot label{color:var(--text);text-decoration:underline;text-underline-offset:3px;cursor:pointer;font-weight:600;}
+.mk-demo-err{color:color-mix(in srgb,var(--danger) 55%,var(--text));font-size:13px;}
 
-/* ── Data maturity: a single-period read must not look as confident as
-   a multi-period one. Dashed border + explicit label communicate "the
-   system cannot yet assess trajectory" before a founder trusts a number
-   that thin. ── */
-.data-thin{border:1px dashed #243050!important;}
-.data-thin-tag{display:inline-flex;align-items:center;gap:7px;font-family:'JetBrains Mono',monospace;font-size:9px;font-weight:700;letter-spacing:0.16em;text-transform:uppercase;color:#E8A020;margin-bottom:12px;}
-.data-thin-tag::before{content:'';width:5px;height:5px;background:#E8A020;flex-shrink:0;}
+.mk-section{padding:var(--section) 0;border-bottom:1px solid var(--line);}
+.mk-head{max-width:760px;margin-bottom:56px;}
+.mk-head.center{margin-left:auto;margin-right:auto;text-align:center;}
+.mk-h2{font-family:var(--f-display);font-weight:400;font-size:clamp(34px,3.6vw,48px);line-height:1.08;letter-spacing:-0.01em;margin-top:20px;color:var(--text);}
+.mk-sub{font-size:18px;line-height:1.6;color:var(--text-2);margin-top:18px;}
+.mk-head.center .mk-sub{margin-left:auto;margin-right:auto;max-width:620px;}
+.mk-h3{font-size:22px;font-weight:600;line-height:1.3;letter-spacing:-0.005em;color:var(--text);}
+.mk-p{font-size:16px;line-height:1.65;color:var(--text-2);}
+.mk-tags{display:flex;flex-wrap:wrap;gap:8px;margin-top:20px;}
+.mk-tag{font-family:var(--f-num);font-size:12px;color:var(--text-2);border:1px solid var(--line);border-radius:2px;padding:4px 10px;}
 
-/* ── Loading: skeleton placeholders hold the exact layout the real
-   content will occupy, so nothing jumps once data arrives, and the
-   founder sees "computing," never a frozen blank screen. ── */
-@keyframes skeletonPulse{0%,100%{opacity:0.45}50%{opacity:0.85}}
-.skel{background:#161C2E;border-radius:2px;animation:skeletonPulse 1.5s ease-in-out infinite;}
+.mk-outcomes{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));border-top:1px solid var(--line-strong);}
+.mk-outcome{padding:36px 36px 4px 0;}
+.mk-outcome + .mk-outcome{padding-left:36px;border-left:1px solid var(--line);}
+.mk-index{font-family:var(--f-num);font-size:13px;color:var(--text-3);margin-bottom:16px;display:block;}
 
+.mk-caps{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:20px;}
+.mk-cap{grid-column:span 6;background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:32px;display:flex;flex-direction:column;gap:14px;min-width:0;}
+.mk-cap.wide{grid-column:span 7;}
+.mk-cap.narrow{grid-column:span 5;}
+.mk-cap.full{grid-column:1/-1;}
+.mk-cap-figures{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:8px;}
+.mk-cap-note{font-size:13px;color:var(--text-3);margin-top:auto;padding-top:8px;}
+.mk-supporting{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:0;margin-top:20px;border-top:1px solid var(--line);}
+.mk-supporting > div{padding:28px 24px 0 0;}
+.mk-supporting > div + div{padding-left:24px;border-left:1px solid var(--line);}
+.mk-supporting h4{font-size:17px;font-weight:600;color:var(--text);margin-bottom:8px;}
+.mk-supporting p{font-size:15px;line-height:1.6;color:var(--text-2);}
 
-/* ── App shell: header, sidebar and section layout for the signed-in
-   workspace. Rows are compact grids so a laptop screen shows the
-   directive, the six vital numbers and the trend without scrolling.
-   Type sizes are not reduced to get there; the order and density of
-   the rows does the work. ── */
-.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0;}
-.skip-link{position:absolute;left:12px;top:-60px;z-index:500;background:#D8DADE;color:#050709;padding:8px 14px;font-size:12px;font-weight:700;text-decoration:none;}
-.skip-link:focus{top:8px;}
-.app{min-height:100vh;background:#050709;display:grid;grid-template-columns:232px minmax(0,1fr);grid-template-rows:56px 1fr;}
-.app :focus-visible{outline:2px solid #D8DADE;outline-offset:2px;}
-.app-header{grid-column:1/-1;grid-row:1;position:sticky;top:0;z-index:200;height:56px;display:flex;align-items:center;gap:16px;padding-right:20px;background:rgba(5,7,9,0.96);backdrop-filter:blur(16px);border-bottom:1px solid #161C2E;}
-.app-brand{width:232px;flex-shrink:0;align-self:stretch;display:flex;align-items:center;gap:10px;padding:0 20px;border-right:1px solid #161C2E;text-decoration:none;}
-.app-brand .logomark{width:30px;height:30px;font-size:15px;}
-.app-brand .wordmark{font-size:16px;line-height:1.1;}
-.app-crumb{font-size:12.5px;color:#7A7E88;white-space:nowrap;}
-.app-crumb b{color:#F0E8D8;font-weight:600;}
+.mk-brief{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:0;border:1px solid var(--line);border-radius:4px;overflow:hidden;margin-top:8px;}
+.mk-brief > div{padding:16px 18px;border-bottom:1px solid var(--line);}
+.mk-brief > div:nth-child(odd){border-right:1px solid var(--line);}
+.mk-brief dt{font-family:var(--f-num);font-size:12px;letter-spacing:0.08em;text-transform:uppercase;color:var(--text-3);margin-bottom:6px;}
+.mk-brief dd{font-size:15px;line-height:1.55;color:var(--text);}
+.mk-brief .full{grid-column:1/-1;border-right:none!important;}
+
+.mk-steps{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));border-top:1px solid var(--line-strong);}
+.mk-step{padding:36px 36px 0 0;}
+.mk-step + .mk-step{padding-left:36px;border-left:1px solid var(--line);}
+.mk-step-n{font-family:var(--f-display);font-size:64px;line-height:1;color:var(--pewter);margin-bottom:22px;}
+
+.mk-example{display:grid;grid-template-columns:minmax(0,1fr) 56px minmax(0,1fr);align-items:stretch;gap:0;}
+.mk-example-col{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:28px;min-width:0;}
+.mk-example-label{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:18px;font-size:12px;font-weight:600;letter-spacing:0.14em;text-transform:uppercase;color:var(--text-3);}
+.mk-arrow{display:flex;align-items:center;justify-content:center;color:var(--text-3);}
+.mk-ledger{width:100%;border-collapse:collapse;font-family:var(--f-num);font-size:13px;}
+.mk-ledger td{padding:7px 0;border-bottom:1px solid var(--line);color:var(--text-2);vertical-align:top;}
+.mk-ledger td:first-child{color:var(--text-3);padding-right:14px;white-space:nowrap;}
+.mk-ledger td:last-child{text-align:right;padding-left:14px;white-space:nowrap;font-variant-numeric:tabular-nums;}
+.mk-insights{list-style:none;display:flex;flex-direction:column;}
+.mk-insights li{padding:14px 0;border-bottom:1px solid var(--line);}
+.mk-insights li:first-child{padding-top:0;}
+.mk-insights b{display:block;font-family:var(--f-display);font-size:24px;font-weight:500;color:var(--text);line-height:1.2;margin-bottom:4px;font-variant-numeric:lining-nums tabular-nums;}
+.mk-insights span{font-size:15px;line-height:1.55;color:var(--text-2);}
+.mk-verdict{margin-top:18px;padding:16px 18px;border:1px solid var(--line-strong);border-left:3px solid var(--warning);border-radius:3px;}
+.mk-verdict-k{font-family:var(--f-num);font-size:12px;letter-spacing:0.1em;text-transform:uppercase;color:var(--warning);margin-bottom:6px;}
+.mk-verdict-t{font-family:var(--f-display);font-size:22px;color:var(--text);line-height:1.3;}
+
+.mk-prices{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:20px;align-items:stretch;}
+.mk-price{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:32px;display:flex;flex-direction:column;position:relative;}
+.mk-price.featured{border-color:var(--line-strong);background:var(--panel-2);}
+.mk-price.featured::before{content:'';position:absolute;top:-1px;left:-1px;right:-1px;height:2px;background:var(--metal);border-radius:6px 6px 0 0;}
+.mk-price-name{font-size:14px;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;color:var(--text);}
+.mk-price-for{font-size:15px;line-height:1.55;color:var(--text-2);margin-top:10px;min-height:48px;}
+.mk-price-fig{font-family:var(--f-display);font-size:56px;line-height:1;color:var(--text);margin-top:26px;font-variant-numeric:lining-nums;}
+.mk-price-fig small{font-family:var(--f-ui);font-size:15px;color:var(--text-3);margin-left:6px;}
+.mk-price-alt{font-size:14px;color:var(--text-3);margin-top:8px;min-height:22px;}
+.mk-price-list{list-style:none;margin:26px 0 30px;padding-top:22px;border-top:1px solid var(--line);display:flex;flex-direction:column;gap:11px;}
+.mk-price-list li{display:flex;gap:12px;font-size:15px;line-height:1.5;color:var(--text-2);}
+.mk-price-list li::before{content:'';width:6px;height:6px;margin-top:8px;border:1px solid var(--silver);transform:rotate(45deg);flex-shrink:0;}
+.mk-price .btn{margin-top:auto;}
+
+.mk-faq{max-width:860px;margin:0 auto;border-top:1px solid var(--line-strong);}
+.mk-faq details{border-bottom:1px solid var(--line);}
+.mk-faq summary{list-style:none;display:flex;justify-content:space-between;align-items:center;gap:20px;padding:22px 0;cursor:pointer;font-size:18px;font-weight:600;color:var(--text);}
+.mk-faq summary::-webkit-details-marker{display:none;}
+.mk-faq summary::after{content:'+';font-family:var(--f-num);font-size:20px;color:var(--text-2);transition:transform 0.2s;flex-shrink:0;}
+.mk-faq details[open] summary::after{transform:rotate(45deg);}
+.mk-faq details p{font-size:16px;line-height:1.7;color:var(--text-2);padding:0 48px 24px 0;max-width:760px;}
+
+.mk-final{padding:var(--section) 0;text-align:center;}
+.mk-final .brand-plate{margin:0 auto 32px;}
+.mk-final-h{font-family:var(--f-display);font-weight:400;font-size:clamp(34px,4vw,54px);line-height:1.12;max-width:900px;margin:0 auto 36px;}
+
+.mk-footer{border-top:1px solid var(--line);padding:56px 0 40px;}
+.mk-footer-grid{display:grid;grid-template-columns:minmax(0,2fr) repeat(3,minmax(0,1fr));gap:32px;}
+.mk-footer h5{font-size:12px;font-weight:700;letter-spacing:0.14em;text-transform:uppercase;color:var(--text-3);margin-bottom:16px;}
+.mk-footer ul{list-style:none;display:flex;flex-direction:column;gap:10px;}
+.mk-footer a,.mk-footer button{font-size:15px;color:var(--text-2);text-decoration:none;background:none;border:none;padding:0;cursor:pointer;text-align:left;}
+.mk-footer a:hover,.mk-footer button:hover{color:var(--text);}
+.mk-footer-note{font-size:14px;color:var(--text-3);margin-top:14px;max-width:320px;line-height:1.6;}
+.mk-footer-base{display:flex;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-top:48px;padding-top:24px;border-top:1px solid var(--line);font-size:13px;color:var(--text-3);}
+
+/* ── Sign in, paywall, loading, legal ── */
+.auth-page{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:32px 20px;background:var(--bg);}
+.auth-card{background:var(--panel);border:1px solid var(--line);border-radius:6px;width:100%;max-width:440px;animation:rise 0.3s ease both;}
+.auth-logo-row{display:flex;justify-content:center;padding:28px 32px 0;}
+.auth-h{padding:8px 32px 0;text-align:center;}
+.auth-title{font-family:var(--f-display);font-size:32px;font-weight:500;color:var(--text);line-height:1.15;}
+.auth-sub{font-size:15px;color:var(--text-2);line-height:1.6;margin-top:6px;}
+.auth-form{padding:26px 32px 32px;}
+.a-err,.a-ok{padding:10px 14px;font-size:14px;margin-bottom:16px;border-radius:var(--radius);border:1px solid;}
+.a-err{background:color-mix(in srgb,var(--danger) 10%,transparent);border-color:var(--danger);color:color-mix(in srgb,var(--danger) 45%,var(--text));}
+.a-ok{background:color-mix(in srgb,var(--positive) 10%,transparent);border-color:var(--positive);color:color-mix(in srgb,var(--positive) 45%,var(--text));}
+.a-div{display:flex;align-items:center;gap:12px;margin:20px 0;color:var(--text-3);font-size:12px;text-transform:uppercase;letter-spacing:0.1em;}
+.a-div-line{flex:1;height:1px;background:var(--line);}
+.a-link{font-size:14px;color:var(--text-2);text-align:center;margin-top:14px;cursor:pointer;}
+.a-link span{color:var(--text);text-decoration:underline;text-underline-offset:3px;}
+.loading-screen{min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:24px;background:var(--bg);}
+.page-top{border-bottom:1px solid var(--line);}
+.page-top .mk-wrap{height:76px;display:flex;align-items:center;justify-content:space-between;}
+.page-wrap{max-width:760px;margin:0 auto;padding:64px var(--gutter) 96px;}
+.page-title{font-family:var(--f-display);font-weight:400;font-size:clamp(36px,4.4vw,52px);line-height:1.1;color:var(--text);margin-bottom:10px;}
+.page-date{font-family:var(--f-num);font-size:13px;color:var(--text-3);margin-bottom:44px;}
+.page-h2{font-size:20px;font-weight:600;color:var(--text);margin:36px 0 10px;}
+.page-p{font-size:16px;line-height:1.75;color:var(--text-2);margin-bottom:14px;}
+.page-back{display:inline-flex;align-items:center;gap:8px;font-size:14px;color:var(--text-2);cursor:pointer;}
+.page-back:hover{color:var(--text);}
+
+/* ── Modals ── */
+.overlay{position:fixed;inset:0;z-index:500;background:rgba(13,13,15,0.9);backdrop-filter:blur(8px);display:flex;align-items:center;justify-content:center;padding:24px;animation:fadeIn 0.2s ease;}
+.modal{background:var(--panel);border:1px solid var(--line-strong);border-radius:6px;width:100%;max-width:500px;max-height:calc(100vh - 48px);overflow-y:auto;animation:rise 0.25s ease both;}
+.modal-head{padding:20px 26px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:12px;}
+.modal-title{font-family:var(--f-display);font-size:24px;font-weight:500;color:var(--text);}
+.modal-x{background:none;border:none;color:var(--text-3);font-size:24px;line-height:1;padding:4px 8px;cursor:pointer;border-radius:var(--radius);}
+.modal-x:hover{color:var(--text);}
+.modal-body{padding:26px;}
+.plan-badge{background:var(--panel-2);border:1px solid var(--line);border-radius:var(--radius);padding:14px 18px;margin-bottom:20px;}
+.plan-badge-name{font-size:12.5px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:var(--text-2);margin-bottom:4px;}
+.plan-badge-price{font-family:var(--f-display);font-size:30px;color:var(--text);font-variant-numeric:lining-nums;}
+.plan-badge-sub{font-size:13px;color:var(--text-3);margin-top:2px;}
+.modal-secure{font-size:13px;color:var(--text-3);text-align:center;margin-top:14px;}
+.pay-status{text-align:center;padding:28px 0;color:var(--text-2);font-size:14px;}
+.pay-err{background:color-mix(in srgb,var(--danger) 10%,transparent);border:1px solid var(--danger);border-radius:var(--radius);padding:10px 14px;font-size:14px;color:color-mix(in srgb,var(--danger) 45%,var(--text));margin-top:12px;}
+
+/* ── Application components ── */
+.card{background:var(--panel);border:1px solid var(--line);border-radius:4px;padding:22px;position:relative;}
+.card-lbl{font-size:12px;font-weight:600;letter-spacing:0.08em;text-transform:uppercase;color:var(--text-3);margin-bottom:6px;}
+.val{font-family:var(--f-display);font-size:36px;font-weight:400;line-height:1;font-variant-numeric:lining-nums tabular-nums;}
+.kpi4{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;}
+.kpi3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;}
+.g2{display:grid;grid-template-columns:1fr 1fr;gap:20px;}
+.g21{display:grid;grid-template-columns:2fr 1fr;gap:20px;}
+.g3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;}
+.d-alert{display:flex;align-items:flex-start;gap:10px;padding:12px 16px;font-size:14px;line-height:1.55;border-left:3px solid;border-radius:0 var(--radius) var(--radius) 0;}
+.d-alert.crit{background:color-mix(in srgb,var(--danger) 9%,transparent);border-color:var(--danger);color:color-mix(in srgb,var(--danger) 40%,var(--text));}
+.d-alert.ok{background:color-mix(in srgb,var(--positive) 9%,transparent);border-color:var(--positive);color:color-mix(in srgb,var(--positive) 40%,var(--text));}
+.d-alert.warn{background:color-mix(in srgb,var(--warning) 9%,transparent);border-color:var(--warning);color:color-mix(in srgb,var(--warning) 40%,var(--text));}
+.d-alert.info{background:var(--panel-2);border-color:var(--silver);color:var(--text-2);}
+.activation-banner{position:fixed;top:0;left:0;right:0;z-index:400;display:flex;align-items:center;justify-content:center;gap:12px;padding:12px 16px;background:var(--panel-2);border-bottom:1px solid var(--warning);color:var(--text);font-size:14px;line-height:1.5;}
+.activation-banner a{color:var(--text);}
+.severity-tag{display:inline-flex;align-items:center;gap:6px;font-family:var(--f-num);font-size:11.5px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;padding:3px 9px;border-radius:2px;flex-shrink:0;}
+.mode-pills{display:flex;border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;}
+.mpill{padding:8px 14px;font-size:12.5px;font-weight:600;background:transparent;border:none;color:var(--text-3);cursor:pointer;transition:background 0.15s,color 0.15s;}
+.mpill.on{background:var(--panel-3);color:var(--text);}
+.alloc-row{display:flex;align-items:center;gap:12px;padding:12px 0;border-bottom:1px solid var(--line);}
+.alloc-row:last-child{border-bottom:none;}
+.alloc-meta{flex:1;min-width:0;}
+.alloc-name{font-size:14px;font-weight:600;color:var(--text);}
+.alloc-pct{font-size:12.5px;color:var(--text-3);margin-top:2px;}
+.alloc-track{height:3px;background:var(--line);margin-top:6px;border-radius:2px;overflow:hidden;}
+.alloc-fill{height:100%;transition:width 0.8s ease;}
+.alloc-amt{font-family:var(--f-num);font-size:15px;font-variant-numeric:tabular-nums;}
+.ai-top{padding:14px 20px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;}
+.ai-lbl{display:flex;align-items:center;gap:10px;font-size:13px;font-weight:600;color:var(--text-2);}
+.ai-glow{width:7px;height:7px;border-radius:50%;background:var(--platinum);}
+.ai-body{padding:20px;min-height:90px;}
+.ai-txt{font-size:15px;line-height:1.7;color:var(--text-2);}
+.ai-dots{display:flex;gap:6px;align-items:center;}
+.ai-dots span{width:6px;height:6px;border-radius:50%;background:var(--pewter);animation:dotPulse 1.4s ease-in-out infinite;}
+.ai-dots span:nth-child(2){animation-delay:0.2s;}
+.ai-dots span:nth-child(3){animation-delay:0.4s;}
+.ai-btn{background:var(--platinum);border:1px solid var(--platinum);color:var(--on-platinum);font-size:13px;font-weight:600;padding:8px 16px;border-radius:var(--radius);cursor:pointer;}
+.ai-btn:hover{background:var(--platinum-hi);}
+.ai-btn:disabled{opacity:0.45;cursor:default;}
+/* The advisor brief reads as a memo: a fixed label column, then prose. */
+.ai-rec-field{display:grid;grid-template-columns:200px minmax(0,1fr);gap:20px;padding:18px 22px;border-bottom:1px solid var(--line);}
+.ai-rec-lbl{font-family:var(--f-num);font-size:12px;letter-spacing:0.08em;text-transform:uppercase;padding-top:3px;}
+.ai-rec-body{font-size:15.5px;line-height:1.7;color:var(--text);}
+.ai-rec-field.action .ai-rec-body{font-family:var(--f-display);font-size:22px;line-height:1.35;}
+.ai-rec-footer{display:flex;justify-content:space-between;align-items:center;gap:16px;padding:16px 22px;background:var(--panel-2);flex-wrap:wrap;}
+.ai-rec-chip{font-family:var(--f-num);font-size:12px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;padding:4px 10px;border-radius:2px;}
+.ai-rec-conf{display:flex;align-items:center;gap:12px;font-size:13.5px;color:var(--text-2);flex-wrap:wrap;}
+.ai-conf-meter{width:120px;height:4px;background:var(--line);border-radius:2px;overflow:hidden;}
+.ai-conf-meter span{display:block;height:100%;background:var(--platinum);}
+.drop-zone{border:1px dashed var(--line-strong);border-radius:4px;background:var(--panel-2);padding:36px 24px;text-align:center;cursor:pointer;transition:border-color 0.15s,background 0.15s;}
+.drop-zone:hover,.drop-zone.drag{border-color:var(--text-2);background:var(--panel-3);}
+.drop-zone-title{font-family:var(--f-display);font-size:24px;color:var(--text);margin-bottom:8px;}
+.drop-zone-sub{font-size:14px;color:var(--text-2);line-height:1.6;}
+.upload-ok{display:flex;align-items:center;gap:12px;padding:12px 16px;border:1px solid var(--positive);border-radius:var(--radius);background:color-mix(in srgb,var(--positive) 8%,transparent);}
+.upload-ok-txt{font-size:14px;color:var(--text);}
+.data-thin{border:1px dashed var(--line-strong)!important;}
+.data-thin-tag{display:inline-flex;align-items:center;gap:8px;font-family:var(--f-num);font-size:12px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:var(--warning);margin-bottom:10px;}
+.data-thin-tag::before{content:'';width:6px;height:6px;background:var(--warning);flex-shrink:0;}
+.skel{background:var(--panel-3);border-radius:2px;animation:skeletonPulse 1.5s ease-in-out infinite;}
+
+/* ── Application shell: header, sidebar, sections. Rows are compact grids
+   so a laptop screen shows the directive, the six vital numbers and the
+   cash chart without scrolling; type is never shrunk to get there. ── */
+.app{min-height:100vh;background:var(--bg);display:grid;grid-template-columns:240px minmax(0,1fr);grid-template-rows:60px 1fr;}
+.app-header{grid-column:1/-1;grid-row:1;position:sticky;top:0;z-index:200;height:60px;display:flex;align-items:center;gap:16px;padding-right:20px;background:rgba(13,13,15,0.96);backdrop-filter:blur(14px);border-bottom:1px solid var(--line);}
+.app-brand{width:240px;flex-shrink:0;align-self:stretch;display:flex;align-items:center;gap:10px;padding:0 18px;border-right:1px solid var(--line);text-decoration:none;color:var(--text);}
+.app-brand .brand-name{font-size:15px;letter-spacing:0.14em;}
+.app-crumb{font-size:13px;color:var(--text-3);white-space:nowrap;}
+.app-crumb b{color:var(--text);font-weight:600;}
 .hdr-search{position:relative;flex:1 1 320px;max-width:460px;margin-left:auto;}
-.hdr-search-input{width:100%;height:36px;background:#0F1320;border:1px solid #161C2E;color:#F4F7FF;padding:0 60px 0 36px;font-family:'Syne',sans-serif;font-size:13px;border-radius:2px;}
-.hdr-search-input::placeholder{color:#7A7E88;}
-.hdr-search-input:focus{outline:none;border-color:#5A5D64;}
+.hdr-search-input{width:100%;height:38px;background:var(--panel-2);border:1px solid var(--line);border-radius:var(--radius);color:var(--text);padding:0 64px 0 36px;font-size:14px;}
+.hdr-search-input::placeholder{color:var(--text-3);}
+.hdr-search-input:focus{outline:none;border-color:var(--text-2);}
 .hdr-search-input::-webkit-search-cancel-button{-webkit-appearance:none;}
-.hdr-search-icon{position:absolute;left:11px;top:50%;transform:translateY(-50%);color:#7A7E88;display:flex;pointer-events:none;}
-.hdr-kbd{position:absolute;right:10px;top:50%;transform:translateY(-50%);font-family:'JetBrains Mono',monospace;font-size:10.5px;color:#7A7E88;border:1px solid #243050;padding:1px 6px;border-radius:2px;pointer-events:none;}
+.hdr-search-icon{position:absolute;left:11px;top:50%;transform:translateY(-50%);color:var(--text-3);display:flex;pointer-events:none;}
+.hdr-kbd{position:absolute;right:10px;top:50%;transform:translateY(-50%);font-family:var(--f-num);font-size:11.5px;color:var(--text-3);border:1px solid var(--line-strong);padding:1px 6px;border-radius:2px;pointer-events:none;}
 .hdr-tools{display:flex;align-items:center;gap:10px;flex-shrink:0;}
-.hdr-select{height:36px;background:#0F1320;border:1px solid #161C2E;color:#F0E8D8;font-family:'Syne',sans-serif;font-size:13px;padding:0 10px;border-radius:2px;cursor:pointer;}
-.hdr-select:focus{outline:none;border-color:#5A5D64;}
-.hdr-icon-btn{position:relative;width:36px;height:36px;flex-shrink:0;display:flex;align-items:center;justify-content:center;background:transparent;border:1px solid #161C2E;border-radius:2px;color:#8898B8;cursor:pointer;transition:color 0.15s,border-color 0.15s;}
-.hdr-icon-btn:hover,.hdr-icon-btn[aria-expanded="true"]{color:#F0E8D8;border-color:#243050;}
+.hdr-select{height:38px;background:var(--panel-2);border:1px solid var(--line);border-radius:var(--radius);color:var(--text);font-size:14px;padding:0 10px;cursor:pointer;}
+.hdr-select:focus{outline:none;border-color:var(--text-2);}
+.hdr-icon-btn{position:relative;width:38px;height:38px;flex-shrink:0;display:flex;align-items:center;justify-content:center;background:transparent;border:1px solid var(--line);border-radius:var(--radius);color:var(--text-2);cursor:pointer;transition:color 0.15s,border-color 0.15s;}
+.hdr-icon-btn:hover,.hdr-icon-btn[aria-expanded="true"]{color:var(--text);border-color:var(--line-strong);}
 .hdr-menu,.hdr-search-toggle{display:none;}
-.hdr-badge{position:absolute;top:-6px;right:-6px;min-width:18px;height:18px;padding:0 5px;border-radius:9px;background:#E84855;color:#fff;font-size:10.5px;font-weight:700;font-family:'JetBrains Mono',monospace;display:flex;align-items:center;justify-content:center;}
-.hdr-dot{position:absolute;top:6px;right:6px;width:7px;height:7px;border-radius:50%;background:#4A7CF7;}
+.hdr-badge{position:absolute;top:-6px;right:-6px;min-width:18px;height:18px;padding:0 5px;border-radius:9px;background:var(--danger);color:#fff;font-family:var(--f-num);font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;}
+.hdr-dot{position:absolute;top:6px;right:6px;width:7px;height:7px;border-radius:50%;background:var(--silver);}
 .hdr-pop-wrap{position:relative;}
-.hdr-account{display:flex;align-items:center;gap:10px;background:transparent;border:1px solid transparent;border-radius:2px;padding:3px 8px 3px 3px;cursor:pointer;color:#8898B8;font-family:'Syne',sans-serif;}
-.hdr-account:hover,.hdr-account[aria-expanded="true"]{border-color:#161C2E;color:#F0E8D8;}
-.hdr-av{border-radius:50%;background:rgba(216,218,222,0.12);border:1px solid #5A5D64;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:600;color:#D8DADE;overflow:hidden;flex-shrink:0;}
+.hdr-account{display:flex;align-items:center;gap:10px;background:transparent;border:1px solid transparent;border-radius:var(--radius);padding:3px 8px 3px 3px;cursor:pointer;color:var(--text-2);}
+.hdr-account:hover,.hdr-account[aria-expanded="true"]{border-color:var(--line);color:var(--text);}
+.hdr-av{border-radius:50%;background:var(--panel-3);border:1px solid var(--line-strong);display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:600;color:var(--text);overflow:hidden;flex-shrink:0;}
 .hdr-av img{width:100%;height:100%;object-fit:cover;}
 .hdr-who{display:flex;flex-direction:column;align-items:flex-start;line-height:1.3;min-width:0;}
-.hdr-name{font-size:13px;color:#F0E8D8;font-weight:600;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-.hdr-role{font-size:11.5px;color:#7A7E88;max-width:190px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-.hdr-chev{display:flex;color:#7A7E88;}
-.hdr-pop{position:absolute;top:calc(100% + 8px);background:#0F1320;border:1px solid #243050;box-shadow:0 18px 44px -14px rgba(0,0,0,0.7);z-index:260;animation:fadeIn 0.12s ease;}
+.hdr-name{font-size:13.5px;font-weight:600;color:var(--text);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.hdr-role{font-size:12px;color:var(--text-3);max-width:190px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.hdr-chev{display:flex;color:var(--text-3);}
+.hdr-pop{position:absolute;top:calc(100% + 8px);background:var(--panel-2);border:1px solid var(--line-strong);border-radius:4px;box-shadow:0 18px 44px -14px rgba(0,0,0,0.75);z-index:260;animation:fadeIn 0.12s ease;}
 .hdr-pop-right{right:0;}
 .hdr-search-pop{left:0;right:0;max-height:min(440px,70vh);overflow-y:auto;padding:4px 0;}
-.alerts-pop{width:min(380px,calc(100vw - 24px));max-height:min(480px,75vh);overflow-y:auto;}
-.acct-pop{min-width:230px;padding:4px 0;}
-.acct-id{padding:10px 14px;border-bottom:1px solid #161C2E;margin-bottom:4px;}
-.pop-head{display:flex;justify-content:space-between;align-items:center;padding:12px 14px;border-bottom:1px solid #161C2E;font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:#D8DADE;font-weight:600;}
-.pop-head span{font-family:'JetBrains Mono',monospace;color:#7A7E88;letter-spacing:0;}
-.pop-sec{padding:10px 14px 4px;font-size:10.5px;letter-spacing:0.14em;text-transform:uppercase;color:#7A7E88;font-weight:600;}
-.pop-item{display:flex;align-items:center;gap:10px;width:100%;padding:9px 14px;background:none;border:none;text-align:left;color:#8898B8;font-size:13px;font-family:'Syne',sans-serif;cursor:pointer;}
-.pop-item:hover,.pop-item.active{background:#0A0D14;color:#F0E8D8;}
+.alerts-pop{width:min(390px,calc(100vw - 24px));max-height:min(480px,75vh);overflow-y:auto;}
+.acct-pop{min-width:240px;padding:4px 0;}
+.acct-id{padding:10px 14px;border-bottom:1px solid var(--line);margin-bottom:4px;}
+.pop-head{display:flex;justify-content:space-between;align-items:center;padding:12px 14px;border-bottom:1px solid var(--line);font-size:13px;font-weight:700;color:var(--text);}
+.pop-head span{font-family:var(--f-num);color:var(--text-3);font-weight:400;}
+.pop-sec{padding:10px 14px 4px;font-size:12px;font-weight:600;letter-spacing:0.08em;text-transform:uppercase;color:var(--text-3);}
+.pop-item{display:flex;align-items:center;gap:10px;width:100%;padding:9px 14px;background:none;border:none;text-align:left;color:var(--text-2);font-size:14px;cursor:pointer;}
+.pop-item:hover,.pop-item.active{background:var(--panel-3);color:var(--text);}
 .pop-main{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-.pop-date{font-family:'JetBrains Mono',monospace;font-size:11.5px;color:#7A7E88;flex-shrink:0;}
-.pop-amt{font-family:'JetBrains Mono',monospace;font-size:12px;flex-shrink:0;}
-.pop-empty{padding:14px;font-size:13px;line-height:1.6;color:#8898B8;}
-.alert-item{display:flex;flex-direction:column;gap:3px;width:100%;padding:12px 14px;background:none;border:none;border-bottom:1px solid #161C2E;text-align:left;cursor:pointer;font-family:'Syne',sans-serif;}
+.pop-date{font-family:var(--f-num);font-size:12px;color:var(--text-3);flex-shrink:0;}
+.pop-amt{font-family:var(--f-num);font-size:12.5px;flex-shrink:0;font-variant-numeric:tabular-nums;}
+.pop-empty{padding:14px;font-size:14px;line-height:1.6;color:var(--text-2);}
+.alert-item{display:flex;flex-direction:column;gap:3px;width:100%;padding:12px 14px;background:none;border:none;border-bottom:1px solid var(--line);text-align:left;cursor:pointer;}
 .alert-item:last-child{border-bottom:none;}
-.alert-item:hover{background:#0A0D14;}
-.alert-sev{font-family:'JetBrains Mono',monospace;font-size:10px;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;}
-.alert-title{font-size:13px;color:#F0E8D8;font-weight:600;line-height:1.4;}
-.alert-detail{font-size:12.5px;color:#8898B8;line-height:1.5;}
+.alert-item:hover{background:var(--panel-3);}
+.alert-sev{font-family:var(--f-num);font-size:11.5px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;}
+.alert-title{font-size:14px;font-weight:600;color:var(--text);line-height:1.4;}
+.alert-detail{font-size:13px;color:var(--text-2);line-height:1.5;}
 
-.app-side{grid-column:1;grid-row:2;position:sticky;top:56px;height:calc(100vh - 56px);overflow-y:auto;background:#0A0D14;border-right:1px solid #161C2E;display:flex;flex-direction:column;padding:14px 10px 16px;}
+.app-side{grid-column:1;grid-row:2;position:sticky;top:60px;height:calc(100vh - 60px);overflow-y:auto;background:var(--panel);border-right:1px solid var(--line);display:flex;flex-direction:column;padding:14px 10px 16px;}
 .side-backdrop{display:none;}
-.nav-label{font-size:10.5px;letter-spacing:0.16em;text-transform:uppercase;color:#7A7E88;font-weight:600;padding:10px 12px 6px;}
+.nav-label{font-size:12px;font-weight:600;letter-spacing:0.12em;text-transform:uppercase;color:var(--text-3);padding:10px 12px 6px;}
 .nav-list{list-style:none;margin-bottom:8px;}
-.nav-item{display:flex;align-items:center;gap:12px;width:100%;padding:9px 12px;margin:1px 0;font-size:13.5px;font-weight:500;color:#8898B8;text-decoration:none;background:none;border:1px solid transparent;border-left:2px solid transparent;border-radius:2px;cursor:pointer;font-family:'Syne',sans-serif;text-align:left;transition:color 0.15s,background 0.15s;}
-.nav-item svg{flex-shrink:0;color:#7A7E88;transition:color 0.15s;}
-.nav-item:hover{color:#F0E8D8;background:#0F1320;}
-.nav-item:hover svg{color:#D8DADE;}
-.nav-item.on{color:#F0E8D8;background:rgba(216,218,222,0.07);border-color:#161C2E;border-left-color:#D8DADE;}
-.nav-item.on svg{color:#D8DADE;}
-.side-plan{margin-top:auto;border:1px solid #161C2E;padding:12px;}
-.side-plan-name{font-size:13px;color:#F0E8D8;font-weight:600;}
+.nav-item{display:flex;align-items:center;gap:12px;width:100%;padding:9px 12px;margin:1px 0;font-size:14px;font-weight:500;color:var(--text-2);text-decoration:none;background:none;border:1px solid transparent;border-left:2px solid transparent;border-radius:var(--radius);cursor:pointer;text-align:left;transition:color 0.15s,background 0.15s;}
+.nav-item svg{flex-shrink:0;color:var(--text-3);transition:color 0.15s;}
+.nav-item:hover{color:var(--text);background:var(--panel-2);}
+.nav-item:hover svg{color:var(--text-2);}
+.nav-item.on{color:var(--text);background:var(--panel-2);border-color:var(--line);border-left-color:var(--platinum);}
+.nav-item.on svg{color:var(--platinum);}
+.side-plan{margin-top:auto;border:1px solid var(--line);border-radius:4px;padding:12px;}
+.side-plan-name{font-size:14px;font-weight:600;color:var(--text);}
 
-.app-main{grid-column:2;grid-row:2;min-width:0;padding:20px 24px 40px;display:flex;flex-direction:column;gap:16px;outline:none;}
+.app-main{grid-column:2;grid-row:2;min-width:0;padding:22px 26px 44px;display:flex;flex-direction:column;gap:16px;outline:none;}
 .page-head{display:flex;align-items:flex-end;justify-content:space-between;gap:12px 20px;flex-wrap:wrap;}
-.page-h1{font-family:'Cormorant Garamond',serif;font-size:30px;font-weight:400;color:#F0E8D8;line-height:1.1;}
-.page-meta{font-family:'JetBrains Mono',monospace;font-size:11.5px;color:#7A7E88;margin-top:4px;}
+.page-h1{font-family:var(--f-display);font-size:clamp(30px,2.6vw,38px);font-weight:500;color:var(--text);line-height:1.1;}
+.page-meta{font-family:var(--f-num);font-size:12.5px;color:var(--text-3);margin-top:4px;}
 .page-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap;}
-.btn-md{font-size:11px;padding:9px 16px;display:inline-flex;align-items:center;justify-content:center;gap:8px;text-decoration:none;white-space:nowrap;}
-.page-actions .mpill{padding:8px 14px;font-size:10.5px;}
-
 .row{display:grid;gap:16px;min-width:0;align-items:stretch;}
 .row-21{grid-template-columns:minmax(0,2fr) minmax(0,1fr);}
 .row-12{grid-template-columns:minmax(0,1fr) minmax(0,2fr);}
 .row-2{grid-template-columns:repeat(2,minmax(0,1fr));}
 .row-3{grid-template-columns:repeat(3,minmax(0,1fr));}
-.panel{background:#0A0D14;border:1px solid #161C2E;padding:16px 18px;min-width:0;display:flex;flex-direction:column;position:relative;}
-.panel-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:12px;}
-.panel-title{font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:#D8DADE;font-weight:600;font-family:'Syne',sans-serif;}
-.panel-link{display:inline-flex;align-items:center;gap:5px;background:none;border:none;padding:2px 0;color:#8898B8;font-size:12.5px;font-family:'Syne',sans-serif;cursor:pointer;white-space:nowrap;text-decoration:none;align-self:flex-start;}
-.panel-link:hover{color:#F0E8D8;}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:4px;padding:18px 20px;min-width:0;display:flex;flex-direction:column;position:relative;}
+.panel-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:14px;}
+.panel-title{font-size:12px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:var(--text-2);}
+.panel-link{display:inline-flex;align-items:center;gap:5px;background:none;border:none;padding:2px 0;color:var(--text-2);font-size:13px;cursor:pointer;white-space:nowrap;text-decoration:none;align-self:flex-start;}
+.panel-link:hover{color:var(--text);}
 .panel-head .panel-link{align-self:center;}
-.panel-copy{font-family:'Cormorant Garamond',serif;font-size:15px;line-height:1.6;color:#8898B8;}
-.narrative{font-family:'Cormorant Garamond',serif;font-size:16px;line-height:1.65;color:#F0E8D8;margin-bottom:8px;}
-.big-num{font-family:'Cormorant Garamond',serif;font-size:34px;font-weight:400;color:#F0E8D8;line-height:1.1;margin-bottom:6px;}
+.panel-copy{font-size:14.5px;line-height:1.6;color:var(--text-2);}
+.narrative{font-family:var(--f-display);font-size:19px;line-height:1.55;color:var(--text);margin-bottom:8px;}
+.big-num{font-family:var(--f-display);font-size:36px;font-weight:500;color:var(--text);line-height:1.1;margin-bottom:6px;font-variant-numeric:lining-nums tabular-nums;}
 
-.directive-strip{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:8px 22px;align-items:center;padding:14px 18px;border:1px solid var(--uc,#5A5D64);background:linear-gradient(135deg,rgba(216,218,222,0.05) 0%,rgba(5,7,9,0) 60%);position:relative;}
-.directive-strip::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:linear-gradient(to right,transparent,var(--uc,#D8DADE),transparent);}
+.directive-strip{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:8px 22px;align-items:center;padding:16px 20px;border:1px solid var(--uc,var(--line-strong));border-radius:4px;background:var(--panel);position:relative;}
+.directive-strip::before{content:'';position:absolute;top:-1px;left:-1px;bottom:-1px;width:3px;background:var(--uc,var(--platinum));border-radius:4px 0 0 4px;}
 .ds-meta{display:flex;flex-direction:column;gap:8px;align-items:flex-start;}
-.ds-kicker{font-size:10.5px;letter-spacing:0.18em;text-transform:uppercase;font-weight:600;white-space:nowrap;}
-.ds-text{font-family:'Cormorant Garamond',serif;font-size:21px;color:#F0E8D8;line-height:1.3;}
-.ds-reason{font-family:'Cormorant Garamond',serif;font-size:15px;color:#8898B8;line-height:1.55;margin-top:2px;}
+.ds-kicker{font-size:12px;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;white-space:nowrap;}
+.ds-text{font-family:var(--f-display);font-size:23px;font-weight:500;color:var(--text);line-height:1.3;}
+.ds-reason{font-size:14.5px;color:var(--text-2);line-height:1.6;margin-top:4px;}
 .ds-actions{display:flex;align-items:center;}
+.directive-strip.compact{grid-template-columns:minmax(0,1fr);gap:8px;padding:14px 16px;}
+.directive-strip.compact .ds-meta{flex-direction:row;align-items:center;gap:10px;}
+.directive-strip.compact .ds-text{font-size:21px;}
 .alert-row{display:flex;flex-direction:column;gap:8px;}
 
 .kpi-row{display:grid;grid-template-columns:minmax(0,1.5fr) repeat(5,minmax(0,1fr));gap:12px;}
 .kpi-row.data-thin{padding:8px;}
-.kpi{background:#0A0D14;border:1px solid #161C2E;padding:14px 16px;min-width:0;position:relative;display:flex;flex-direction:column;}
-.kpi.kpi-lead{background:linear-gradient(160deg,#0F1320 0%,#0A0D14 70%);}
-.kpi.kpi-lead::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:var(--sev,#5A5D64);}
-.kpi-lbl{display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:20px;font-size:10.5px;letter-spacing:0.14em;text-transform:uppercase;color:#7A7E88;font-weight:600;}
-.kpi-val{font-family:'Cormorant Garamond',serif;font-size:34px;font-weight:400;line-height:1.1;margin-top:8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.kpi{background:var(--panel);border:1px solid var(--line);border-radius:4px;padding:14px 16px;min-width:0;position:relative;display:flex;flex-direction:column;}
+.kpi.kpi-lead{background:var(--panel-2);border-color:var(--line-strong);}
+.kpi.kpi-lead::before{content:'';position:absolute;top:-1px;left:-1px;right:-1px;height:2px;background:var(--sev,var(--platinum));border-radius:4px 4px 0 0;}
+.kpi-lbl{display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:22px;font-size:13px;font-weight:600;color:var(--text-2);}
+.kpi-val{font-family:var(--f-display);font-size:34px;font-weight:500;line-height:1.1;margin-top:8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-variant-numeric:lining-nums tabular-nums;}
 .kpi.kpi-lead .kpi-val{font-size:56px;}
-.kpi-unit{font-size:0.5em;color:#7A7E88;margin-left:3px;}
-.kpi-sub{font-size:12px;color:#8898B8;line-height:1.5;margin-top:6px;}
-.kpi.kpi-lead .kpi-sub{font-family:'Cormorant Garamond',serif;font-size:15px;}
+.kpi-unit{font-size:0.45em;color:var(--text-3);margin-left:4px;}
+.kpi-sub{font-size:13px;color:var(--text-2);line-height:1.5;margin-top:6px;}
+.kpi.kpi-lead .kpi-sub{font-size:14px;}
+
+.chart-legend{display:flex;flex-wrap:wrap;gap:6px 18px;margin-top:12px;font-size:13px;color:var(--text-2);}
+.chart-legend span{display:inline-flex;align-items:center;gap:7px;}
+.chart-legend i{width:10px;height:10px;border-radius:2px;display:inline-block;}
+.chart-summary{display:flex;flex-wrap:wrap;gap:6px 22px;margin-bottom:12px;font-size:13px;color:var(--text-3);}
+.chart-summary b{font-family:var(--f-num);font-weight:500;color:var(--text);margin-left:6px;font-variant-numeric:tabular-nums;}
 
 .traj-pair{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
 .traj-cell{display:flex;align-items:center;gap:12px;min-width:0;}
-.traj-lbl{font-family:'Cormorant Garamond',serif;font-size:19px;color:#F0E8D8;line-height:1.2;}
-.traj-note{font-family:'Cormorant Garamond',serif;font-size:14.5px;color:#8898B8;line-height:1.5;margin-top:10px;}
+.traj-lbl{font-family:var(--f-display);font-size:21px;font-weight:500;color:var(--text);line-height:1.2;}
+.traj-note{font-size:14px;color:var(--text-2);line-height:1.55;margin-top:12px;}
 .traj-note:empty{display:none;}
 .mini-list{list-style:none;display:flex;flex-direction:column;}
-.mini-list li{display:flex;align-items:baseline;gap:10px;padding:8px 0;border-bottom:1px solid #161C2E;min-width:0;}
+.mini-list li{display:flex;align-items:baseline;gap:10px;padding:9px 0;border-bottom:1px solid var(--line);min-width:0;}
 .mini-list li:last-child{border-bottom:none;}
 .mini-list li.mini-stack{flex-direction:column;align-items:stretch;gap:3px;}
-.mini-main{flex:1;min-width:0;font-size:13px;color:#F0E8D8;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-.mini-stack .mini-main{white-space:normal;font-family:'Cormorant Garamond',serif;font-size:15px;line-height:1.35;}
-.mini-date{font-family:'JetBrains Mono',monospace;font-size:11px;color:#7A7E88;flex-shrink:0;}
-.mini-amt{font-family:'JetBrains Mono',monospace;font-size:12.5px;color:#D8DADE;flex-shrink:0;}
-.mini-foot{margin-top:10px;padding-top:10px;border-top:1px solid #161C2E;font-size:12px;color:#8898B8;}
-.bar-row-lbl{display:flex;justify-content:space-between;gap:10px;font-size:13px;color:#8898B8;margin-bottom:5px;}
-.bar-track{display:block;height:8px;background:#161C2E;border-radius:4px;overflow:hidden;}
+.mini-main{flex:1;min-width:0;font-size:14px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.mini-stack .mini-main{white-space:normal;font-family:var(--f-display);font-size:17px;line-height:1.35;}
+.mini-date{font-family:var(--f-num);font-size:12px;color:var(--text-3);flex-shrink:0;}
+.mini-amt{font-family:var(--f-num);font-size:13px;color:var(--text);flex-shrink:0;font-variant-numeric:tabular-nums;}
+.mini-foot{margin-top:10px;padding-top:10px;border-top:1px solid var(--line);font-size:13px;color:var(--text-2);}
+.bar-row-lbl{display:flex;justify-content:space-between;gap:10px;font-size:14px;color:var(--text-2);margin-bottom:5px;}
+.bar-row-lbl span:last-child{font-family:var(--f-num);font-size:13px;}
+.bar-track{display:block;height:8px;background:var(--line);border-radius:4px;overflow:hidden;}
 .bar-track > *{display:block;height:100%;}
-.nudge-row{display:flex;align-items:center;justify-content:space-between;gap:16px 24px;flex-wrap:wrap;padding:16px 18px;background:#0F1320;border:1px solid #161C2E;}
-.nudge-row-title{font-family:'Cormorant Garamond',serif;font-size:19px;color:#F0E8D8;}
-.nudge-row-sub{font-family:'Cormorant Garamond',serif;font-size:15px;color:#8898B8;line-height:1.55;margin-top:2px;max-width:640px;}
+.nudge-row{display:flex;align-items:center;justify-content:space-between;gap:16px 24px;flex-wrap:wrap;padding:18px 20px;background:var(--panel);border:1px solid var(--line);border-radius:4px;}
+.nudge-row-title{font-family:var(--f-display);font-size:21px;font-weight:500;color:var(--text);}
+.nudge-row-sub{font-size:14.5px;color:var(--text-2);line-height:1.6;margin-top:4px;max-width:660px;}
 
 .tbl-wrap{overflow:auto;min-width:0;}
-.tbl{width:100%;border-collapse:collapse;font-size:13px;}
-.tbl th{text-align:left;font-size:10.5px;letter-spacing:0.12em;text-transform:uppercase;color:#7A7E88;font-weight:600;padding:8px 10px;border-bottom:1px solid #243050;background:#0A0D14;position:sticky;top:0;white-space:nowrap;}
-.tbl td{padding:9px 10px;border-bottom:1px solid #161C2E;color:#F0E8D8;vertical-align:top;}
-.tbl tfoot th,.tbl tfoot td{border-top:1px solid #243050;border-bottom:none;font-weight:600;position:static;}
-.tbl tbody tr:hover td{background:#0F1320;}
-.tbl .num{text-align:right;font-family:'JetBrains Mono',monospace;font-size:12.5px;white-space:nowrap;}
-.tbl .mono{font-family:'JetBrains Mono',monospace;font-size:12px;color:#8898B8;white-space:nowrap;}
-.tbl .muted{color:#8898B8;}
+.tbl{width:100%;border-collapse:collapse;font-size:14px;}
+.tbl th{text-align:left;font-size:12px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:var(--text-3);padding:9px 12px;border-bottom:1px solid var(--line-strong);background:var(--panel);position:sticky;top:0;white-space:nowrap;}
+.tbl td{padding:10px 12px;border-bottom:1px solid var(--line);color:var(--text);vertical-align:top;}
+.tbl tfoot th,.tbl tfoot td{border-top:1px solid var(--line-strong);border-bottom:none;font-weight:600;position:static;}
+.tbl tbody tr:hover td{background:var(--panel-2);}
+.tbl .num{text-align:right;font-family:var(--f-num);font-size:13.5px;white-space:nowrap;font-variant-numeric:tabular-nums;}
+.tbl .mono{font-family:var(--f-num);font-size:13px;color:var(--text-2);white-space:nowrap;}
+.tbl .muted{color:var(--text-2);}
 .tx-tools{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px;}
-.tx-sum{font-family:'JetBrains Mono',monospace;font-size:12px;color:#8898B8;margin-left:auto;}
-.busy-line{display:flex;align-items:center;gap:10px;margin-top:12px;font-size:12.5px;color:#8898B8;font-family:'JetBrains Mono',monospace;}
-.batch-list{list-style:none;display:flex;flex-direction:column;max-height:320px;overflow-y:auto;}
-.batch-list li{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid #161C2E;}
+.tx-sum{font-family:var(--f-num);font-size:13px;color:var(--text-2);margin-left:auto;}
+.busy-line{display:flex;align-items:center;gap:10px;margin-top:12px;font-size:14px;color:var(--text-2);}
+.batch-list{list-style:none;display:flex;flex-direction:column;max-height:340px;overflow-y:auto;}
+.batch-list li{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:11px 0;border-bottom:1px solid var(--line);}
 .batch-list li:last-child{border-bottom:none;}
-.batch-name{font-size:13px;color:#F0E8D8;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-.batch-meta{font-family:'JetBrains Mono',monospace;font-size:11px;color:#7A7E88;margin-top:3px;line-height:1.5;}
+.batch-name{font-size:14px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.batch-meta{font-family:var(--f-num);font-size:12px;color:var(--text-3);margin-top:3px;line-height:1.5;}
 .input-grid-4{grid-template-columns:repeat(4,minmax(0,1fr));}
-.details-summary{cursor:pointer;font-family:'Cormorant Garamond',serif;font-size:15px;color:#8898B8;line-height:1.5;}
-.details-summary:hover{color:#F0E8D8;}
-.kv{display:grid;grid-template-columns:auto 1fr;gap:8px 16px;font-size:13px;}
-.kv dt{color:#8898B8;}
-.kv dd{color:#F0E8D8;text-align:right;font-family:'JetBrains Mono',monospace;font-size:12.5px;}
+.details-summary{cursor:pointer;font-size:14.5px;color:var(--text-2);line-height:1.5;}
+.details-summary:hover{color:var(--text);}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:9px 16px;font-size:14px;}
+.kv dt{color:var(--text-2);}
+.kv dd{color:var(--text);text-align:right;font-family:var(--f-num);font-size:13.5px;font-variant-numeric:tabular-nums;}
 .kv-wide dd{text-align:left;}
-.week-list{list-style:none;display:flex;flex-direction:column;gap:6px;}
-.week-list li{display:grid;grid-template-columns:44px minmax(0,1fr) 88px;align-items:center;gap:10px;}
+.week-list{list-style:none;display:flex;flex-direction:column;gap:7px;}
+.week-list li{display:grid;grid-template-columns:48px minmax(0,1fr) 92px;align-items:center;gap:10px;}
 .week-list .mini-amt{text-align:right;}
 .week-bar{height:10px;}
-.scenario-cell{background:#0F1320;border:1px solid #161C2E;padding:12px 14px;min-width:0;}
-.scenario-before{font-family:'JetBrains Mono',monospace;font-size:12px;color:#7A7E88;margin-top:6px;}
-.scenario-after{font-family:'JetBrains Mono',monospace;font-size:16px;margin-top:2px;overflow-wrap:anywhere;}
+.scenario-cell{background:var(--panel-2);border:1px solid var(--line);border-radius:3px;padding:12px 14px;min-width:0;}
+.scenario-before{font-family:var(--f-num);font-size:13px;color:var(--text-3);margin-top:6px;}
+.scenario-after{font-family:var(--f-num);font-size:17px;margin-top:2px;overflow-wrap:anywhere;}
 .form-stack{display:flex;flex-direction:column;gap:14px;}
 .faq-list{display:flex;flex-direction:column;}
-.faq-d{border-bottom:1px solid #161C2E;padding:12px 0;}
+.faq-d{border-bottom:1px solid var(--line);padding:13px 0;}
 .faq-d:last-child{border-bottom:none;}
-.faq-d summary{cursor:pointer;font-size:14px;font-weight:600;color:#F0E8D8;line-height:1.4;}
-.faq-d summary:hover{color:#D8DADE;}
-.faq-d p{font-family:'Cormorant Garamond',serif;font-size:15.5px;line-height:1.7;color:#8898B8;margin-top:8px;}
-.report-head{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;padding-bottom:12px;border-bottom:1px solid #161C2E;}
-.report-title{font-family:'Cormorant Garamond',serif;font-size:24px;color:#F0E8D8;}
+.faq-d summary{cursor:pointer;font-size:15px;font-weight:600;color:var(--text);line-height:1.45;}
+.faq-d summary:hover{color:var(--platinum-hi);}
+.faq-d p{font-size:15px;line-height:1.7;color:var(--text-2);margin-top:8px;}
+.report-head{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;padding-bottom:12px;border-bottom:1px solid var(--line);}
+.report-title{font-family:var(--f-display);font-size:28px;font-weight:500;color:var(--text);}
 .log-list{list-style:none;display:flex;flex-direction:column;gap:14px;}
-.log-list li{border-left:3px solid #D8DADE;padding:2px 0 14px 14px;border-bottom:1px solid #161C2E;}
+.log-list li{border-left:3px solid var(--platinum);padding:2px 0 14px 14px;border-bottom:1px solid var(--line);}
 .log-list li:last-child{border-bottom:none;padding-bottom:2px;}
 .log-top{display:flex;justify-content:space-between;align-items:baseline;gap:10px;flex-wrap:wrap;}
-.log-text{font-family:'Cormorant Garamond',serif;font-size:16.5px;color:#F0E8D8;line-height:1.4;}
-.log-meta{font-family:'Cormorant Garamond',serif;font-size:14.5px;color:#8898B8;margin-top:4px;line-height:1.5;}
+.log-text{font-family:var(--f-display);font-size:19px;font-weight:500;color:var(--text);line-height:1.4;}
+.log-meta{font-size:14px;color:var(--text-2);margin-top:4px;line-height:1.55;}
 
-/* Six tiles across need about 1,040px of content width to hold the widest
-   values at full size (56px lead, 34px others: measured, not estimated).
-   Below that they wrap to two rows of three rather than shrinking. */
+/* ── Responsive ── */
+/* Six KPI tiles across need about 1,040px of content width to hold the
+   widest values at full size (measured, not estimated). Below that they
+   wrap to two rows of three rather than shrinking. */
 @media(max-width:1320px){
   .kpi-row{grid-template-columns:repeat(3,minmax(0,1fr));}
 }
@@ -552,44 +599,77 @@ body{background:#050709;color:#F4F7FF;font-family:'Syne',sans-serif;-webkit-font
   .hdr-who,.hdr-chev,.hdr-kbd{display:none;}
   .row-3{grid-template-columns:repeat(2,minmax(0,1fr));}
   .input-grid-4{grid-template-columns:repeat(2,minmax(0,1fr));}
+  .mk-hero-grid{grid-template-columns:minmax(0,1fr);gap:48px;}
+  .mk-lead{max-width:640px;}
+  .mk-cap.wide,.mk-cap.narrow,.mk-cap{grid-column:1/-1;}
+  .mk-supporting{grid-template-columns:repeat(2,minmax(0,1fr));}
+  .mk-supporting > div:nth-child(3){padding-left:0;border-left:none;}
+  .mk-prices{grid-template-columns:minmax(0,1fr);max-width:560px;margin:0 auto;}
+  .mk-price-for{min-height:0;}
+  .mk-footer-grid{grid-template-columns:repeat(3,minmax(0,1fr));}
+  .mk-footer-brand{grid-column:1/-1;}
 }
 /* Below 960px the sidebar becomes a drawer opened from the header. */
 @media(max-width:960px){
+  .g2,.g21,.input-grid{grid-template-columns:1fr;}
+  .kpi4,.kpi3,.g3{grid-template-columns:1fr 1fr;}
   .app{grid-template-columns:minmax(0,1fr);}
   .app-header{padding:0 12px;gap:10px;}
   .hdr-menu{display:flex;}
   .app-crumb{display:none;}
   .app-brand{width:auto;border-right:none;padding:0;align-self:center;}
-  .app-brand .wordmark-sub{display:none;}
-  .app-side{position:fixed;top:56px;left:0;bottom:0;width:min(280px,86vw);height:auto;z-index:240;transform:translateX(-100%);visibility:hidden;transition:transform 0.2s ease,visibility 0s linear 0.2s;box-shadow:24px 0 48px -24px rgba(0,0,0,0.8);}
+  .app-side{position:fixed;top:60px;left:0;bottom:0;width:min(290px,86vw);height:auto;z-index:240;transform:translateX(-100%);visibility:hidden;transition:transform 0.2s ease,visibility 0s linear 0.2s;box-shadow:24px 0 48px -24px rgba(0,0,0,0.8);}
   /* Visible at once on open, so the first link can take focus; hidden only after the slide-out on close. */
   .app-side.open{transform:none;visibility:visible;transition:transform 0.2s ease,visibility 0s;}
-  .side-backdrop{display:block;position:fixed;top:56px;left:0;right:0;bottom:0;z-index:230;background:rgba(5,7,9,0.6);}
+  .side-backdrop{display:block;position:fixed;top:60px;left:0;right:0;bottom:0;z-index:230;background:rgba(13,13,15,0.6);}
   .app-main{grid-column:1;padding:16px 16px 32px;}
   .row-21,.row-12,.row-2{grid-template-columns:minmax(0,1fr);}
   .directive-strip{grid-template-columns:minmax(0,1fr);}
   .ds-meta{flex-direction:row;align-items:center;gap:10px;flex-wrap:wrap;}
+  .ai-rec-field{grid-template-columns:minmax(0,1fr);gap:6px;}
+  .mk-nav-links,.mk-nav-actions .btn-ghost{display:none;}
+  .mk-burger{display:flex;}
+  .mk-outcomes,.mk-steps{grid-template-columns:minmax(0,1fr);}
+  .mk-outcome,.mk-step{padding:28px 0 4px!important;border-left:none!important;}
+  .mk-outcome + .mk-outcome,.mk-step + .mk-step{border-top:1px solid var(--line);}
+  .mk-example{grid-template-columns:minmax(0,1fr);gap:12px;}
+  .mk-arrow{transform:rotate(90deg);height:32px;}
+  .mk-brief{grid-template-columns:minmax(0,1fr);}
+  .mk-brief > div{border-right:none!important;}
 }
 /* Phones: search moves behind a header button and opens as a full-width row. */
 @media(max-width:720px){
   .hdr-search{display:none;}
-  .hdr-search.open{display:block;position:fixed;top:56px;left:0;right:0;max-width:none;padding:10px 12px;background:#050709;border-bottom:1px solid #161C2E;z-index:220;}
+  .hdr-search.open{display:block;position:fixed;top:60px;left:0;right:0;max-width:none;padding:10px 12px;background:var(--bg);border-bottom:1px solid var(--line);z-index:220;}
   .hdr-search.open .hdr-search-icon{left:23px;}
   .hdr-search-toggle{display:flex;}
   .kpi-row{grid-template-columns:repeat(2,minmax(0,1fr));}
   .kpi.kpi-lead{grid-column:1/-1;}
   .row-3{grid-template-columns:minmax(0,1fr);}
   .tx-sum{margin-left:0;}
+  .di,.fi,.hdr-search-input,.hdr-select{font-size:16px;}
+  .mk-supporting{grid-template-columns:minmax(0,1fr);}
+  .mk-supporting > div{padding:22px 0 0!important;border-left:none!important;}
+  .mk-faq details p{padding-right:0;}
+  .mk-footer-grid{grid-template-columns:repeat(2,minmax(0,1fr));}
+}
+@media(max-width:600px){
+  .kpi4,.kpi3,.g3{grid-template-columns:1fr;}
 }
 @media(max-width:520px){
-  .app-brand-txt{display:none;}
+  :root{--gutter:20px;}
+  .app-brand .brand-name{display:none;}
   .hdr-select{max-width:118px;}
   .hdr-tools{gap:8px;}
-  .page-h1{font-size:26px;}
+  .page-h1{font-size:28px;}
+  .mk-nav-in .brand-name{font-size:16px;letter-spacing:0.12em;}
+  .mk-nav-actions .btn-primary{display:none;}
+  .ledger-rule.start::after{display:none;}
+  .mk-cta-row .btn{flex:1 1 100%;}
+  .mk-cap,.mk-example-col,.mk-price{padding:24px 20px;}
+  .mk-demo-kpis,.mk-cap-figures{grid-template-columns:minmax(0,1fr);}
 }
-@media(prefers-reduced-motion:reduce){
-  .app-side{transition:none;}
-}
+
 /* Printing the Reports page prints only the report, black on white. */
 @media print{
   body{background:#fff!important;}
@@ -600,44 +680,6 @@ body{background:#050709;color:#F4F7FF;font-family:'Syne',sans-serif;-webkit-font
   .print-area *{color:#000!important;background:#fff!important;border-color:#bbb!important;}
   .app-header,.app-side,.activation-banner{display:none!important;}
 }
-
-@media(max-width:960px){
-  .feat-grid,.price-grid,.kpi4,.kpi3,.g3{grid-template-columns:1fr 1fr;}
-  .stats-bar{grid-template-columns:1fr;}
-  .g2,.g21,.input-grid{grid-template-columns:1fr;}
-  .nav-links{display:none;}
-  .nav-burger{display:flex;}
-  /* Sign In + Get Started + the hamburger together overflow the nav at
-     phone widths (confirmed via live rendering — Sign In and part of Get
-     Started were clipped off the right edge at 390px). Sign In stays
-     reachable one scroll down in the hero's own CTA row, so the nav row
-     keeps a single primary action plus the menu toggle on mobile. */
-  .nav-cta .btn-ghost{display:none;}
-  .nav,.hero,.sec,.cta-sec{padding-left:24px;padding-right:24px;}
-  .footer{padding:32px 24px;}
-  .hero{grid-template-columns:1fr;text-align:center;padding-top:120px;}
-  .hero-copy{max-width:none;}
-  .hero-sub{margin:0 auto 40px;}
-  .hero-cta,.hero-proof{justify-content:center;}
-  .hero-preview{max-width:480px;margin:0 auto;width:100%;}
-  .price-card.hot{transform:none;box-shadow:none;}
-  .price-card.hot:hover{transform:translateY(-4px);}
-}
-@media(max-width:600px){
-  .feat-grid,.price-grid,.kpi4,.kpi3,.g3{grid-template-columns:1fr;}
-  .price-diag{flex-direction:column;align-items:flex-start;gap:18px;padding:22px;}
-  .price-diag .btn{width:100%;}
-  .hero-preview-kpis{grid-template-columns:1fr;}
-}
-@media(prefers-reduced-motion:reduce){
-  .skel{animation:none;opacity:0.65;}
-}
-/* Focus indicators. Several controls are styled divs and spans that are
-   made keyboard-operable via clickableProps; without a visible ring a
-   keyboard user cannot tell where they are (WCAG 2.4.7). */
-:focus-visible{outline:2px solid #D8DADE;outline-offset:2px;}
-.drop-zone:focus-visible{outline:2px solid #D8DADE;outline-offset:-3px;}
-.a-link:focus-visible,.page-back:focus-visible,.hero-preview-reset:focus-visible,.footer-links a:focus-visible,.nav-logo:focus-visible,.auth-logo-row:focus-visible{outline:2px solid #D8DADE;outline-offset:3px;}
 
 `;
 
@@ -665,72 +707,72 @@ function clickableProps(fn, { label, disabled = false } = {}) {
 }
 
 // ─── AI ADVISOR RECOMMENDATION ──────────────────────────────────
-// Renders the model's response as a structured executive recommendation —
-// What Happened / Why / Business Impact / Risk / Action / Expected Outcome
-// / Confidence — as real React text, never raw HTML. The model's output is
-// untrusted content; dangerouslySetInnerHTML would execute anything it
-// contained.
-const RISK_CHIP_COLOR = { Critical: C.red, Elevated: C.amber, Watch: C.gold, Low: C.green };
+// Renders the model's response as a memo: What Happened, Why, Business
+// Impact, Recommended Action, Expected Outcome, then Risk and Confidence,
+// as real React text, never raw HTML. The model's output is untrusted
+// content; dangerouslySetInnerHTML would execute anything it contained.
+// Red appears only when the risk level itself calls for it.
+const RISK_CHIP_COLOR = { Critical: C.danger, Elevated: C.warning, Watch: C.platinum, Low: C.positive };
 
 function AIRecommendation({ rec }) {
-  const riskColor = RISK_CHIP_COLOR[rec.riskLevel] || C.inkDim;
+  const riskColor = RISK_CHIP_COLOR[rec.riskLevel] || C.text3;
+  const score = Number(rec.confidenceScore);
   const fields = [
-    { key:"whatHappened",     lbl:"What Happened",      col:C.inkDim },
-    { key:"whyItHappened",    lbl:"Why It Happened",    col:C.blue },
-    { key:"businessImpact",   lbl:"Business Impact",    col:C.amber },
-    { key:"recommendedAction",lbl:"Recommended Action", col:C.gold },
-    { key:"expectedOutcome",  lbl:"Expected Outcome",   col:C.green },
+    { key:"whatHappened",      lbl:"What happened" },
+    { key:"whyItHappened",     lbl:"Why it happened" },
+    { key:"businessImpact",    lbl:"Business impact" },
+    { key:"recommendedAction", lbl:"Recommended action", action:true },
+    { key:"expectedOutcome",   lbl:"Expected outcome" },
   ];
   return (
     <div>
       {fields.map(f => rec[f.key] && (
-        <div className="ai-rec-field" key={f.key}>
-          <div className="ai-rec-lbl" style={{ color:f.col }}>{f.lbl}</div>
+        <div className={`ai-rec-field${f.action ? " action" : ""}`} key={f.key}>
+          <div className="ai-rec-lbl" style={{ color: f.action ? C.platinum : C.text3 }}>{f.lbl}</div>
           <div className="ai-rec-body">{rec[f.key]}</div>
         </div>
       ))}
       <div className="ai-rec-footer">
-        <span className="ai-rec-chip" style={{ color:riskColor, background:`${riskColor}1F` }}>{rec.riskLevel || "Unknown"} Risk</span>
-        <span className="ai-rec-conf">Confidence {rec.confidenceScore ?? "—"}/100{rec.confidenceReason ? ` — ${rec.confidenceReason}` : ""}</span>
+        <span className="ai-rec-chip" style={{ color:riskColor, background:`color-mix(in srgb, ${riskColor} 14%, transparent)` }}>{rec.riskLevel || "Unknown"} risk</span>
+        <span className="ai-rec-conf">
+          Confidence {Number.isFinite(score) ? `${score}/100` : "not stated"}
+          {Number.isFinite(score) && <span className="ai-conf-meter" aria-hidden="true"><span style={{ width:`${Math.max(0, Math.min(100, score))}%` }}/></span>}
+          {rec.confidenceReason && <span>{rec.confidenceReason}</span>}
+        </span>
       </div>
     </div>
   );
 }
 
 // ─── METRIC CONFIDENCE ──────────────────────────────────────────
-// Renders nothing for a high-confidence metric — the caveat only earns
-// its place on screen when the number genuinely needs one. `#3A4A68`
-// (an earlier draft's color for this exact label style) fails WCAG AA
-// against this dashboard's background; C.inkDim (#7A7E88) is the value
-// already verified this session and used for every other small-caps
-// label in the app, so it's used here for the same reason.
+// Renders nothing for a high-confidence metric: the caveat only earns its
+// place on screen when the number genuinely needs one. Set at 12px in the
+// muted text token, which keeps AA contrast on every panel.
 function ConfidenceLine({ c }) {
   if (!c) return null;
   if (c.shown && c.level === "high") return null;
-  const label = c.shown ? `${c.level} confidence` : "not enough data";
+  const label = c.shown ? `${capitalize(c.level)} confidence` : "Not enough data";
   return (
-    <div style={{ fontSize:9, letterSpacing:"0.1em", textTransform:"uppercase", color:C.inkDim, fontWeight:600, marginTop:6, lineHeight:1.5 }}>
-      {label} — {c.reason}
+    <div style={{ fontSize:12, color:C.text3, marginTop:6, lineHeight:1.5 }}>
+      <span style={{ fontWeight:600, color:C.text2 }}>{label}:</span> {c.reason}
     </div>
   );
 }
 
 // ─── SEVERITY TAG ─────────────────────────────────────────────
-// Every colour-coded state carries an explicit text label riding with
-// it — colour alone fails accessibility and fails the instant someone
-// screenshots in greyscale. Reuses the {color, background} chip pattern
-// already established by .ai-rec-chip, so severity reads consistently
-// everywhere it appears.
+// Every colour-coded state carries an explicit text label riding with it:
+// colour alone fails accessibility and fails the instant someone
+// screenshots in greyscale.
 const SEVERITY_STYLE = {
-  critical: { text:"Critical", color:C.red },
-  warning:  { text:"Warning",  color:C.amber },
-  positive: { text:"Healthy",  color:C.green },
-  neutral:  { text:"Stable",   color:C.gold },
+  critical: { text:"Critical", color:C.danger },
+  warning:  { text:"Warning",  color:C.warning },
+  positive: { text:"Healthy",  color:C.positive },
+  neutral:  { text:"Stable",   color:C.platinum },
 };
 function SeverityTag({ level, label }) {
   const s = SEVERITY_STYLE[level] || SEVERITY_STYLE.neutral;
   return (
-    <span className="severity-tag" style={{ color:s.color, background:`${s.color}1F` }}>
+    <span className="severity-tag" style={{ color:s.color, background:`color-mix(in srgb, ${s.color} 14%, transparent)` }}>
       {label || s.text}
     </span>
   );
@@ -738,16 +780,15 @@ function SeverityTag({ level, label }) {
 
 // ─── LOADING SKELETONS ────────────────────────────────────────
 // Holds the exact shape of the content about to arrive, so nothing jumps
-// once real data lands — communicates "computing," never a frozen blank
-// screen, while file parsing / history load / AI generation are in flight.
+// once real data lands.
 function SkeletonKPIRow() {
   return (
     <div className="kpi-row" aria-busy="true" aria-label="Loading your financial position">
       {[0, 1, 2, 3, 4, 5].map(i => (
         <div className="kpi" key={i} style={{ minHeight:120 }}>
-          <div className="skel" style={{ width:"55%", height:9, marginBottom:16 }}/>
-          <div className="skel" style={{ width:i === 0 ? "70%" : "60%", height:i === 0 ? 38 : 28, marginBottom:12 }}/>
-          <div className="skel" style={{ width:"45%", height:9 }}/>
+          <div className="skel" style={{ width:"55%", height:10, marginBottom:16 }}/>
+          <div className="skel" style={{ width:i === 0 ? "70%" : "60%", height:i === 0 ? 44 : 30, marginBottom:12 }}/>
+          <div className="skel" style={{ width:"45%", height:10 }}/>
         </div>
       ))}
     </div>
@@ -755,61 +796,72 @@ function SkeletonKPIRow() {
 }
 
 // ─── RING CHART ───────────────────────────────────────────────
+// Colours go through style, not SVG attributes: presentation attributes
+// cannot read CSS variables.
 function Ring({ score, size = 100, sw = 6 }) {
   const s = safe(score);
   const r = (size - sw) / 2;
   const circ = 2 * Math.PI * r;
   const fill = (s / 100) * circ;
-  const col  = s > 70 ? C.gold : s > 40 ? C.amber : C.red;
+  const col  = s > 70 ? C.platinum : s > 40 ? C.warning : C.danger;
   return (
     <div style={{ position:"relative", width:size, height:size, flexShrink:0 }}>
-      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} style={{ transform:"rotate(-90deg)" }}>
-        <circle cx={size/2} cy={size/2} r={r} fill="none" stroke={C.border} strokeWidth={sw}/>
-        <circle cx={size/2} cy={size/2} r={r} fill="none" stroke={col} strokeWidth={sw}
+      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} style={{ transform:"rotate(-90deg)" }} aria-hidden="true">
+        <circle cx={size/2} cy={size/2} r={r} fill="none" strokeWidth={sw} style={{ stroke:C.line }}/>
+        <circle cx={size/2} cy={size/2} r={r} fill="none" strokeWidth={sw}
           strokeDasharray={circ} strokeDashoffset={circ - fill} strokeLinecap="butt"
-          style={{ transition:"stroke-dashoffset 1s ease, stroke 0.5s" }}/>
+          style={{ stroke:col, transition:"stroke-dashoffset 1s ease, stroke 0.5s" }}/>
       </svg>
       <div style={{ position:"absolute", inset:0, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center" }}>
-        <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:24, color:C.gold, lineHeight:1 }}>{Math.round(s)}</div>
-        <div style={{ fontSize:9, color:C.inkDim, fontFamily:"'JetBrains Mono',monospace" }}>/100</div>
+        <div style={{ fontFamily:"var(--f-display)", fontSize:size > 80 ? 26 : 22, fontWeight:500, color:C.text, lineHeight:1, fontVariantNumeric:"lining-nums" }}>{Math.round(s)}</div>
+        <div style={{ fontSize:11, color:C.text3, fontFamily:"var(--f-num)" }}>/100</div>
       </div>
     </div>
   );
 }
 
-// ─── BAR CHART ────────────────────────────────────────────────
-function BChart({ data }) {
+// ─── CASH IN AND CASH OUT ─────────────────────────────────────
+// Money received against money spent, per month, from actual transactions
+// in USD. Both series share one scale, so a month whose costs beat its
+// income is drawn taller, not clipped. History only: projections live
+// under Forecasts, never mixed into this chart.
+function BChart({ data, compact = false }) {
   if (!data || data.length === 0) return (
-    <div style={{ textAlign:"center", padding:"40px 0", color:C.inkDim, fontFamily:"'Cormorant Garamond',serif", fontSize:14 }}>
-      Connect data to see your revenue trend.
-    </div>
+    <div className="panel-copy" style={{ textAlign:"center", padding:"36px 0" }}>Connect data to see money in and out.</div>
   );
-  // Both series share one scale. Scaling to revenue alone drew any month
-  // whose expenses beat revenue taller than the chart — the exact month that
-  // most needs reading correctly.
   const maxV = Math.max(...data.map(d => Math.max(d.revenue || 0, d.expenses || 0)), 1);
+  const H = compact ? 100 : 150;
+  const totIn = data.reduce((s, d) => s + (d.revenue || 0), 0);
+  const totOut = data.reduce((s, d) => s + (d.expenses || 0), 0);
+  const net = totIn - totOut;
+  const last = data[data.length - 1];
   return (
     <div>
-      <div style={{ display:"flex", alignItems:"flex-end", gap:6, height:140 }} role="img"
-        aria-label={`Revenue and expenses by month. Latest, ${data[data.length-1].month}: revenue ${fmt(data[data.length-1].revenue)}, expenses ${fmt(data[data.length-1].expenses)}.`}>
+      {!compact && (
+        <div className="chart-summary">
+          <span>In<b>{fmt(totIn)}</b></span>
+          <span>Out<b>{fmt(totOut)}</b></span>
+          <span>Net<b style={{ color: net >= 0 ? C.positive : C.danger }}>{fmt(net)}</b></span>
+          <span>Peak month<b>{fmt(maxV)}</b></span>
+        </div>
+      )}
+      <div style={{ display:"flex", alignItems:"flex-end", gap: data.length > 18 ? 3 : 8, height:H + 24 }} role="img"
+        aria-label={`Money in and out by month, ${data[0].month} to ${last.month}. Total in ${fmt(totIn)}, total out ${fmt(totOut)}. Latest month, ${last.month}: in ${fmt(last.revenue)}, out ${fmt(last.expenses)}.`}>
         {data.map((d, i) => (
-          <div key={i} title={`${d.month}: revenue ${fmt(d.revenue)}, expenses ${fmt(d.expenses)}`}
-            style={{ flex:1, minWidth:0, display:"flex", flexDirection:"column", alignItems:"center", gap:4, height:"100%", justifyContent:"flex-end" }}>
-            <div style={{ display:"flex", gap:2, alignItems:"flex-end", height:120, width:"100%", justifyContent:"center" }}>
-              <div style={{ width:"46%", borderRadius:"1px 1px 0 0", minHeight:3, height:`${(d.revenue/maxV)*110}px`, background:`linear-gradient(to top,${C.blue},rgba(74,124,247,0.4))` }}/>
-              <div style={{ width:"46%", borderRadius:"1px 1px 0 0", minHeight:3, height:`${(d.expenses/maxV)*110}px`, background:`linear-gradient(to top,rgba(232,72,85,0.7),rgba(232,72,85,0.2))` }}/>
+          <div key={i} title={`${d.month}: in ${fmt(d.revenue)}, out ${fmt(d.expenses)}, net ${fmt((d.revenue || 0) - (d.expenses || 0))}`}
+            style={{ flex:1, minWidth:0, display:"flex", flexDirection:"column", alignItems:"center", gap:6, height:"100%", justifyContent:"flex-end" }}>
+            <div style={{ display:"flex", gap:3, alignItems:"flex-end", height:H, width:"100%", justifyContent:"center" }}>
+              <div style={{ width:"42%", maxWidth:24, minHeight:2, height:`${(d.revenue / maxV) * H}px`, background:C.platinum, borderRadius:"2px 2px 0 0" }}/>
+              <div style={{ width:"42%", maxWidth:24, minHeight:2, height:`${(d.expenses / maxV) * H}px`, background:C.pewter, borderRadius:"2px 2px 0 0" }}/>
             </div>
-            <span style={{ fontSize:9, color:C.inkDim, fontFamily:"'JetBrains Mono',monospace", whiteSpace:"nowrap", overflow:"hidden", maxWidth:"100%" }}>{data.length > 12 && i % 2 ? "" : d.month}</span>
+            <span style={{ fontSize:12, color:C.text3, fontFamily:"var(--f-num)", whiteSpace:"nowrap", overflow:"hidden", maxWidth:"100%" }}>{data.length > 12 && i % 2 ? "" : d.month}</span>
           </div>
         ))}
       </div>
-      <div style={{ display:"flex", gap:16, marginTop:10 }}>
-        <div style={{ display:"flex", alignItems:"center", gap:6, fontSize:10, color:C.ink }}>
-          <div style={{ width:8, height:8, borderRadius:1, background:C.blue }}/>Revenue
-        </div>
-        <div style={{ display:"flex", alignItems:"center", gap:6, fontSize:10, color:C.ink }}>
-          <div style={{ width:8, height:8, borderRadius:1, background:C.red }}/>Expenses
-        </div>
+      <div className="chart-legend">
+        <span><i style={{ background:C.platinum }}/>Money in</span>
+        <span><i style={{ background:C.pewter }}/>Money out</span>
+        {!compact && <span style={{ marginLeft:"auto", color:C.text3 }}>Actual history from your transactions, USD</span>}
       </div>
     </div>
   );
@@ -825,22 +877,22 @@ const DIRECTIVE_SEVERITY_TAG = { critical:"critical", warn:"warning", go:"positi
 // its reason in the middle, an action on the right. The decision logic lives
 // in computeDirective() (financials.js) — the Dashboard computes it once and
 // both this banner and the persisted decision log read the same object.
-function DirectiveStrip({ d, children }) {
-  const uc = { critical:C.red, warn:C.amber, go:C.green, stable:C.gold }[d.severity];
+function DirectiveStrip({ d, children, compact = false }) {
+  const uc = { critical:C.danger, warn:C.warning, go:C.positive, stable:C.platinum }[d.severity];
   // Critical calls get a heavier frame, not just a red hue — weight carries
   // severity too, so it survives greyscale.
   return (
-    <section className="directive-strip" style={{ "--uc":uc, borderWidth: d.severity === "critical" ? 2 : 1 }} aria-label="This week's directive">
+    <section className={`directive-strip${compact ? " compact" : ""}`} style={{ "--uc":uc, borderWidth: d.severity === "critical" ? 2 : 1 }} aria-label="This week's directive">
       <div className="ds-meta">
         <div className="ds-kicker" style={{ color:uc }}>This week's directive</div>
         <SeverityTag level={DIRECTIVE_SEVERITY_TAG[d.severity]}/>
       </div>
       <div style={{ minWidth:0 }}>
         <div className="ds-text">{d.text}</div>
-        <div className="ds-reason">
+        {!compact && <div className="ds-reason">
           {d.reason}
-          {d.wasCapped && " This is based on a single month of data — treat it as an early warning, not a confirmed crisis, until more history confirms it."}
-        </div>
+          {d.wasCapped && " This is based on a single month of data. Treat it as an early warning, not a confirmed crisis, until more history confirms it."}
+        </div>}
       </div>
       {children && <div className="ds-actions">{children}</div>}
     </section>
@@ -930,14 +982,14 @@ function DataUpload({ onDataLoaded, hasData }) {
           { name:"Xero",       hint:"Reports > Export as CSV" },
           { name:"Wave",       hint:"Reports > Download CSV" },
         ].map((a, i) => (
-          <div key={i} style={{ background:C.surfaceHigh, border:`1px solid ${C.border}`, padding:"12px 14px" }}>
-            <div style={{ fontSize:12, color:C.cream, fontWeight:600, marginBottom:2 }}>{a.name}</div>
-            <div style={{ fontSize:10, color:C.inkDim, lineHeight:1.5 }}>{a.hint}</div>
+          <div key={i} style={{ background:C.panel2, border:`1px solid ${C.line}`, padding:"12px 14px" }}>
+            <div style={{ fontSize:12, color:C.text, fontWeight:600, marginBottom:2 }}>{a.name}</div>
+            <div style={{ fontSize:10, color:C.text3, lineHeight:1.5 }}>{a.hint}</div>
           </div>
         ))}
       </div>
 
-      <div style={{ background:C.surfaceHigh, border:`1px solid ${C.border}`, padding:"16px 18px" }}>
+      <div style={{ background:C.panel2, border:`1px solid ${C.line}`, padding:"16px 18px" }}>
         <div className="di-lbl" style={{ marginBottom:10 }}>Live Google Sheets Sync</div>
         <div style={{ display:"flex", gap:8 }}>
           <input className="di" placeholder="Paste your published CSV link..." value={csvUrl} onChange={e => setCsvUrl(e.target.value)} onKeyDown={e => e.key === "Enter" && syncSheet()}/>
@@ -950,7 +1002,7 @@ function DataUpload({ onDataLoaded, hasData }) {
       {err && <div className="d-alert crit">{err}</div>}
       {hasData && (
         <div className="upload-ok">
-          <div style={{ width:8, height:8, borderRadius:"50%", background:C.green, flexShrink:0 }}/>
+          <div style={{ width:8, height:8, borderRadius:"50%", background:C.positive, flexShrink:0 }}/>
           <div className="upload-ok-txt">Data connected. Your dashboard is reading your real numbers.</div>
         </div>
       )}
@@ -1074,7 +1126,7 @@ function PayModal({ planKey, currentPlanKey, userEmail, userId, onClose, onSucce
         <div className="modal-body">
           <div className="plan-badge">
             <div className="plan-badge-name">{plan.name}</div>
-            <div className="plan-badge-price">${plan.usd.toLocaleString()} <span style={{ fontSize:14, color:C.inkDim }}>{plan.period}</span></div>
+            <div className="plan-badge-price">${plan.usd.toLocaleString()} <span style={{ fontSize:14, color:C.text3 }}>{plan.period}</span></div>
             <div className="plan-badge-sub">Billed monthly via PayPal. Cancel anytime.</div>
           </div>
           {replaces && !done && (
@@ -1085,10 +1137,10 @@ function PayModal({ planKey, currentPlanKey, userEmail, userId, onClose, onSucce
 
           {done ? (
             <div style={{ textAlign:"center", padding:"12px 0" }}>
-              <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:24, color:C.cream, marginBottom:12 }}>
+              <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:24, color:C.text, marginBottom:12 }}>
                 {plan.name} is now active
               </div>
-              <div style={{ fontSize:13, color:C.ink, fontFamily:"'Cormorant Garamond',serif", lineHeight:1.7, marginBottom:24 }}>
+              <div style={{ fontSize:13, color:C.text2, fontFamily:"'Cormorant Garamond',serif", lineHeight:1.7, marginBottom:24 }}>
                 Subscription confirmed. You will be billed ${plan.usd}/month. A receipt was sent to {userEmail}.
               </div>
               <button className="btn btn-full btn-primary" onClick={onClose}>Enter Dashboard</button>
@@ -1098,7 +1150,7 @@ function PayModal({ planKey, currentPlanKey, userEmail, userId, onClose, onSucce
           ) : blockReason ? (
             <>
               <div className="pay-err">{CHECKOUT_UNAVAILABLE}</div>
-              <div style={{ fontSize:13, color:C.ink, fontFamily:"'Cormorant Garamond',serif", lineHeight:1.7, margin:"16px 0 20px" }}>
+              <div style={{ fontSize:13, color:C.text2, fontFamily:"'Cormorant Garamond',serif", lineHeight:1.7, margin:"16px 0 20px" }}>
                 Email us and we will set your subscription up directly.
               </div>
               <button
@@ -1268,7 +1320,7 @@ function DiagnosticModal({ onClose }) {
         <div className="modal-body">
           {outcome ? (
             <div style={{ textAlign:"center", padding:"12px 0" }} role="status">
-              <div style={{ fontSize:14, color:C.ink, fontFamily:"'Cormorant Garamond',serif", lineHeight:1.7, marginBottom:24 }}>
+              <div style={{ fontSize:14, color:C.text2, fontFamily:"'Cormorant Garamond',serif", lineHeight:1.7, marginBottom:24 }}>
                 {outcome.body}
               </div>
               <button
@@ -1285,7 +1337,7 @@ function DiagnosticModal({ onClose }) {
             <>
               <div className="plan-badge">
                 <div className="plan-badge-name">{DIAGNOSTIC.name}</div>
-                <div className="plan-badge-price">${DIAGNOSTIC.usd.toLocaleString()} <span style={{ fontSize:14, color:C.inkDim }}>once</span></div>
+                <div className="plan-badge-price">${DIAGNOSTIC.usd.toLocaleString()} <span style={{ fontSize:14, color:C.text3 }}>once</span></div>
                 <div className="plan-badge-sub">{DIAGNOSTIC.tagline}</div>
               </div>
 
@@ -1529,7 +1581,7 @@ function HeaderSearch({ transactions, onNavigate, onShowTransactions, mobileOpen
                   {opt.type === "txn" && <>
                     <span className="pop-date">{opt.t.txn_date}</span>
                     <span className="pop-main">{opt.t.description || "No description"}</span>
-                    <span className="pop-amt" style={{ color: Number(opt.t.amount) >= 0 ? C.green : C.ink }}>{fmt(opt.t.amount)}</span>
+                    <span className="pop-amt" style={{ color: Number(opt.t.amount) >= 0 ? C.positive : C.text2 }}>{fmt(opt.t.amount)}</span>
                   </>}
                   {opt.type === "all" && <span className="pop-main">Show all {results.transactionTotal} matching transactions</span>}
                 </div>
@@ -1546,7 +1598,7 @@ function HeaderSearch({ transactions, onNavigate, onShowTransactions, mobileOpen
 // Live conditions from buildAlerts(): each disappears once it is resolved,
 // so there is nothing to mark as read. The badge counts critical and
 // warning alerts; informational ones show as a dot.
-const ALERT_STYLE = { critical:{ text:"Critical", color:C.red }, warning:{ text:"Warning", color:C.amber }, info:{ text:"Info", color:C.blue } };
+const ALERT_STYLE = { critical:{ text:"Critical", color:C.danger }, warning:{ text:"Warning", color:C.warning }, info:{ text:"Info", color:C.silver } };
 
 function AlertsMenu({ alerts, onNavigate }) {
   const [open, setOpen] = useState(false);
@@ -1712,7 +1764,7 @@ function KpiTile({ t, hero = false }) {
   return (
     <div className={`kpi${hero ? " kpi-lead" : ""}`} style={sev ? { "--sev":sev.color } : undefined} title={t.title}>
       <div className="kpi-lbl"><span>{t.lbl}</span>{t.sev && <SeverityTag level={t.sev} label={t.sevLabel}/>}</div>
-      <div className="kpi-val" style={{ color:t.col || C.cream }}>
+      <div className="kpi-val" style={{ color:t.col || C.text }}>
         {t.val}{t.unit && <span className="kpi-unit">{t.unit}</span>}
       </div>
       {t.sub && <div className="kpi-sub">{t.sub}</div>}
@@ -1919,7 +1971,7 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
 
   const setObligationActive = async (id, active) => {
     const { error } = await supabase.from("recurring_obligations").update({ active }).eq("id", id);
-    if (error) { console.error("Failed to update obligation:", error); setActionErr("That obligation could not be updated. Nothing was changed — try again."); return; }
+    if (error) { console.error("Failed to update obligation:", error); setActionErr("That obligation could not be updated. Nothing was changed, so try again."); return; }
     setObligations(obs => obs.map(o => o.id === id ? { ...o, active } : o));
   };
 
@@ -1993,7 +2045,7 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
       await loadObligations();
     } catch (e) {
       console.error("Failed to save transaction history:", e);
-      setUploadErr("Your file was read for this session, but saving it to your permanent history failed. The numbers are accurate for now — try re-uploading to save them.");
+      setUploadErr("Your file was read for this session, but saving it to your permanent history failed. The numbers are accurate for now; upload the file again to save them.");
     }
     setUploadBusy(false);
   };
@@ -2268,21 +2320,21 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
   // when free cash or runway turns critical, that is what leads the row.
   const tiles = {
     revenue: { key:"revenue", lbl:"Monthly revenue", val:fmtCompact(latest.revenue), title:fmt(latest.revenue),
-      sub:`${vel >= 0 ? "+" : ""}${pc(vel)} vs prior month`, col:C.cream },
-    margin:  { key:"margin", lbl:"Profit margin", val:pc(margin), col: margin > 0 ? C.green : C.red,
+      sub:`${vel >= 0 ? "+" : ""}${pc(vel)} vs prior month`, col:C.text },
+    margin:  { key:"margin", lbl:"Profit margin", val:pc(margin), col: margin > 0 ? C.positive : C.danger,
       sub:`${fmtCompact(totPro)} net in period` },
-    free:    { key:"free", lbl:"True free cash", val:fmtCompact(free), title:fmt(free), col: free >= 0 ? C.gold : C.red,
+    free:    { key:"free", lbl:"True free cash", val:fmtCompact(free), title:fmt(free), col: free >= 0 ? C.platinum : C.danger,
       sub:"After tax and safety reserves" },
     runway:  { key:"runway", lbl:"Runway", val:runwayText, conf:runwayConfidence,
-      col: cashFlowPositive || burnMonths >= 6 ? C.green : burnMonths >= 3 ? C.amber : runwayText === "---" ? C.inkDim : C.red,
+      col: cashFlowPositive || burnMonths >= 6 ? C.positive : burnMonths >= 3 ? C.warning : runwayText === "---" ? C.text3 : C.danger,
       sub: cashFlowPositive ? "Revenue covers costs" : !runwayConfidence.shown ? "Add a cash balance to calculate" : burnMonths >= 6 ? "Above the 6-month threshold" : burnMonths >= 3 ? "Build toward 6 months" : "Below 3 months" },
     risk:    { key:"risk", lbl:"Risk score", val:risk.score.toFixed(0), unit:"/100",
-      col: risk.label === "Low" ? C.green : risk.label === "Watch" ? C.gold : risk.label === "Elevated" ? C.amber : C.red,
+      col: risk.label === "Low" ? C.positive : risk.label === "Watch" ? C.platinum : risk.label === "Elevated" ? C.warning : C.danger,
       sub:`${risk.label}. Weighted from runway, margin and trend` },
     hiring:  { key:"hiring", lbl:"Hiring capacity", conf:hiringCapacityConfidence,
       val: !hiringCapacityConfidence.shown ? "---" : hiringCapacity > 0 ? fmtCompact(hiringCapacity) : "None",
       unit: hiringCapacityConfidence.shown && hiringCapacity > 0 ? "/mo" : null, title: fmt(hiringCapacity),
-      col: hiringCapacity > 0 ? C.green : C.amber,
+      col: hiringCapacity > 0 ? C.positive : C.warning,
       sub: hiringCapacity > 0 ? "Fully-loaded cost profit covers" : "Costs exceed revenue on average" },
   };
   const hero = safe(free) < 0
@@ -2338,8 +2390,8 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
           <Icon name={drawerOpen ? "close" : "menu"}/>
         </button>
         <a className="app-brand" href="/dashboard" onClick={e => { e.preventDefault(); go("dashboard"); }} aria-label="Command Ledger dashboard">
-          <div className="logomark">C</div>
-          <div className="app-brand-txt"><div className="wordmark">Command Ledger</div><div className="wordmark-sub">Financial Intelligence</div></div>
+          <BrandMark size={34} alt=""/>
+          <span className="brand-name app-brand-txt">Command Ledger</span>
         </a>
         <div className="app-crumb" aria-label="Breadcrumb">{groupLabel} <span aria-hidden="true">/</span> <b>{current.label}</b></div>
         <HeaderSearch transactions={txns} onNavigate={go} onShowTransactions={showTransactions}
@@ -2437,21 +2489,21 @@ function DashboardHome({ ctx }) {
       )}
 
       <div>
-        {isThinData && <div className="data-thin-tag">Early data — trajectory not yet assessable</div>}
+        {isThinData && <div className="data-thin-tag">Early data: trajectory not yet assessable</div>}
         <div className={`kpi-row${isThinData ? " data-thin" : ""}`}>
           <KpiTile t={hero} hero/>
           {supporting.map(t => <KpiTile key={t.key} t={t}/>)}
         </div>
         {showForwardRunway && (
           <div className="d-alert warn" style={{ marginTop:12 }}>
-            {cashFlowPositive ? "No burn on average — but " : `${safe(burnMonths).toFixed(1)} months on average burn. `}
+            {cashFlowPositive ? "No burn on average, but " : `${safe(burnMonths).toFixed(1)} months on average burn. `}
             {forwardRunway.monthsUntilCross.toFixed(1)} months against your known obligations (around {forwardRunway.crossDate}). The second is the real number.
           </div>
         )}
       </div>
 
       <div className="row row-21">
-        <Panel title="Revenue vs expenses" action={<PanelLink to="financials" onNavigate={go}>Monthly detail</PanelLink>}>
+        <Panel title="Cash in and cash out" action={<PanelLink to="financials" onNavigate={go}>Monthly detail</PanelLink>}>
           <BChart data={rows}/>
         </Panel>
         <Panel title="Trajectory" action={<PanelLink to="financials" onNavigate={go}>History</PanelLink>}>
@@ -2503,7 +2555,7 @@ function DashboardHome({ ctx }) {
           ) : (
             <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
               {concentrationData.payers.slice(0, 3).map((p, i) => {
-                const barColor = i === 0 ? (p.pct > 60 ? C.red : p.pct > 40 ? C.amber : C.green) : C.gold;
+                const barColor = i === 0 ? (p.pct > 60 ? C.danger : p.pct > 40 ? C.warning : C.positive) : C.platinum;
                 return (
                   <div key={p.name}>
                     <div className="bar-row-lbl"><span style={{ textTransform:"capitalize" }}>{p.name}</span><span style={{ color:barColor }}>{p.pct.toFixed(1)}%</span></div>
@@ -2602,7 +2654,7 @@ function TransactionsSection({ ctx }) {
                   <div style={{ minWidth:0 }}>
                     <div className="batch-name">{b.filename || "Untitled upload"}</div>
                     <div className="batch-meta">
-                      {new Date(b.uploaded_at).toLocaleDateString()} · {b.period_start} to {b.period_end} · {b.inserted_count ?? "—"} added, {b.duplicate_count ?? "—"} duplicate
+                      {new Date(b.uploaded_at).toLocaleDateString()} · {b.period_start} to {b.period_end} · {b.inserted_count ?? "pending"} added, {b.duplicate_count ?? "pending"} duplicate
                     </div>
                   </div>
                   <button className="modal-x" title="Delete this upload and its transactions" aria-label={`Delete upload ${b.filename || "Untitled upload"}`}
@@ -2626,7 +2678,7 @@ function TransactionsSection({ ctx }) {
             <option value="out">Money out</option>
           </select>
           <div className="tx-sum">
-            {filtered.length.toLocaleString()} shown · <span style={{ color:C.green }}>{fmt(totIn)} in</span> · <span>{fmt(totOut)} out</span>
+            {filtered.length.toLocaleString()} shown · <span style={{ color:C.positive }}>{fmt(totIn)} in</span> · <span>{fmt(totOut)} out</span>
           </div>
         </div>
         {historyLoading ? (
@@ -2644,9 +2696,9 @@ function TransactionsSection({ ctx }) {
                   {shown.map((t, i) => (
                     <tr key={t.id ?? i}>
                       <td className="mono">{t.txn_date}</td>
-                      <td>{t.description || "—"}</td>
-                      <td className="muted">{t.category ? capitalize(t.category) : "—"}</td>
-                      <td className="num" style={{ color: Number(t.amount) >= 0 ? C.green : C.cream }}>{fmt(t.amount)}</td>
+                      <td>{t.description || <span className="muted">No description</span>}</td>
+                      <td className="muted">{t.category ? capitalize(t.category) : "Uncategorised"}</td>
+                      <td className="num" style={{ color: Number(t.amount) >= 0 ? C.positive : C.text }}>{fmt(t.amount)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -2708,7 +2760,7 @@ function FinancialsSection({ ctx }) {
                       <td>{r.month}</td>
                       <td className="num">{fmt(r.revenue)}</td>
                       <td className="num">{fmt(r.expenses)}</td>
-                      <td className="num" style={{ color: net >= 0 ? C.green : C.red }}>{fmt(net)}</td>
+                      <td className="num" style={{ color: net >= 0 ? C.positive : C.danger }}>{fmt(net)}</td>
                       <td className="num muted">{r.revenue > 0 ? pc((net / r.revenue) * 100) : "---"}</td>
                     </tr>
                   );
@@ -2716,7 +2768,7 @@ function FinancialsSection({ ctx }) {
               </tbody>
               <tfoot><tr>
                 <th scope="row">Total</th><td className="num">{fmt(totals.rev)}</td><td className="num">{fmt(totals.exp)}</td>
-                <td className="num" style={{ color: totals.rev - totals.exp >= 0 ? C.green : C.red }}>{fmt(totals.rev - totals.exp)}</td>
+                <td className="num" style={{ color: totals.rev - totals.exp >= 0 ? C.positive : C.danger }}>{fmt(totals.rev - totals.exp)}</td>
                 <td className="num muted">{totals.rev > 0 ? pc(((totals.rev - totals.exp) / totals.rev) * 100) : "---"}</td>
               </tr></tfoot>
             </table>
@@ -2725,9 +2777,9 @@ function FinancialsSection({ ctx }) {
 
         <Panel title="Capital allocator">
           {[
-            { name:"Tax vault",      pct:tr * 100, amt:taxV, col:C.red },
-            { name:"Safety buffer",  pct:sr * 100, amt:safV, col:C.blue },
-            { name:"True free cash", pct:totPro > 0 ? Math.max(0, (free / totPro) * 100) : 0, amt:free, col:free >= 0 ? C.gold : C.red },
+            { name:"Tax vault",      pct:tr * 100, amt:taxV, col:C.danger },
+            { name:"Safety buffer",  pct:sr * 100, amt:safV, col:C.silver },
+            { name:"True free cash", pct:totPro > 0 ? Math.max(0, (free / totPro) * 100) : 0, amt:free, col:free >= 0 ? C.platinum : C.danger },
           ].map((a, i) => (
             <div className="alloc-row" key={i}>
               <div className="alloc-meta">
@@ -2771,7 +2823,7 @@ function FinancialsSection({ ctx }) {
           <div style={{ display:"flex", gap:16, alignItems:"center" }}>
             <Ring score={sov} size={84} sw={5}/>
             <div>
-              <div className="traj-lbl" style={{ color: sov >= 75 ? C.gold : sov >= 50 ? C.amber : C.red }}>{sovLbl}</div>
+              <div className="traj-lbl" style={{ color: sov >= 75 ? C.platinum : sov >= 50 ? C.warning : C.danger }}>{sovLbl}</div>
               <p className="panel-copy">
                 {hasConversionData
                   ? <>Margin ({pc(margin * 0.6)}) plus conversion ({pc(conv * 0.4)}). Above 75 supports an aggressive scale posture.</>
@@ -2793,7 +2845,7 @@ function FinancialsSection({ ctx }) {
           ) : (
             <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
               {concentrationData.payers.slice(0, 5).map((p, i) => {
-                const barColor = i === 0 ? (p.pct > 60 ? C.red : p.pct > 40 ? C.amber : C.green) : C.gold;
+                const barColor = i === 0 ? (p.pct > 60 ? C.danger : p.pct > 40 ? C.warning : C.positive) : C.platinum;
                 return (
                   <div key={p.name}>
                     <div className="bar-row-lbl"><span style={{ textTransform:"capitalize" }}>{p.name}</span><span style={{ color:barColor }}>{p.pct.toFixed(1)}%</span></div>
@@ -2803,7 +2855,7 @@ function FinancialsSection({ ctx }) {
               })}
               <ConfidenceLine c={{ shown:true, level:concentrationData.confidenceLevel, reason:concentrationData.reason }}/>
               {concentrationData.aggregatorPct > 0.5 && (
-                <p className="panel-copy">{concentrationData.aggregatorPct.toFixed(0)}% of revenue arrives through a payment processor (Shopify, Stripe, PayPal) and can't be attributed to a single client — excluded above.</p>
+                <p className="panel-copy">{concentrationData.aggregatorPct.toFixed(0)}% of revenue arrives through a payment processor (Shopify, Stripe, PayPal) and cannot be attributed to a single client, so it is excluded above.</p>
               )}
             </div>
           )}
@@ -2814,7 +2866,7 @@ function FinancialsSection({ ctx }) {
             <>
               <p className="narrative">{founderNarrative}</p>
               {seasonalPattern && (
-                <p className="panel-copy">{seasonalPattern.month} has run {Math.abs(seasonalPattern.avgDeltaPct).toFixed(0)}% {seasonalPattern.avgDeltaPct < 0 ? "below" : "above"} your average for {seasonalPattern.occurrences} years running — a repeating seasonal pattern, not a new signal.</p>
+                <p className="panel-copy">{seasonalPattern.month} has run {Math.abs(seasonalPattern.avgDeltaPct).toFixed(0)}% {seasonalPattern.avgDeltaPct < 0 ? "below" : "above"} your average for {seasonalPattern.occurrences} years running. That is a repeating seasonal pattern, not a new signal.</p>
               )}
               <ConfidenceLine c={{
                 shown: true,
@@ -2853,7 +2905,7 @@ function AdvisorSection({ ctx }) {
         </div>
         <div className="ai-body" style={{ padding: aiRec ? 0 : undefined }}>
           {aiLoad ? (
-            <div style={{ display:"flex", alignItems:"center", gap:12, color:C.inkDim, fontSize:12, fontFamily:"'JetBrains Mono',monospace", padding:"20px" }}>
+            <div style={{ display:"flex", alignItems:"center", gap:12, color:C.text3, fontSize:12, fontFamily:"'JetBrains Mono',monospace", padding:"20px" }}>
               <div className="ai-dots"><span/><span/><span/></div>Analyzing your financial position...
             </div>
           ) : aiRec ? (
@@ -2871,7 +2923,7 @@ function AdvisorSection({ ctx }) {
           <button className="panel-link" onClick={() => go("transactions")}>Transactions<Icon name="arrow" size={14}/></button>
         </div>
       )}
-      <p className="panel-copy">Sent to Claude (Anthropic) only when you click Generate Brief: your computed metrics, the names of your largest payers and recurring costs, and any notes you left on past directives — never your transaction list.</p>
+      <p className="panel-copy">Sent to Claude (Anthropic) only when you click Generate Brief: your computed metrics, the names of your largest payers and recurring costs, and any notes you left on past directives. Never your transaction list.</p>
     </>
   );
 }
@@ -2952,7 +3004,7 @@ function DecisionLogSection({ ctx }) {
       {currentDirective && <DirectiveStrip d={currentDirective}/>}
 
       {needsAcknowledgement && (
-        <Panel title="Did you act on this?" style={{ borderLeft:`3px solid ${C.gold}` }}>
+        <Panel title="Did you act on this?" style={{ borderLeft:`3px solid ${C.platinum}` }}>
           <p className="narrative" style={{ marginBottom:12 }}>
             Last directive ({new Date(latestDirective.issued_at).toLocaleDateString()}): "{latestDirective.directive_text}"
           </p>
@@ -2962,7 +3014,7 @@ function DecisionLogSection({ ctx }) {
             ))}
           </div>
           <label className="sr-only" htmlFor="ack-note">Note</label>
-          <textarea id="ack-note" className="di" placeholder="Optional note — why you did (or didn't) act..."
+          <textarea id="ack-note" className="di" placeholder="Optional note: why you did or did not act"
             value={ackNote} onChange={e => setAckNote(e.target.value)}
             style={{ minHeight:56, resize:"vertical", fontFamily:"'Cormorant Garamond',serif", fontSize:14 }}/>
         </Panel>
@@ -2972,23 +3024,23 @@ function DecisionLogSection({ ctx }) {
         {directivesLoading ? (
           <div className="busy-line"><span className="spinner"/>Loading decision history...</div>
         ) : directives.length === 0 ? (
-          <p className="panel-copy">No directives issued yet. Once Command Ledger issues its first call, it's logged here permanently — with whether you acted on it and what happened to the metric it targeted.</p>
+          <p className="panel-copy">No directives issued yet. Once Command Ledger issues its first call, it is logged here permanently, with whether you acted on it and what happened to the metric it targeted.</p>
         ) : (
           <ul className="log-list">
             {directives.map(d => {
-              const uc = { critical:C.red, warn:C.amber, go:C.green, stable:C.gold }[d.severity] || C.gold;
+              const uc = { critical:C.danger, warn:C.warning, go:C.positive, stable:C.platinum }[d.severity] || C.platinum;
               const outcome = describeDirectiveOutcome(d);
               const actionLabel = { acted:"Acted", partially:"Partially acted", ignored:"Ignored", disagreed:"Disagreed" }[d.action_taken] || "Awaiting response";
               const outcomeColor = outcome.status === "measured"
-                ? (outcome.improved === true ? C.green : outcome.improved === false ? C.red : C.ink)
-                : C.inkDim;
+                ? (outcome.improved === true ? C.positive : outcome.improved === false ? C.danger : C.text2)
+                : C.text3;
               return (
                 <li key={d.id} style={{ borderLeftColor:uc }}>
                   <div className="log-top">
                     <span className="log-text">{d.directive_text}</span>
                     <span className="mini-date">{new Date(d.issued_at).toLocaleDateString()}</span>
                   </div>
-                  <div className="log-meta">{actionLabel}{d.founder_note ? ` — "${d.founder_note}"` : ""}</div>
+                  <div className="log-meta">{actionLabel}{d.founder_note ? `: "${d.founder_note}"` : ""}</div>
                   <div className="log-meta" style={{ color:outcomeColor }}>{outcome.message}</div>
                 </li>
               );
@@ -3067,8 +3119,8 @@ function ForecastsSection({ ctx }) {
               {weeks.map(w => (
                 <li key={w.weekStart}>
                   <span className="mini-date">{w.weekStart.slice(5)}</span>
-                  <span className="bar-track week-bar"><span style={{ width:`${(w.total / maxWeek) * 100}%`, background: w.total > 0 ? C.gold : "transparent" }}/></span>
-                  <span className="mini-amt">{w.total > 0 ? fmt(w.total) : "—"}</span>
+                  <span className="bar-track week-bar"><span style={{ width:`${(w.total / maxWeek) * 100}%`, background: w.total > 0 ? C.platinum : "transparent" }}/></span>
+                  <span className="mini-amt">{w.total > 0 ? fmt(w.total) : "None"}</span>
                 </li>
               ))}
             </ul>
@@ -3114,7 +3166,7 @@ function ForecastsSection({ ctx }) {
               <div key={i} className="scenario-cell">
                 <div className="card-lbl">{row.lbl}</div>
                 <div className="scenario-before">{row.before}</div>
-                <div className="scenario-after" style={{ color: row.better ? C.green : C.red }}>→ {row.after}</div>
+                <div className="scenario-after" style={{ color: row.better ? C.positive : C.danger }}>→ {row.after}</div>
               </div>
             ))}
           </div>
@@ -3143,12 +3195,12 @@ function SettingsSection({ ctx }) {
       .update({ name: name.trim() || null, business: business.trim() || null, updated_at: new Date().toISOString() })
       .eq("id", user.id).select().single();
     setSaving(false);
-    if (error) { console.error("Profile update failed:", error); setMsg({ t:"crit", text:"Your profile could not be saved. Nothing was changed — try again." }); return; }
+    if (error) { console.error("Profile update failed:", error); setMsg({ t:"crit", text:"Your profile could not be saved. Nothing was changed, so try again." }); return; }
     onProfileChange(data);
     setMsg({ t:"ok", text:"Saved." });
   };
 
-  const statusText = { active:"Active", suspended:"Suspended — a payment failed; PayPal will retry", canceled:"Cancelled", expired:"Expired" }[profile?.status] || "Active";
+  const statusText = { active:"Active", suspended:"Suspended: a payment failed and PayPal will retry", canceled:"Cancelled", expired:"Expired" }[profile?.status] || "Active";
 
   return (
     <>
@@ -3170,7 +3222,7 @@ function SettingsSection({ ctx }) {
             </div>
             <div style={{ display:"flex", alignItems:"center", gap:12 }}>
               <button className="btn btn-primary btn-md" type="submit" disabled={saving || !dirty}>{saving ? "Saving..." : "Save changes"}</button>
-              {msg && <span role="status" style={{ fontSize:12.5, color: msg.t === "ok" ? C.green : C.red }}>{msg.text}</span>}
+              {msg && <span role="status" style={{ fontSize:12.5, color: msg.t === "ok" ? C.positive : C.danger }}>{msg.text}</span>}
             </div>
           </form>
         </Panel>
@@ -3208,9 +3260,76 @@ function SettingsSection({ ctx }) {
             <button className="btn btn-outline btn-md" onClick={() => go("transactions")}>Manage uploads</button>
             <a className="btn btn-outline btn-md" href="mailto:commandledger@gmail.com?subject=Delete%20my%20account">Request account deletion</a>
           </div>
+          <p className="panel-copy" style={{ marginTop:10 }}>Account deletion is carried out by our team on request. It removes your login and every transaction stored under it, and it cannot be undone.</p>
+        </Panel>
+      </div>
+
+      <div className="row row-2">
+        <PasswordPanel user={user}/>
+        <Panel title="Email">
+          <p className="panel-copy">
+            Command Ledger sends only account email: sign-in confirmations and password resets from our authentication provider. Payment receipts come from PayPal. There is no marketing email to opt out of, so there are no preferences to set here.
+          </p>
+          <dl className="kv" style={{ marginTop:14 }}>
+            <dt>Account email</dt><dd>{user?.email}</dd>
+          </dl>
         </Panel>
       </div>
     </>
+  );
+}
+
+// Password change for email-and-password accounts, through Supabase Auth's
+// own updateUser on the signed-in session. Accounts that sign in with
+// Google have no Command Ledger password to change, and are told so rather
+// than shown a form that cannot work.
+function PasswordPanel({ user }) {
+  const [pw, setPw] = useState("");
+  const [pw2, setPw2] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState(null);
+  const providers = user?.app_metadata?.providers || (user?.app_metadata?.provider ? [user.app_metadata.provider] : []);
+  const hasPassword = providers.includes("email");
+  const strong = pw.length >= 8 && /[A-Za-z]/.test(pw) && /[0-9]/.test(pw);
+
+  const submit = async e => {
+    e.preventDefault();
+    setMsg(null);
+    if (!strong) { setMsg({ t:"crit", text:"Use at least 8 characters, with both letters and numbers." }); return; }
+    if (pw !== pw2) { setMsg({ t:"crit", text:"The two passwords do not match." }); return; }
+    setBusy(true);
+    const { error } = await supabase.auth.updateUser({ password: pw });
+    setBusy(false);
+    if (error) { console.error("Password update failed:", error); setMsg({ t:"crit", text: error.message || "Your password could not be changed. Try again." }); return; }
+    setPw(""); setPw2("");
+    setMsg({ t:"ok", text:"Password changed." });
+  };
+
+  if (!hasPassword) {
+    return (
+      <Panel title="Password">
+        <p className="panel-copy">You sign in with {providers.length ? providers.map(capitalize).join(" or ") : "an external provider"}, so there is no Command Ledger password to change. Manage your password with that provider.</p>
+      </Panel>
+    );
+  }
+  return (
+    <Panel title="Password">
+      <form onSubmit={submit} className="form-stack">
+        <div className="input-group">
+          <label className="di-lbl" htmlFor="pw-new">New password</label>
+          <input id="pw-new" className="di" type="password" autoComplete="new-password" value={pw} onChange={e => setPw(e.target.value)} minLength={8} required/>
+        </div>
+        <div className="input-group">
+          <label className="di-lbl" htmlFor="pw-confirm">Confirm new password</label>
+          <input id="pw-confirm" className="di" type="password" autoComplete="new-password" value={pw2} onChange={e => setPw2(e.target.value)} minLength={8} required/>
+        </div>
+        <div style={{ display:"flex", alignItems:"center", gap:12, flexWrap:"wrap" }}>
+          <button className="btn btn-primary btn-md" type="submit" disabled={busy || !pw || !pw2}>{busy ? "Saving..." : "Change password"}</button>
+          {msg && <span role="status" style={{ fontSize:13.5, color: msg.t === "ok" ? C.positive : C.danger }}>{msg.text}</span>}
+        </div>
+        <p className="panel-copy" style={{ fontSize:13.5 }}>At least 8 characters, with both letters and numbers.</p>
+      </form>
+    </Panel>
   );
 }
 
@@ -3304,12 +3423,11 @@ function LoginPage({ onBack }) {
     <div className="auth-page">
       <div className="auth-card">
         <div className="auth-logo-row" style={{ cursor:"pointer" }} {...clickableProps(onBack, { label:"Back to Command Ledger home" })}>
-          <div className="logomark">C</div>
-          <div className="wordmark" style={{ fontSize:16 }}>Command Ledger</div>
+          <BrandMark size={150} framed alt="Command Ledger"/>
         </div>
         <div className="auth-h">
-          <h2 className="auth-title">{mode === "login" ? "Sign In" : "Create Account"}</h2>
-          <p className="auth-sub">Access your financial command center.</p>
+          <h1 className="auth-title">{mode === "login" ? "Sign in" : "Create your account"}</h1>
+          <p className="auth-sub">{mode === "login" ? "Welcome back to your financial command centre." : "Start with your own exports. No bank login required."}</p>
         </div>
         <form className="auth-form" onSubmit={handleSubmit}>
           {err && <div className="a-err">{err}</div>}
@@ -3321,7 +3439,7 @@ function LoginPage({ onBack }) {
           <button className="btn btn-gold btn-full" style={{ marginTop:12 }} type="submit" disabled={loading}>
             {loading ? <span className="spinner"/> : mode === "login" ? "Sign In" : "Create Account"}
           </button>
-          <div className="a-div"><div className="a-div-line"/><span style={{ fontSize:10, color:C.inkDim, textTransform:"uppercase", letterSpacing:"0.1em" }}>or</span><div className="a-div-line"/></div>
+          <div className="a-div"><div className="a-div-line"/><span style={{ fontSize:10, color:C.text3, textTransform:"uppercase", letterSpacing:"0.1em" }}>or</span><div className="a-div-line"/></div>
           <button className="btn btn-full" type="button" onClick={handleGoogle} disabled={loading}
             style={{ background:"#fff", border:"1px solid #dadce0", color:"#3c4043", borderRadius:4, fontSize:15, padding:"13px 32px", letterSpacing:"0.01em", textTransform:"none", fontWeight:500, display:"flex", alignItems:"center", justifyContent:"center", gap:12 }}>
             <svg width="18" height="18" viewBox="0 0 18 18">
@@ -3342,460 +3460,484 @@ function LoginPage({ onBack }) {
   );
 }
 
-// ─── FAQ ACCORDION ────────────────────────────────────────────
-function FaqItem({ q, a }) {
-  const [open, setOpen] = useState(false);
+// ─── BRAND MARK ───────────────────────────────────────────────
+// assets/Logo.png is the brand mark. public/brand holds the same image
+// scaled down, never cropped, recoloured or redrawn; this picks the
+// smallest copy that stays sharp at the requested size.
+// Large instances are framed: the logo's own lighting, a soft glow behind
+// the monogram, reads as a faint square at large sizes, so a hairline
+// plate makes that square deliberate instead of hiding or altering it.
+function BrandMark({ size = 40, alt = "Command Ledger", framed = false }) {
+  const src = size > 256 ? "/brand/logo-640.png" : size > 96 ? "/brand/icon-512.png" : "/brand/icon-192.png";
+  const img = <img className="brand-mark" src={src} width={size} height={size} alt={alt} decoding="async"/>;
+  return framed ? <span className="brand-plate" style={{ width:size + 2, height:size + 2 }}>{img}</span> : img;
+}
+
+function BrandLockup({ size = 52, onClick, href = "/" }) {
   return (
-    <div
-      className="faq-item"
-      role="button"
-      tabIndex={0}
-      aria-expanded={open}
-      style={{
-        borderBottom: `1px solid ${C.border}`,
-        padding: "22px 0",
-        cursor: "pointer",
-      }}
-      onClick={() => setOpen(o => !o)}
-      onKeyDown={e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setOpen(o => !o); } }}
-    >
-      <div style={{
-        display: "flex",
-        justifyContent: "space-between",
-        alignItems: "center",
-        gap: 16,
-      }}>
-        <div style={{
-          fontFamily: "'Syne', sans-serif",
-          fontSize: 14,
-          fontWeight: 600,
-          color: open ? C.gold : C.cream,
-          transition: "color 0.2s",
-          lineHeight: 1.4,
-        }}>{q}</div>
-        <div style={{
-          fontSize: 20,
-          color: C.gold,
-          flexShrink: 0,
-          transition: "transform 0.2s",
-          transform: open ? "rotate(45deg)" : "rotate(0deg)",
-          fontFamily: "'JetBrains Mono', monospace",
-          lineHeight: 1,
-        }}>+</div>
-      </div>
-      {open && (
-        <div style={{
-          fontFamily: "'Cormorant Garamond', serif",
-          fontSize: 15,
-          color: C.ink,
-          lineHeight: 1.85,
-          marginTop: 14,
-          paddingRight: 32,
-          animation: "fadeUp 0.2s ease",
-        }}>{a}</div>
-      )}
-    </div>
+    <a className="brand-lockup" href={href} onClick={onClick} aria-label="Command Ledger home">
+      <BrandMark size={size} alt="" framed/>
+      <span className="brand-name">Command Ledger</span>
+    </a>
   );
 }
 
-// ─── HERO LIVE PREVIEW ──────────────────────────────────────────
-// A real, working instance of the actual parsing and calculation engine —
-// not a mockup. A visitor can drop their own bank/QuickBooks CSV here,
-// unauthenticated, and see figures computed from it before ever signing up.
-// Nothing here is hardcoded: every number comes from computeMetrics() run
-// against real rows, the same pure function the logged-in dashboard uses.
-// "Try an example" loads a clearly-labeled synthetic CSV through that same
-// pipeline — the numbers shown are still genuinely computed, never typed in.
+// ─── SAMPLE BUSINESS ──────────────────────────────────────────
+// Three months of a fictional consultancy, used on the public site. No
+// figure from it is typed in: everything shown is computed from this CSV
+// by the same functions the signed-in app runs, and every place it
+// appears is labelled as sample data.
 const EXAMPLE_CSV = `Date,Description,Amount
-2026-04-03,Client invoice - Acme Retainer,18500
+2026-04-03,Acme Corp retainer,18500
 2026-04-08,AWS hosting,-1240
 2026-04-12,Payroll run,-14200
-2026-04-18,Client invoice - Bolt Project,9600
+2026-04-18,Bolt Studio project,9600
 2026-04-22,Facebook Ads,-4100
-2026-05-02,Client invoice - Acme Retainer,18500
+2026-05-02,Acme Corp retainer,18500
 2026-05-09,AWS hosting,-1310
 2026-05-12,Payroll run,-14200
-2026-05-20,Client invoice - Bolt Project,7200
+2026-05-20,Bolt Studio project,7200
 2026-05-24,Facebook Ads,-5400
-2026-06-01,Client invoice - Acme Retainer,18500
+2026-06-01,Acme Corp retainer,18500
 2026-06-10,AWS hosting,-1290
 2026-06-12,Payroll run,-15600
-2026-06-19,Client invoice - Bolt Project,6100
+2026-06-19,Bolt Studio project,6100
 2026-06-25,Facebook Ads,-6800`;
 
-function HeroPreview() {
-  const [rows, setRows] = useState(null);
-  const [label, setLabel] = useState("");
+const NO_MANUAL = { mRev:0, mExp:0, mCash:0, mCac:0, mLtv:0, mLeads:0, mClose:0 };
+const titleCase = s => String(s || "").replace(/\b\w/g, c => c.toUpperCase());
+
+const SAMPLE = (() => {
+  const rows = parseAnyCSV(EXAMPLE_CSV).rows;
+  const metrics = computeMetrics(rows, NO_MANUAL, "safe");
+  const txns = parseTransactions(EXAMPLE_CSV).transactions;
+  const concentration = computeRevenueConcentration(txns);
+  const obligations = detectRecurringObligations(txns, { asOf: "2026-06-30" });
+  const directive = computeDirective({ margin: metrics.margin, burnMonths: metrics.burnMonths, free: metrics.free, vel: metrics.vel,
+    conv: metrics.conv, ltvcac: metrics.ltvcac, months: metrics.n, concentration });
+  const first = rows[0], last = rows[rows.length - 1];
+  const marginOf = r => r.revenue > 0 ? ((r.revenue - r.expenses) / r.revenue) * 100 : 0;
+  const change = (a, b) => a > 0 ? ((b - a) / a) * 100 : 0;
+  // What June's margin would be with ad spend back at April's level.
+  const juneAdsAtApril = last.revenue > 0 ? ((last.revenue - (last.expenses - (last.marketing - first.marketing))) / last.revenue) * 100 : 0;
+  return {
+    rows, metrics, txns, concentration, obligations, directive, first, last,
+    marginFirst: marginOf(first), marginLast: marginOf(last),
+    revenueChange: change(first.revenue, last.revenue), costChange: change(first.expenses, last.expenses),
+    adsChange: change(first.marketing, last.marketing), juneAdsAtApril,
+    committed: obligations.reduce((s, o) => s + o.typical_amount, 0),
+    topClient: concentration?.shown ? titleCase(concentration.payers[0].name) : null,
+    topClientPct: concentration?.shown ? concentration.payers[0].pct : null,
+    confidence: computeConfidence(metrics.n, null),
+  };
+})();
+
+const riskTone = label => label === "Low" ? C.positive : label === "Watch" ? C.text : label === "Elevated" ? C.warning : C.danger;
+
+// ─── HERO PRODUCT PREVIEW ─────────────────────────────────────
+// The app's own dashboard components, fed by the real engine. It opens on
+// the sample business; a visitor can drop their own CSV, which is computed
+// in this browser tab and never uploaded.
+function HeroDemo() {
+  const [own, setOwn] = useState(null);
   const [err, setErr] = useState("");
-
-  const load = (text, name) => {
-    const result = parseAnyCSV(text);
-    if (!result || result.rows.length === 0) { setErr("Couldn't find revenue or expense data in that file."); return; }
-    setErr(""); setRows(result.rows); setLabel(name);
-  };
-
-  const handleFile = async (file) => {
+  const handleFile = async file => {
     if (!file) return;
-    if (!file.name.toLowerCase().endsWith(".csv")) { setErr("Drop a .csv file — try a bank or QuickBooks export."); return; }
-    try { load(await file.text(), file.name); }
-    catch { setErr("Couldn't read that file."); }
+    if (!/\.csv$/i.test(file.name)) { setErr("Choose a .csv export from your bank or accounting software."); return; }
+    try {
+      const parsed = parseAnyCSV(await file.text());
+      if (!parsed || parsed.rows.length === 0) { setErr("No revenue or expense columns were found in that file."); return; }
+      setErr(""); setOwn({ rows: parsed.rows, label: file.name });
+    } catch { setErr("That file could not be read."); }
   };
-
-  const m = rows ? computeMetrics(rows, { mRev:0, mExp:0, mCash:0, mCac:0, mLtv:0, mLeads:0, mClose:0 }, "safe") : null;
-
+  const rows = own ? own.rows : SAMPLE.rows;
+  const m = own ? computeMetrics(rows, NO_MANUAL, "safe") : SAMPLE.metrics;
+  const tiles = [
+    { key:"free", lbl:"True free cash", val:fmtCompact(m.free), title:fmt(m.free), col: m.free >= 0 ? C.text : C.danger, sub:"After tax and safety reserves" },
+    { key:"margin", lbl:"Profit margin", val:pc(m.margin), col: m.margin > 0 ? C.positive : C.danger, sub:`${fmtCompact(m.totPro)} net over ${m.n} month${m.n === 1 ? "" : "s"}` },
+    { key:"runway", lbl:"Runway", val: m.cashFlowPositive ? "No burn" : (m.runwayConfidence.shown && m.burnMonths > 0) ? `${safe(m.burnMonths).toFixed(1)} mo` : "---",
+      col: m.cashFlowPositive ? C.positive : C.text, sub: m.cashFlowPositive ? "Revenue covers costs" : "Needs a cash balance" },
+    { key:"risk", lbl:"Risk score", val: m.risk.score.toFixed(0), unit:"/100", col: riskTone(m.risk.label), sub: m.risk.label },
+  ];
   return (
-    <div className="hero-preview">
-      <div className="hero-preview-bar">
-        <span/><span/><span/>
-        <div className="hero-preview-title">{rows ? label : "command-ledger.co — Command Center"}</div>
-        {rows && <div className="hero-preview-live">Live</div>}
+    <div className="mk-demo" onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); handleFile(e.dataTransfer.files[0]); }}>
+      <div className="mk-demo-bar">
+        <BrandMark size={22} alt=""/>
+        <span className="mk-demo-title">Dashboard</span>
+        <span className="mk-demo-tag">{own ? own.label : "Sample data"}</span>
       </div>
-      <div className="hero-preview-body">
-        {!rows ? (
-          <div className="hero-preview-empty" onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); handleFile(e.dataTransfer.files[0]); }}>
-            <input type="file" id="hero-file" accept=".csv" style={{ display:"none" }} onChange={e => handleFile(e.target.files[0])}/>
-            <label htmlFor="hero-file" className="hero-preview-cta"><b>Drop your own bank CSV here</b><br/>See your real numbers, live — nothing is uploaded, this runs entirely in your browser.</label>
-            <div className="hero-preview-or">or</div>
-            <button className="hero-preview-try" onClick={() => load(EXAMPLE_CSV, "Example — Acme Consulting (illustrative)")}>Try an Example</button>
-            {err && <div className="hero-preview-err">{err}</div>}
+      <div className="mk-demo-body">
+        {!own && <DirectiveStrip d={SAMPLE.directive} compact/>}
+        <div className="mk-demo-kpis">{tiles.map(t => <KpiTile key={t.key} t={t}/>)}</div>
+        <div className="panel" style={{ padding:"14px 16px" }}>
+          <div className="panel-head" style={{ marginBottom:10 }}>
+            <h3 className="panel-title">Cash in and cash out</h3>
+            <span className="page-meta" style={{ marginTop:0 }}>Monthly, USD</span>
           </div>
-        ) : (
-          <>
-            <div className="hero-preview-kpis">
-              <div className="hpk"><div className="hpk-lbl">Monthly Revenue</div><div className="hpk-val">{fmt(m.latest.revenue)}</div></div>
-              <div className="hpk"><div className="hpk-lbl">Profit Margin</div><div className="hpk-val">{pc(m.margin)}</div></div>
-              <div className="hpk"><div className="hpk-lbl">Runway</div><div className="hpk-val">{m.cashFlowPositive ? "No burn" : `${safe(m.burnMonths).toFixed(1)}mo`}</div></div>
-              <div className="hpk"><div className="hpk-lbl">Risk Score</div><div className="hpk-val" style={{ color: m.risk.label==="Low"?C.green:m.risk.label==="Watch"?C.amber:C.red }}>{m.risk.score.toFixed(0)} · {m.risk.label}</div></div>
-            </div>
-            <div className="hero-preview-note">
-              {label.startsWith("Example") ? "Illustrative example data — not a real customer." : "Computed from your file, in this browser tab only."}
-              {" "}<span className="hero-preview-reset" {...clickableProps(() => { setRows(null); setLabel(""); })}>Try another file</span>
-            </div>
-          </>
-        )}
+          <BChart data={rows} compact/>
+        </div>
+      </div>
+      <div className="mk-demo-foot">
+        <span>{own ? "Computed from your file in this browser tab. Nothing was uploaded." : "Computed live by the Command Ledger engine from three months of sample transactions."}</span>
+        <span>
+          <input type="file" id="mk-demo-file" accept=".csv" className="sr-only" onChange={e => handleFile(e.target.files[0])}/>
+          {own ? <button className="btn-link" onClick={() => setOwn(null)}>Back to the sample</button>
+            : <label htmlFor="mk-demo-file">Try it with your own CSV</label>}
+        </span>
+        {err && <span className="mk-demo-err" role="alert">{err}</span>}
       </div>
     </div>
   );
 }
 
 // ─── MARKETING SITE ───────────────────────────────────────────
+const MK_LINKS = [["#product", "Product"], ["#how", "How it works"], ["#pricing", "Pricing"]];
+
+const MK_FAQ = [
+  ["What is Command Ledger?",
+    "Financial intelligence software for founders. You upload your bank or accounting exports and Command Ledger shows your true free cash, runway, profitability, committed costs and risk, with one recommended move each week. It supports your decisions. It does not replace your accountant, and it does not give tax or legal advice."],
+  ["Who should use it?",
+    "Founders and owners of businesses with steady revenue who have outgrown a spreadsheet. Agencies, consultancies, SaaS and e-commerce businesses are typical. It is most useful once you have three or more months of transactions to analyse."],
+  ["What financial data can I upload?",
+    "CSV or Excel files (.csv, .xlsx, .xls) exported from your bank, QuickBooks, Xero or Wave, or any spreadsheet with dates and amounts. You can also sync a Google Sheet published as CSV. Columns are detected automatically, and uploading an overlapping file again does not create duplicates."],
+  ["How does Command Ledger calculate financial metrics?",
+    "Every metric comes from a published formula applied to your transactions. Runway is your cash divided by average monthly net burn. True free cash is profit after a reserve for tax and a safety buffer. Each figure shows how confident it is, based on how much recent data stands behind it, and a figure without enough data is shown as missing rather than as zero."],
+  ["Is my financial information secure?",
+    "Data is encrypted in transit. Your transactions are stored in a private history that only your login can read, enforced by the database itself. The uploaded file is not kept, and deleting an upload deletes every transaction it added. An AI brief, sent only when you request one, includes your computed metrics and the names of your largest payers and recurring costs, never your transaction list. Card payments are handled entirely by PayPal."],
+  ["Does Command Ledger connect directly to my bank?",
+    "No. Command Ledger never asks for your bank login. It works from the exports you choose to upload and the sheet you choose to sync."],
+  ["What happens when I cancel?",
+    "You can cancel at any time from your PayPal account, and your access ends when PayPal confirms the cancellation. First-time monthly subscribers can request a refund within 7 days, and annual subscriptions can be refunded pro rata within 30 days. Your uploaded history stays in your account until you delete it or ask us to delete your account."],
+  ["How does Command Advisory work?",
+    "Advisory includes everything in Command Ledger, plus done-for-you data configuration, a monthly one-to-one call, a written board report every month and a direct advisory line with priority four-hour response. There are six seats in total. You can start with the $750 Financial Diagnostic, which is credited in full against your first Advisory month."],
+];
+
 function MarketingSite({ onLogin, onPlanSelect, onTerms, onPrivacy }) {
-  const [scrolled, setScrolled] = useState(false);
+  const [solid, setSolid] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   useEffect(() => {
-    const h = () => setScrolled(window.scrollY > 20);
-    window.addEventListener("scroll", h);
-    return () => window.removeEventListener("scroll", h);
+    const onScroll = () => setSolid(window.scrollY > 12);
+    onScroll();
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => window.removeEventListener("scroll", onScroll);
   }, []);
-
   useEffect(() => {
-    const els = document.querySelectorAll(".reveal");
-    if (!els.length) return;
-    const io = new IntersectionObserver((entries) => {
-      entries.forEach(e => { if (e.isIntersecting) { e.target.classList.add("in"); io.unobserve(e.target); } });
-    }, { threshold: 0.12, rootMargin: "0px 0px -40px 0px" });
-    els.forEach(el => io.observe(el));
-    return () => io.disconnect();
-  }, []);
+    if (!menuOpen) return;
+    const onKey = e => { if (e.key === "Escape") setMenuOpen(false); };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [menuOpen]);
 
-  const features = [
-    { num:"01", title:"AI Strategic Advisor",   desc:"Not a paragraph — a structured brief: what happened, why, the business impact, the risk level, the one action to take, and how confident to be in it. Built from your real numbers." },
-    { num:"02", title:"Risk Score",             desc:"A single number weighted from your actual runway, margin, trend direction, revenue concentration, and unit economics — each only counts when there's real data behind it, so it never fakes a warning." },
-    { num:"03", title:"Growth Score",           desc:"Rewards a steady, consistent growth trend over one lucky month. Three good months in a row score higher than one great month between two bad ones, at the same average rate." },
-    { num:"04", title:"Burn Runway Monitor",    desc:"Real net burn — expenses against revenue, not expenses alone — so a profitable month never gets mistaken for a business about to run out of cash." },
-    { num:"05", title:"True Free Cash",         desc:"After tax obligations and safety buffer, what you actually own and can deploy. Most founders confuse revenue with available cash. This ends that confusion." },
-    { num:"06", title:"Break-Even Calculator",  desc:"The exact monthly revenue you need to cover all costs. Know whether you are above or below the line before the month ends." },
-  ];
+  const s = SAMPLE;
+  const m = s.metrics;
+  const toTop = e => { e.preventDefault(); window.scrollTo(0, 0); };
 
   return (
-    <>
-      <nav className={`nav${scrolled?" scrolled":""}`}>
-        <div className="nav-logo" {...clickableProps(() => window.scrollTo(0, 0), { label:"Back to top" })}>
-          <div className="logomark">C</div>
-          <div><div className="wordmark">Command Ledger</div><div className="wordmark-sub">Financial Intelligence</div></div>
+    <div className="mk">
+      <a className="skip-link" href="#main">Skip to content</a>
+      <header className={`mk-nav${solid || menuOpen ? " solid" : ""}`}>
+        <div className="mk-wrap mk-nav-in">
+          <BrandLockup onClick={toTop}/>
+          <nav aria-label="Main">
+            <ul className="mk-nav-links">
+              {MK_LINKS.map(([href, label]) => <li key={href}><a href={href}>{label}</a></li>)}
+            </ul>
+          </nav>
+          <div className="mk-nav-actions">
+            <button className="btn btn-ghost" onClick={onLogin}>Sign in</button>
+            <button className="btn btn-primary" onClick={() => onPlanSelect("software")}>Get started</button>
+            <button className="mk-burger" aria-label={menuOpen ? "Close menu" : "Open menu"} aria-expanded={menuOpen} aria-controls="mk-menu" onClick={() => setMenuOpen(o => !o)}>
+              <Icon name={menuOpen ? "close" : "menu"}/>
+            </button>
+          </div>
         </div>
-        <ul className="nav-links">
-          <li><a href="#features">Product</a></li>
-          <li><a href="#trust">Why Command Ledger</a></li>
-          <li><a href="#pricing">Pricing</a></li>
-        </ul>
-        <div className="nav-cta">
-          <button
-            className={`nav-burger${menuOpen ? " open" : ""}`}
-            onClick={() => setMenuOpen(o => !o)}
-            aria-label="Toggle navigation menu"
-            aria-expanded={menuOpen}
-          ><span/><span/><span/></button>
-          <button className="btn btn-ghost" onClick={onLogin}>Sign In</button>
-          <button className="btn btn-gold" onClick={() => onPlanSelect("software")}>Get Started</button>
-        </div>
-      </nav>
+      </header>
       {menuOpen && (
-        <div className="nav-mobile">
-          <a href="#features" onClick={() => setMenuOpen(false)}>Product</a>
-          <a href="#trust" onClick={() => setMenuOpen(false)}>Why Command Ledger</a>
-          <a href="#pricing" onClick={() => setMenuOpen(false)}>Pricing</a>
+        <div className="mk-menu" id="mk-menu">
+          {MK_LINKS.map(([href, label]) => <a key={href} href={href} onClick={() => setMenuOpen(false)}>{label}</a>)}
+          <div className="mk-menu-actions">
+            <button className="btn btn-outline" onClick={() => { setMenuOpen(false); onLogin(); }}>Sign in</button>
+            <button className="btn btn-primary" onClick={() => { setMenuOpen(false); onPlanSelect("software"); }}>Get started</button>
+          </div>
         </div>
       )}
 
-      <section className="hero">
-        <div className="hero-bg"/><div className="hero-grid"/>
-        <div className="hero-copy">
-          <div className="eyebrow"><span className="eyebrow-dot"/>For Founders Past $50K/Month Who've Outgrown a Spreadsheet</div>
-          <h1 className="hero-title">You are making money.<br/>You still don't know if you're safe.<br/><em>Here's exactly why.</em></h1>
-          <p className="hero-sub">Real-time financial intelligence: upload one bank or QuickBooks export and see your real runway, your true margin, your Risk Score, and the one move to make this week — computed from your actual transactions. Try it on this page first: the preview runs entirely in your browser and uploads nothing.</p>
-          <div className="hero-cta">
-            <button className="btn btn-lg btn-primary" onClick={() => onPlanSelect("software")}>Get Started</button>
-            <button className="btn btn-lg btn-outline" onClick={onLogin}>Sign In</button>
-          </div>
-          <div className="hero-proof">
-            <span>Preview runs in your browser</span><span className="hero-proof-sep">·</span>
-            <span>Your data, visible to your login only</span><span className="hero-proof-sep">·</span>
-            <span>Real transactions, not guesses</span>
-          </div>
-        </div>
-        <HeroPreview/>
-        <div className="hero-scroll"><div className="scroll-line"/>Scroll</div>
-      </section>
-
-      <div className="stats-bar reveal">
-        <div className="stat"><div className="stat-n">6</div><div className="stat-l">Live Financial Signals</div></div>
-        <div className="stat"><div className="stat-n">1</div><div className="stat-l">Login That Can See Your Data</div></div>
-        <div className="stat"><div className="stat-n">1</div><div className="stat-l">CSV To See Your Real Numbers</div></div>
-      </div>
-
-      <section className="sec" id="trust" style={{ paddingTop:64, paddingBottom:64 }}>
-        <div className="sec-eye">Trust</div>
-        <h2 className="sec-title" style={{ fontSize:"clamp(28px,3.6vw,40px)" }}>Only claims we can<br/><em>actually stand behind</em></h2>
-        <div className="feat-grid" style={{ marginTop:48 }}>
-          {[
-            { num:"01", title:"Data Processing", desc:"The preview above parses your file in your browser and uploads nothing. In your account, the transactions you upload are saved to your private history so trends, obligations and outcomes can be tracked month to month; the file itself is not kept, and deleting an upload deletes every transaction it added. An AI brief, only when you request one, sends Claude (Anthropic) your computed metrics, the names of your largest payers and recurring costs, and any notes you left on past directives, never your transaction list." },
-            { num:"02", title:"Access Control", desc:"Your account is protected by Postgres row-level security, scoped to your own login — verified directly against the live database, not asserted in a policy document. Only the payment webhook, using a separate privileged key, can change your subscription status." },
-            { num:"03", title:"Financial Transparency", desc:"Every metric — margin, runway, Risk Score, Growth Score — is derived from a published, testable formula, not a black-box model. Runway uses net burn, not gross expenses; scores only count a signal when there's real data behind it." },
-          ].map((t, i) => (
-            <div className="feat-card reveal" key={i} style={{ transitionDelay:`${i*70}ms` }}>
-              <div className="feat-num">// {t.num}</div>
-              <h3 className="feat-title">{t.title}</h3>
-              <p className="feat-desc">{t.desc}</p>
-            </div>
-          ))}
-        </div>
-      </section>
-
-      <div className="sec sec-center" style={{ padding:"48px 48px", borderTop:`1px solid ${C.border}`, borderBottom:`1px solid ${C.border}` }}>
-        <div className="sec-eye" style={{ marginBottom:8 }}>Who It's For</div>
-        <h2 className="sec-title" style={{ fontSize:"clamp(24px,3vw,32px)", marginBottom:24 }}>Built for founders who need<br/><em>financial clarity</em></h2>
-        <div style={{ display:"flex", gap:12, flexWrap:"wrap", justifyContent:"center" }}>
-          {["Agencies","SaaS","Consulting","Professional Services","E-commerce"].map((tag, i) => (
-            <div key={i} className="reveal" style={{ transitionDelay:`${i*50}ms`, border:`1px solid ${C.border}`, padding:"10px 20px", fontSize:12, letterSpacing:"0.08em", textTransform:"uppercase", color:C.ink, fontFamily:"'JetBrains Mono',monospace" }}>{tag}</div>
-          ))}
-        </div>
-      </div>
-
-      <section className="sec" id="features">
-        <div className="sec-eye">The System</div>
-        <h2 className="sec-title">Built for founders who are<br/><em>stuck despite the revenue</em></h2>
-        <p className="sec-body">Agencies, e-commerce, and SaaS businesses all face the same problem: revenue grows but financial clarity doesn't. Command Ledger is the system that fixes that.</p>
-        <div className="feat-grid">
-          {features.map((f, i) => (
-            <div
-              className="feat-card reveal"
-              key={i}
-              style={{ transitionDelay:`${i*70}ms`, gridColumn: i===0 ? "span 2" : undefined }}
-            >
-              {i===0 && <div className="feat-tag">Core Engine</div>}
-              <div className="feat-num">// {f.num}</div>
-              <h3 className="feat-title">{f.title}</h3>
-              <p className="feat-desc">{f.desc}</p>
-            </div>
-          ))}
-        </div>
-      </section>
-
-      <section className="sec sec-center" id="mechanism" style={{ borderTop:`1px solid ${C.border}` }}>
-        <div style={{ maxWidth:820, margin:"0 auto" }}>
-          <div className="sec-eye">The Excel Test</div>
-          <h2 className="sec-title">A spreadsheet shows numbers.<br/><em>This is what it means.</em></h2>
-          <p className="sec-body" style={{ marginBottom:48 }}>Excel and QuickBooks store your data. Your accountant makes sure you're compliant. Neither tells you what changed and what to do about it. Here's the same numbers, both ways:</p>
-
-          <div className="excel-grid reveal">
-            <div style={{ background:C.surface, padding:"28px 32px" }}>
-              <div style={{ fontSize:10, letterSpacing:"0.14em", textTransform:"uppercase", color:C.inkDim, fontWeight:600, marginBottom:16 }}>Raw Financial Data</div>
-              <div style={{ fontFamily:"'JetBrains Mono',monospace", fontSize:13, color:C.ink, lineHeight:2.1 }}>
-                Revenue: R480,000<br/>Expenses: R390,000<br/>Profit: R90,000
+      <main id="main">
+        <section className="mk-hero">
+          <div className="mk-wrap mk-hero-grid">
+            <div>
+              <div className="ledger-rule start">Financial intelligence for founders</div>
+              <h1 className="mk-h1">Know what your business <span className="metal-text">can afford.</span></h1>
+              <p className="mk-lead">Command Ledger turns your business finances into clear intelligence, helping you understand your cash, commitments, profitability and next move.</p>
+              <div className="mk-cta-row">
+                <button className="btn btn-lg btn-primary" onClick={() => onPlanSelect("software")}>Get started</button>
+                <a className="btn btn-lg btn-outline" href="#example">See a sample analysis</a>
+              </div>
+              <div className="mk-trust">
+                <span>Works from your own bank and accounting exports</span>
+                <span>No bank login required</span>
+                <span>Your data is visible only to your account</span>
               </div>
             </div>
-            <div className="excel-arrow">→</div>
-            <div style={{ background:C.surfaceHigh, padding:"28px 32px", borderLeft:`1px solid ${C.gold}` }}>
-              <div style={{ fontSize:10, letterSpacing:"0.14em", textTransform:"uppercase", color:C.gold, fontWeight:600, marginBottom:16 }}>Command Ledger Interpretation</div>
-              <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:14.5, color:C.ink, lineHeight:1.8 }}>
-                Revenue increased 14%. But marketing spend increased 31%, and net margin fell from 22% to 18.8%. Cash conversion weakened.
-                <br/><br/>
-                <b style={{ color:C.cream }}>Recommended action:</b> reduce underperforming acquisition spend before increasing budget further.
-                <br/><br/>
-                <span style={{ color:C.inkDim, fontSize:13 }}>Why: the company is growing, but growth efficiency is deteriorating.</span>
-              </div>
+            <HeroDemo/>
+          </div>
+        </section>
+
+        <section className="mk-section" id="product">
+          <div className="mk-wrap">
+            <div className="mk-head">
+              <div className="ledger-rule start">What it does</div>
+              <h2 className="mk-h2">One honest view of where your business stands.</h2>
+            </div>
+            <div className="mk-outcomes">
+              {[
+                ["01", "Financial clarity", "See the cash you can actually deploy, what you keep from each dollar of revenue, and how many months you have if things change.", ["True free cash", "Profit margin", "Burn runway"]],
+                ["02", "Financial control", "Know every recurring commitment before it lands. Payroll, rent, software and tax are detected in your own history and projected forward.", ["Recurring obligations", "Forward cash"]],
+                ["03", "Better decisions", "Test a hire or a new cost against your real numbers, see how dependent you are on one client, and get one clear move each week.", ["Affordability", "Concentration", "Weekly directive"]],
+              ].map(([n, title, body, tags]) => (
+                <div className="mk-outcome" key={n}>
+                  <span className="mk-index">{n}</span>
+                  <h3 className="mk-h3">{title}</h3>
+                  <p className="mk-p" style={{ marginTop:10 }}>{body}</p>
+                  <div className="mk-tags">{tags.map(t => <span className="mk-tag" key={t}>{t}</span>)}</div>
+                </div>
+              ))}
             </div>
           </div>
+        </section>
 
-          <div className="sec-eye">How It Works</div>
-          <h2 className="sec-title">Questions founders<br/><em>always ask</em></h2>
-
-          <div className="reveal" style={{ display:"flex", flexDirection:"column", gap:2, marginTop:40, textAlign:"left" }}>
-            {[
-              {
-                q: "How does the AI advisor work?",
-                a: "You upload your financial file. Command Ledger reads every transaction, calculates your real margin, burn runway, true free cash, and unit economics. That data is sent to Claude — built by Anthropic — which returns a structured brief: what happened, why, the business impact, the risk level, one recommended action, and how confident to be in it. Not generic advice. Your numbers. Your directive.",
-              },
-              {
-                q: "What file formats does it accept?",
-                a: "Bank statements, QuickBooks exports, Xero exports, Wave exports, and any CSV or Excel file. The system automatically detects your column structure — whether you have named columns like Revenue and Expenses, or a raw bank statement with positive and negative amounts. It reads all of them.",
-              },
-              {
-                q: "How much runway do I actually have?",
-                a: "Cash on hand, adjusted for your safety buffer, divided by your net burn — expenses minus revenue, not expenses alone. A profitable month never gets counted as burn just because costs are high; only actually spending more than you bring in counts against your runway.",
-              },
-              {
-                q: "Why did my profit increase but my cash decrease?",
-                a: "Profit and cash are not the same thing. Profit is revenue minus expenses on paper. Cash is what's actually sitting in your account — delayed client payments, prepaid expenses, and loan repayments all move cash without touching profit. This is exactly the gap True Free Cash is built to close: what you actually own and can deploy, after tax obligations and your safety buffer, not what your P&L says you made.",
-              },
-              {
-                q: "Can I afford to hire another employee?",
-                a: "Your dashboard shows Hiring Capacity: the largest fully-loaded monthly cost your own average profit covers, sized to your business rather than an assumed salary. To test a specific role, enter its monthly cost under Committed Costs to see whether it holds for 12 months against your cash and real dated bills, or add it in Scenario Planning to see margin, runway and Risk Score recompute.",
-              },
-              {
-                q: "Why is my Risk Score increasing?",
-                a: "The score is a weighted composite of five things: your runway, your margin, whether your trend is declining, how concentrated your revenue is in one client, and your LTV:CAC ratio — each one only counts when there's real data behind it. If it moved, one of those five moved; the dashboard shows which.",
-              },
-              {
-                q: "Is my growth actually healthy?",
-                a: "Growth Score weights a steady, consistent trend over one lucky month — three good months in a row score higher than one great month sandwiched between two down months, at the same average growth rate. A rising revenue line and a rising Growth Score are not always the same thing.",
-              },
-              {
-                q: "What happens if revenue drops 20%?",
-                a: "Open Scenario Planning and set the revenue adjustment to -20% — margin, runway, and Risk Score recompute instantly against that hypothetical, using your real current numbers as the baseline. Nothing is saved; it's there to let you stress-test a decision before it happens.",
-              },
-              {
-                q: "Can I trust the AI recommendation?",
-                a: "Trust the parts you can verify: the recommendation is required to reference your real numbers, its stated Risk Level is required to match the Risk Score already computed from your data (not an independent guess), and its confidence score is capped by how much real history backs it — a single manually-entered month never gets the same confidence as six months of uploaded transactions.",
-              },
-              {
-                q: "Should I still have an accountant?",
-                a: "Yes. Command Ledger is a decision-support system, not a replacement for professional accounting, tax, legal, or audit services. Your accountant handles compliance and historical reporting. Command Ledger handles the decisions you need to make today.",
-              },
-              {
-                q: "What if my numbers are a mess?",
-                a: "That is exactly when you need this most. Upload whatever you have — even one month of bank transactions. The system will find patterns in your numbers regardless of how clean or messy the source file is. Most founders are surprised by what it finds in data they thought was unremarkable.",
-              },
-            ].map((item, i) => (
-              <FaqItem key={i} q={item.q} a={item.a}/>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      <section className="sec" id="pricing" style={{ background:C.surfaceHigh, borderTop:`1px solid ${C.border}`, borderBottom:`1px solid ${C.border}` }}>
-        <div className="sec-eye">Pricing</div>
-        <h2 className="sec-title">Two ways in.<br/><em>One system.</em></h2>
-        <p className="sec-body">The system runs on its own. Advisory adds the person who reads it with you — six seats, because one person delivers it.</p>
-        <div className="price-grid price-grid-two">
-          {[
-            { key:"software", hot:false },
-            { key:"advisory", hot:true  },
-          ].map((p, i) => {
-            const pl = PLANS[p.key];
-            return (
-              <div key={p.key} className={`price-card reveal${p.hot?" hot":""}`} style={{ transitionDelay:`${i*70}ms` }}>
-                <div className="price-tier">{pl.name}</div>
-                <div className="price-tagline">{pl.tagline}</div>
-                <div className="price-usd"><sup>$</sup>{pl.usd.toLocaleString()}</div>
-                <div className="price-period">{pl.period}</div>
-                {pl.annualUsd && (
-                  <div className="price-note">Annual ${pl.annualUsd.toLocaleString()}, two months free — arranged by email</div>
-                )}
-                {pl.seats && (
-                  <div className="price-note">{pl.seats} seats total</div>
-                )}
-                <div className="price-divider"/>
-                <ul className="price-list">
-                  {pl.features.map((f, i) => <li key={i}>{f}</li>)}
+        <section className="mk-section" id="capabilities">
+          <div className="mk-wrap">
+            <div className="mk-head">
+              <div className="ledger-rule start">Capabilities</div>
+              <h2 className="mk-h2">Built around the questions founders actually ask.</h2>
+            </div>
+            <div className="mk-caps">
+              <article className="mk-cap wide">
+                <h3 className="mk-h3">True free cash and runway</h3>
+                <p className="mk-p">Revenue is not money you can spend. Command Ledger sets aside tax and a safety buffer first and shows what remains, then measures runway against net burn rather than gross spending, so a profitable month is never mistaken for a crisis.</p>
+                <div className="mk-cap-figures">
+                  <KpiTile t={{ lbl:"True free cash", val:fmt(m.free), col:C.text, sub:"Three months, after reserves" }}/>
+                  <KpiTile t={{ lbl:"Break-even revenue", val:fmt(m.breakEven), col:C.text, sub:`Monthly. June revenue: ${fmt(s.last.revenue)}` }}/>
+                </div>
+                <p className="mk-cap-note">Sample data. Safe mode reserves 30% of profit for tax and 20% as a safety buffer.</p>
+              </article>
+              <article className="mk-cap narrow">
+                <h3 className="mk-h3">Recurring obligations</h3>
+                <p className="mk-p">Payroll, rent and subscriptions are found in your history, scheduled on their real paydays and projected ninety days ahead.</p>
+                <ul className="mini-list" aria-label="Obligations detected in the sample">
+                  {s.obligations.map(o => (
+                    <li key={o.normalized_key}>
+                      <span className="mini-main">{o.label}</span>
+                      <span className="mini-date">next {o.next_expected}</span>
+                      <span className="mini-amt">{fmt(o.typical_amount)}</span>
+                    </li>
+                  ))}
                 </ul>
-                <button
-                  className={`btn btn-full${p.hot?" btn-primary":" btn-outline"}`}
-                  onClick={() => onPlanSelect(p.key)}
-                >
-                  {p.hot ? "Request a seat" : "Get Started"}
-                </button>
+                <p className="mk-cap-note">Detected from the sample file: {fmt(s.committed)} a month committed.</p>
+              </article>
+              <article className="mk-cap full">
+                <div style={{ display:"flex", justifyContent:"space-between", gap:16, flexWrap:"wrap", alignItems:"baseline" }}>
+                  <h3 className="mk-h3">AI Financial Advisor</h3>
+                  <span className="mk-tag">Illustrative brief, written from the sample data</span>
+                </div>
+                <p className="mk-p" style={{ maxWidth:820 }}>On request, Command Ledger sends your computed metrics to Claude, by Anthropic, and returns a structured brief. It is built to narrate the risk score already computed from your data rather than invent its own, its confidence is tied to how much history you have, and a single month of data can never be rated critical.</p>
+                <dl className="mk-brief">
+                  <div><dt>What happened</dt><dd>Revenue fell {Math.abs(s.revenueChange).toFixed(0)}% from April to June while costs rose {s.costChange.toFixed(0)}%. Margin fell from {pc(s.marginFirst)} to {pc(s.marginLast)}.</dd></div>
+                  <div><dt>Why it happened</dt><dd>Ad spend rose from {fmt(s.first.marketing)} to {fmt(s.last.marketing)} a month and payroll from {fmt(s.first.payroll)} to {fmt(s.last.payroll)}, while revenue declined.</dd></div>
+                  <div><dt>Business impact</dt><dd>In June the business kept {fmt(s.last.revenue - s.last.expenses)} of {fmt(s.last.revenue)} in revenue{s.topClient ? `, and ${pc(s.topClientPct)} of revenue came from ${s.topClient}` : ""}.</dd></div>
+                  <div><dt>Recommended action</dt><dd>{s.directive.text}</dd></div>
+                  <div><dt>Expected outcome</dt><dd>With ad spend back at April's level, June's margin would have been {pc(s.juneAdsAtApril)} instead of {pc(s.marginLast)}.</dd></div>
+                  <div><dt>Risk and confidence</dt><dd>{m.risk.label} risk ({m.risk.score.toFixed(0)}/100). Confidence {s.confidence.level}, {s.confidence.reason}.</dd></div>
+                </dl>
+              </article>
+            </div>
+            <div className="mk-supporting">
+              {[
+                ["Profitability", "Margin and net profit by month, with the trend behind them, not a single snapshot."],
+                ["Break-even revenue", "The monthly revenue that covers your average costs, and how far above or below it you are."],
+                ["Revenue concentration", "The share of revenue from each client, read from payer names, so dependency shows before it hurts."],
+                ["Decision log", "Every recommendation is logged with what you did and what happened to its metric afterwards."],
+              ].map(([t, d]) => <div key={t}><h4>{t}</h4><p>{d}</p></div>)}
+            </div>
+          </div>
+        </section>
+
+        <section className="mk-section" id="how">
+          <div className="mk-wrap">
+            <div className="mk-head">
+              <div className="ledger-rule start">How it works</div>
+              <h2 className="mk-h2">Three steps from export to decision.</h2>
+            </div>
+            <div className="mk-steps">
+              {[
+                ["1", "Upload your exports", "Drop a CSV or Excel file from your bank, QuickBooks, Xero or Wave, or sync a published Google Sheet. No bank login is ever required."],
+                ["2", "Command Ledger organises it", "Transactions are de-duplicated, categorised and grouped by client and supplier, and recurring obligations are detected and scheduled."],
+                ["3", "Review and act", "See your position, the confidence behind every figure and one recommended move. Ask the AI Advisor for a full brief whenever you want one."],
+              ].map(([n, t, d]) => (
+                <div className="mk-step" key={n}>
+                  <div className="mk-step-n">{n}</div>
+                  <h3 className="mk-h3">{t}</h3>
+                  <p className="mk-p" style={{ marginTop:10 }}>{d}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        </section>
+
+        <section className="mk-section" id="example">
+          <div className="mk-wrap">
+            <div className="mk-head">
+              <div className="ledger-rule start">Sample analysis</div>
+              <h2 className="mk-h2">From raw transactions to a decision.</h2>
+              <p className="mk-sub">The same three months, before and after Command Ledger reads them. Every figure on the right is computed from the list on the left.</p>
+            </div>
+            <div className="mk-example">
+              <div className="mk-example-col">
+                <div className="mk-example-label"><span>Raw transactions</span><span className="mk-tag">Sample data</span></div>
+                <table className="mk-ledger">
+                  <caption className="sr-only">Sample transactions, April to June 2026</caption>
+                  <tbody>
+                    {s.txns.map((t, i) => (
+                      <tr key={i}><td>{t.txn_date}</td><td>{t.description}</td><td style={{ color: t.amount > 0 ? C.positive : C.text2 }}>{fmt(t.amount)}</td></tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
-            );
-          })}
-        </div>
-        <div className="price-diag reveal">
-          <div>
-            <div className="price-diag-name">{DIAGNOSTIC.name} — ${DIAGNOSTIC.usd.toLocaleString()} once</div>
-            <div className="price-diag-body">{DIAGNOSTIC.tagline}</div>
-            <div className="price-diag-note">{DIAGNOSTIC.note}</div>
+              <div className="mk-arrow" aria-hidden="true"><Icon name="arrow" size={22}/></div>
+              <div className="mk-example-col">
+                <div className="mk-example-label"><span>What Command Ledger finds</span><span className="mk-tag">Computed</span></div>
+                <ul className="mk-insights">
+                  <li><b>{pc(s.marginFirst)} to {pc(s.marginLast)}</b><span>Profit margin from April to June. Costs rose {s.costChange.toFixed(0)}% while revenue fell {Math.abs(s.revenueChange).toFixed(0)}%.</span></li>
+                  {s.topClient && <li><b>{pc(s.topClientPct)}</b><span>of revenue comes from one client, {s.topClient}. Losing it would remove most of the income.</span></li>}
+                  <li><b>{fmt(s.committed)} a month</b><span>is committed to payroll, advertising and hosting, each detected as a monthly obligation with its next due date.</span></li>
+                  <li><b>{s.adsChange > 0 ? "+" : ""}{s.adsChange.toFixed(0)}% ad spend</b><span>in three months, while revenue declined over the same period.</span></li>
+                </ul>
+                <div className="mk-verdict">
+                  <div className="mk-verdict-k">This week's directive</div>
+                  <div className="mk-verdict-t">{s.directive.text}</div>
+                </div>
+              </div>
+            </div>
           </div>
-          <button
-            className="btn btn-outline"
-            style={{ whiteSpace:"nowrap" }}
-            onClick={() => onPlanSelect("diagnostic")}
-          >
-            Buy the diagnostic
-          </button>
-        </div>
-      </section>
+        </section>
 
-      <section className="cta-sec reveal">
-        <div style={{ position:"relative", zIndex:1 }}>
-          <div className="sec-eye">The Decision</div>
-          <h2 className="cta-title">Know your numbers.<br/>Understand your risks.<br/><em>Make the next decision with evidence.</em></h2>
-          <p className="sec-body" style={{ marginTop:20, marginBottom:48 }}>
-            The hire you could not afford. The ad spend with no data behind it. The month you ran without knowing your runway. Command Ledger exists so those decisions never happen again.
-          </p>
-          <button className="btn btn-lg btn-primary" onClick={() => onPlanSelect("software")}>Get Started</button>
-          <div className="hero-proof" style={{ justifyContent:"center", marginTop:24 }}>
-            <span>Preview runs in your browser</span><span className="hero-proof-sep">·</span>
-            <span>Your data, visible to your login only</span><span className="hero-proof-sep">·</span>
-            <span>No card required to try the live preview</span>
+        <section className="mk-section" id="pricing">
+          <div className="mk-wrap">
+            <div className="mk-head center">
+              <div className="ledger-rule">Pricing</div>
+              <h2 className="mk-h2">Software, an advisor, or one rigorous review.</h2>
+            </div>
+            <div className="mk-prices">
+              {[
+                { key:"software", name:PLANS.software.name, forWho:"For founders who want the system and will read the numbers themselves.",
+                  fig:`$${PLANS.software.usd}`, per:"per month", alt:`or $${PLANS.software.annualUsd.toLocaleString()} a year, arranged by email`,
+                  list:PLANS.software.features, cta:"Get started", featured:false },
+                { key:"advisory", name:PLANS.advisory.name, forWho:"For founders who want an advisor reading the numbers with them every month.",
+                  fig:`$${PLANS.advisory.usd.toLocaleString()}`, per:"per month", alt:`${PLANS.advisory.seats} seats in total`,
+                  list:PLANS.advisory.features, cta:"Request a seat", featured:true },
+                { key:"diagnostic", name:DIAGNOSTIC.name, forWho:"For founders who want one rigorous review before committing to anything ongoing.",
+                  fig:`$${DIAGNOSTIC.usd}`, per:"once", alt:"Credited in full against your first Advisory month",
+                  list:["Send twelve months of bank or accounting exports", "Receive the full analysis and a written findings memo", "A one-time payment, not a subscription"], cta:"Buy the diagnostic", featured:false },
+              ].map(p => (
+                <article key={p.key} className={`mk-price${p.featured ? " featured" : ""}`}>
+                  <h3 className="mk-price-name">{p.name}</h3>
+                  <p className="mk-price-for">{p.forWho}</p>
+                  <div className="mk-price-fig">{p.fig}<small>{p.per}</small></div>
+                  <div className="mk-price-alt">{p.alt}</div>
+                  <ul className="mk-price-list">{p.list.map(f => <li key={f}>{f}</li>)}</ul>
+                  <button className={`btn btn-lg btn-full ${p.featured ? "btn-primary" : "btn-outline"}`} onClick={() => onPlanSelect(p.key)}>{p.cta}</button>
+                </article>
+              ))}
+            </div>
           </div>
-        </div>
-      </section>
+        </section>
 
-      <footer className="footer">
-        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:32, marginBottom:32, textAlign:"left", maxWidth:480, margin:"0 auto 32px" }}>
-          <div>
-            <div style={{ fontSize:10, letterSpacing:"0.14em", textTransform:"uppercase", color:C.gold, fontWeight:600, marginBottom:12 }}>Product</div>
-            <ul className="footer-links" style={{ flexDirection:"column", alignItems:"flex-start", gap:10 }}>
-              <li><a href="#features">AI Advisor</a></li>
-              <li><a href="#features">Risk &amp; Growth Score</a></li>
-              <li><a href="#pricing">Pricing</a></li>
-            </ul>
+        <section className="mk-section" id="faq">
+          <div className="mk-wrap">
+            <div className="mk-head center">
+              <div className="ledger-rule">Questions</div>
+              <h2 className="mk-h2">What founders ask before they start.</h2>
+            </div>
+            <div className="mk-faq">
+              {MK_FAQ.map(([q, a]) => (
+                <details key={q}>
+                  <summary>{q}</summary>
+                  <p>{a}</p>
+                </details>
+              ))}
+            </div>
           </div>
-          <div>
-            <div style={{ fontSize:10, letterSpacing:"0.14em", textTransform:"uppercase", color:C.gold, fontWeight:600, marginBottom:12 }}>Trust</div>
-            <ul className="footer-links" style={{ flexDirection:"column", alignItems:"flex-start", gap:10 }}>
-              <li><a href="#trust">Data Processing &amp; Security</a></li>
-              <li><a {...clickableProps(onPrivacy)}>Privacy Policy</a></li>
-              <li><a {...clickableProps(onTerms)}>Terms of Service</a></li>
-            </ul>
+        </section>
+
+        <section className="mk-final">
+          <div className="mk-wrap">
+            <BrandMark size={220} framed alt="Command Ledger, Financial Systems"/>
+            <h2 className="mk-final-h">Know your numbers. Understand your risks. Make your next decision with evidence.</h2>
+            <button className="btn btn-lg btn-primary" onClick={() => onPlanSelect("software")}>Get started</button>
+          </div>
+        </section>
+      </main>
+
+      <footer className="mk-footer">
+        <div className="mk-wrap">
+          <div className="mk-footer-grid">
+            <div className="mk-footer-brand">
+              <BrandLockup size={40} onClick={toTop}/>
+              <p className="mk-footer-note">Financial intelligence for founders, computed from your own transactions.</p>
+            </div>
+            <div>
+              <h5>Product</h5>
+              <ul>
+                <li><a href="#product">Product</a></li>
+                <li><a href="#how">How it works</a></li>
+                <li><a href="#example">Sample analysis</a></li>
+                <li><a href="#pricing">Pricing</a></li>
+              </ul>
+            </div>
+            <div>
+              <h5>Company</h5>
+              <ul>
+                <li><a href="mailto:commandledger@gmail.com">Contact</a></li>
+                <li><a href="mailto:commandledger@gmail.com?subject=Command%20Ledger%20support">Support</a></li>
+                <li><button onClick={onLogin}>Sign in</button></li>
+              </ul>
+            </div>
+            <div>
+              <h5>Legal</h5>
+              <ul>
+                <li><button onClick={onPrivacy}>Privacy policy</button></li>
+                <li><button onClick={onTerms}>Terms of service</button></li>
+              </ul>
+            </div>
+          </div>
+          <div className="mk-footer-base">
+            <span>© 2026 Command Ledger. DigiBlueprint Financial Intelligence.</span>
+            <span>Information, not financial advice. Consult a qualified professional before major decisions.</span>
           </div>
         </div>
-        <div className="footer-copy">2026 Command Ledger - DigiBlueprint Financial Intelligence</div>
-        <ul className="footer-links">
-          <li><a href="mailto:commandledger@gmail.com">Contact</a></li>
-        </ul>
       </footer>
-    </>
+    </div>
   );
 }
 
 // ─── LEGAL PAGES ─────────────────────────────────────────────
+function LegalTop({ onBack }) {
+  return (
+    <header className="page-top">
+      <div className="mk-wrap">
+        <BrandLockup onClick={e => { e.preventDefault(); onBack(); }}/>
+        <button className="page-back btn-link" style={{ textDecoration:"none" }} onClick={onBack}>Back to the site</button>
+      </div>
+    </header>
+  );
+}
+
 function TermsPage({ onBack }) {
   return (
     <div style={{ minHeight:"100vh" }}>
-      <div className="page-wrap">
-        <div className="page-back" {...clickableProps(onBack, { label:"Back to previous page" })}>Back</div>
+      <LegalTop onBack={onBack}/>
+      <main className="page-wrap">
         <h1 className="page-title">Terms of Service</h1>
         <div className="page-date">Last updated: June 2026</div>
         <h2 className="page-h2">1. Acceptance</h2>
@@ -3810,7 +3952,7 @@ function TermsPage({ onBack }) {
         <p className="page-p">Command Ledger is for informational purposes only. This is not financial advice. Consult a qualified professional before major business decisions.</p>
         <h2 className="page-h2">6. Contact</h2>
         <p className="page-p">commandledger@gmail.com</p>
-      </div>
+      </main>
     </div>
   );
 }
@@ -3818,8 +3960,8 @@ function TermsPage({ onBack }) {
 function PrivacyPage({ onBack }) {
   return (
     <div style={{ minHeight:"100vh" }}>
-      <div className="page-wrap">
-        <div className="page-back" {...clickableProps(onBack, { label:"Back to previous page" })}>Back</div>
+      <LegalTop onBack={onBack}/>
+      <main className="page-wrap">
         <h1 className="page-title">Privacy Policy</h1>
         <div className="page-date">Last updated: June 2026</div>
         <h2 className="page-h2">1. What We Collect</h2>
@@ -3830,7 +3972,7 @@ function PrivacyPage({ onBack }) {
         <p className="page-p">All data encrypted in transit via SSL. Transactions you upload to your account are stored in your private history with Supabase, readable only by your login, so your metrics can track change over time; the uploaded file itself is not kept. Deleting an upload from Upload History permanently deletes every transaction it added. The free preview on the home page runs in your browser and stores nothing. User accounts are stored securely via Supabase.</p>
         <h2 className="page-h2">4. Contact</h2>
         <p className="page-p">commandledger@gmail.com</p>
-      </div>
+      </main>
     </div>
   );
 }
@@ -3844,12 +3986,11 @@ function PaywallGate({ user, activating, onSelectPlan, onLogout }) {
     <div className="auth-page">
       <div className="auth-card" style={{ maxWidth:680 }}>
         <div className="auth-logo-row">
-          <div className="logomark">C</div>
-          <div><div className="wordmark" style={{ fontSize:17 }}>Command Ledger</div><div className="wordmark-sub">Financial Intelligence</div></div>
+          <BrandMark size={130} framed alt="Command Ledger"/>
         </div>
         <div className="auth-h">
-          <h2 className="auth-title">Welcome, {userName}</h2>
-          <p className="auth-sub">Your account is created. Choose a plan to activate your command center --- no dashboard access until a subscription is active.</p>
+          <h1 className="auth-title">Welcome, {userName}</h1>
+          <p className="auth-sub">Your account is ready. Choose a plan to open your command centre; the dashboard opens once a subscription is active.</p>
         </div>
         <div className="auth-form">
           <div style={{ display:"flex", flexDirection:"column", gap:14 }}>
@@ -3860,8 +4001,8 @@ function PaywallGate({ user, activating, onSelectPlan, onLogout }) {
               const pl = PLANS[p.key];
               return (
                 <div key={p.key} style={{
-                  background:C.surfaceHigh,
-                  border:`1px solid ${p.hot ? C.gold : C.border}`,
+                  background:C.panel2,
+                  border:`1px solid ${p.hot ? C.platinum : C.line}`,
                   padding:"18px 20px",
                   display:"flex",
                   justifyContent:"space-between",
@@ -3869,9 +4010,9 @@ function PaywallGate({ user, activating, onSelectPlan, onLogout }) {
                   gap:16,
                 }}>
                   <div>
-                    <div style={{ fontSize:10, letterSpacing:"0.16em", textTransform:"uppercase", color:C.gold, fontWeight:600, marginBottom:4 }}>{pl.name}</div>
-                    <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:22, color:C.cream }}>
-                      ${pl.usd.toLocaleString()} <span style={{ fontSize:12, color:C.inkDim }}>{pl.period}</span>
+                    <div style={{ fontSize:10, letterSpacing:"0.16em", textTransform:"uppercase", color:C.platinum, fontWeight:600, marginBottom:4 }}>{pl.name}</div>
+                    <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:22, color:C.text }}>
+                      ${pl.usd.toLocaleString()} <span style={{ fontSize:12, color:C.text3 }}>{pl.period}</span>
                     </div>
                   </div>
                   <button className={`btn ${p.hot ? "btn-primary" : "btn-outline"}`} style={{ padding:"10px 22px", fontSize:11, whiteSpace:"nowrap" }} onClick={() => onSelectPlan(p.key)}
@@ -3884,8 +4025,8 @@ function PaywallGate({ user, activating, onSelectPlan, onLogout }) {
           </div>
           <div style={{
             marginTop:14,
-            background:C.surfaceHigh,
-            border:`1px solid ${C.border}`,
+            background:C.panel2,
+            border:`1px solid ${C.line}`,
             padding:"18px 20px",
             display:"flex",
             justifyContent:"space-between",
@@ -3893,9 +4034,9 @@ function PaywallGate({ user, activating, onSelectPlan, onLogout }) {
             gap:16,
           }}>
             <div>
-              <div style={{ fontSize:10, letterSpacing:"0.16em", textTransform:"uppercase", color:C.gold, fontWeight:600, marginBottom:4 }}>{DIAGNOSTIC.name}</div>
-              <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:22, color:C.cream }}>
-                ${DIAGNOSTIC.usd.toLocaleString()} <span style={{ fontSize:12, color:C.inkDim }}>once, not a subscription</span>
+              <div style={{ fontSize:10, letterSpacing:"0.16em", textTransform:"uppercase", color:C.platinum, fontWeight:600, marginBottom:4 }}>{DIAGNOSTIC.name}</div>
+              <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:22, color:C.text }}>
+                ${DIAGNOSTIC.usd.toLocaleString()} <span style={{ fontSize:12, color:C.text3 }}>once, not a subscription</span>
               </div>
             </div>
             <button className="btn btn-outline" style={{ padding:"10px 22px", fontSize:11, whiteSpace:"nowrap" }} onClick={() => onSelectPlan("diagnostic")}>
@@ -4025,9 +4166,8 @@ export default function App() {
     <>
       <style>{CSS}</style>
       <div className="loading-screen">
-        <div className="loading-logo">C</div>
-        <div className="loading-text">Command Ledger</div>
-        <span className="spinner" style={{ width:20, height:20, borderTopColor:C.gold }}/>
+        <BrandMark size={200} framed alt="Command Ledger"/>
+        <span className="spinner" style={{ width:20, height:20 }} aria-label="Loading"/>
       </div>
     </>
   );
@@ -4038,11 +4178,11 @@ export default function App() {
       {activation && user && appState === "dashboard" && (
         <div className="activation-banner" role="status">
           {activation.status === "pending" ? (
-            <><span className="spinner"/>Payment approved. Activating {PLANS[activation.planKey].name} — this usually takes under a minute. Do not pay again.</>
+            <><span className="spinner"/>Payment approved. Activating {PLANS[activation.planKey].name}. This usually takes under a minute. Do not pay again.</>
           ) : (
             <>
               <span>
-                PayPal approved your payment, but activation is taking longer than usual. Do not subscribe again — you would be charged twice.
+                PayPal approved your payment, but activation is taking longer than usual. Do not subscribe again, or you would be charged twice.
                 Use Check again in a few minutes; if it has not activated within an hour, email <a href="mailto:commandledger@gmail.com?subject=Subscription%20activation">commandledger@gmail.com</a>.
               </span>
               <button className="btn btn-outline" style={{ padding:"6px 14px", fontSize:11, whiteSpace:"nowrap" }} onClick={() => pollActivation(activation.planKey)}>Check again</button>
@@ -4086,4 +4226,5 @@ export default function App() {
     </>
   );
 }
+
 

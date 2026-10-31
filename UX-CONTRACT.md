@@ -1,0 +1,55 @@
+# Command Ledger UX contract
+
+Rules every screen must keep. They exist because Command Ledger shows people
+numbers they will act on with real money. A change that breaks one of these is
+a defect, however good it looks. Visual rules live in `DESIGN.md`.
+
+## Financial honesty
+
+1. **Every figure is computed, never typed.** Metrics come from
+   `computeMetrics()` and the other functions in `src/lib/financials.js`.
+   The public site's sample figures are computed from `EXAMPLE_CSV` by the
+   same functions.
+2. **Missing is not zero.** A metric whose inputs are absent renders `---`
+   with the reason, never `0`.
+3. **Confidence travels with the number.** Any figure below high confidence
+   shows a `ConfidenceLine` with its level and reason.
+4. **One month is never critical.** `capSeverityForVolume()` and the
+   advisor's code-level cap both enforce it.
+5. **Sample data is always labelled** "Sample data", and illustrative copy is
+   labelled as illustrative.
+6. **History and forecast stay apart.** The cash chart shows actual
+   transactions only; projections live under Forecasts.
+7. **Model output is text.** AI briefs render as React text, never as HTML.
+
+## Accessibility
+
+1. Every control works by keyboard and touch. Sidebar items are real links;
+   actions are real buttons; custom controls use `clickableProps`.
+2. Focus is always visible: a 2 px platinum outline (`:focus-visible`).
+3. Colour never carries meaning alone; every state has a text label.
+4. Text meets WCAG AA. `--text-3` is the dimmest text token allowed.
+5. Popovers and the drawer close with Escape and on an outside click; the
+   drawer returns focus to its button and locks page scroll while open.
+6. `prefers-reduced-motion` turns motion off.
+7. Inputs are 16 px on phones so iOS does not zoom.
+
+## Layout
+
+1. No horizontal page overflow at any width from 320 px up.
+2. Financial figures are never clipped; tiles wrap before they shrink.
+3. Tables scroll inside their panel rather than clipping columns.
+4. Tested widths: 1440 and 1366 (laptop), 1024 and 768 (tablet), 375 (phone).
+
+## Integrity
+
+1. Controls must be connected to a real operation. If something is not
+   supported (in-app account deletion, email preferences), say so plainly;
+   never draw a control that does nothing.
+2. Destructive actions ask for confirmation and say what will be lost.
+3. Copy may only describe what the product does today. There is no bank
+   connection; imports are CSV, Excel and published Google Sheets.
+4. Payment, subscription and entitlement behaviour is never changed as part
+   of a visual change. See `CLAUDE.md` for those rules.
+5. Before reporting a UI change done: run `npm test` and `npm run build`,
+   check the widths above, and confirm no em or en dash appears in the copy.
