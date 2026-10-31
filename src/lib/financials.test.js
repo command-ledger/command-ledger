@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { fmt, pc, safe, detectExpenseCategory, parseAnyCSV, computeMetrics, trailingGrowthRate, computeGrowthScore, computeRiskScore, detectTrends, applyScenario, runScenario, computeHistoricalTrajectory, detectSeasonality, computeHistoricalConfidence, buildFounderNarrative, parseTransactions, normalizeDescription, dedupeHashInput, computeDedupeHash, aggregateTransactionsByMonth, computeConfidence, capSeverityForVolume, extractCounterparty, isAggregatorCounterparty, nameSimilarity, groupCounterparties, computeRevenueConcentration, classifyCadence, obligationConfidence, detectRecurringObligations, projectForwardCalendar, summarizeCalendarByWeek, computeForwardRunway, checkAffordability, detectMissedObligations, computeDirective, getDirectiveMetricValue, describeDirectiveOutcome, detectCurrentMonthSeasonality, computeSeasonallyAdjustedVelocity, checkoutBlockReason } from "./financials.js";
+import { fmt, pc, safe, detectExpenseCategory, parseAnyCSV, computeMetrics, trailingGrowthRate, computeGrowthScore, computeRiskScore, detectTrends, applyScenario, runScenario, computeHistoricalTrajectory, detectSeasonality, computeHistoricalConfidence, buildFounderNarrative, parseTransactions, normalizeDescription, dedupeHashInput, computeDedupeHash, aggregateTransactionsByMonth, computeConfidence, capSeverityForVolume, extractCounterparty, isAggregatorCounterparty, nameSimilarity, groupCounterparties, computeRevenueConcentration, classifyCadence, obligationConfidence, detectRecurringObligations, projectForwardCalendar, summarizeCalendarByWeek, computeForwardRunway, checkAffordability, detectMissedObligations, computeDirective, getDirectiveMetricValue, describeDirectiveOutcome, detectCurrentMonthSeasonality, computeSeasonallyAdjustedVelocity, checkoutBlockReason, classifyTwiceMonthly } from "./financials.js";
 
 describe("fmt / pc / safe", () => {
   it("formats currency and percentages", () => {
@@ -1163,6 +1163,82 @@ describe("detectRecurringObligations", () => {
     const [ob] = detectRecurringObligations(txns, { asOf: "2026-06-10" });
     expect(ob.cadence).toBe("annual");
     expect(ob.confidence).toBe("low"); // 3 occurrences alone already caps it at low
+  });
+});
+
+describe("twice-a-month obligations (payroll)", () => {
+  // 15th and last day of the month. 2026-08-15 and 2026-10-31 are Saturdays,
+  // so those runs were paid the Friday before. Each run has its own reference
+  // number, as real bank exports do.
+  const semimonthly = ["2026-07-15", "2026-07-31", "2026-08-14", "2026-08-31", "2026-09-15", "2026-09-30", "2026-10-15", "2026-10-30"]
+    .map((d, i) => ({ txn_date: d, amount: -12500, description: `GUSTO PAY ${480000 + i} PPD ID 9138864001` }));
+
+  it("detects 15th-and-last-day payroll as semimonthly despite changing reference numbers and weekend shifts", () => {
+    const [ob] = detectRecurringObligations(semimonthly, { asOf: "2026-11-02" });
+    expect(ob.cadence).toBe("semimonthly");
+    expect(ob.occurrences).toBe(8);
+    expect(ob.typical_amount).toBe(12500);
+    expect(ob.last_seen).toBe("2026-10-30");
+    expect(ob.next_expected).toBe("2026-11-15"); // the other payday: 2026-10-15 a month on
+    expect(ob.normalized_key).toBe("gusto pay ppd id");
+    expect(ob.active).toBe(true);
+  });
+
+  it("detects 1st-and-15th payroll as semimonthly when a 1st is paid early on the 31st", () => {
+    // 2026-08-01 and 2026-08-15 are Saturdays: paid 07-31 and 08-14.
+    const txns = ["2026-06-01", "2026-06-15", "2026-07-01", "2026-07-15", "2026-07-31", "2026-08-14", "2026-09-01", "2026-09-15"]
+      .map(d => ({ txn_date: d, amount: -8000, description: "Payroll" }));
+    const [ob] = detectRecurringObligations(txns, { asOf: "2026-09-20" });
+    expect(ob.cadence).toBe("semimonthly");
+    expect(ob.next_expected).toBe("2026-10-01");
+  });
+
+  it("detects every-other-Friday payroll as biweekly", () => {
+    const txns = Array.from({ length: 8 }, (_, i) => ({ txn_date: addDays("2026-07-03", i * 14), amount: -9000, description: `ADP PAYROLL ${7700 + i}` }));
+    const [ob] = detectRecurringObligations(txns, { asOf: "2026-10-12" });
+    expect(ob.cadence).toBe("biweekly");
+    expect(ob.last_seen).toBe("2026-10-09");
+    expect(ob.next_expected).toBe("2026-10-23"); // 14 days on
+  });
+
+  it("calls three exact 14-day gaps biweekly, the fixed-weekday signature", () => {
+    expect(classifyTwiceMonthly(["2026-01-02", "2026-01-16", "2026-01-30"], [14, 14])).toBe("biweekly");
+  });
+
+  it("rejects a 12-17 day average built from wildly uneven gaps", () => {
+    expect(classifyTwiceMonthly(["2026-01-01", "2026-01-04", "2026-01-31", "2026-02-01"], [3, 27, 1])).toBeNull();
+  });
+
+  it("never groups lines made only of generic banking words", () => {
+    const txns = ["2026-01-05", "2026-02-05", "2026-03-05"].map((d, i) => ({ txn_date: d, amount: -700, description: `CHECK ${1041 + i}` }));
+    expect(detectRecurringObligations(txns, { asOf: "2026-03-10" })).toEqual([]);
+  });
+
+  it("keeps the exact key for descriptions that already repeat, so stored obligations are not duplicated", () => {
+    const txns = ["2026-01-02", "2026-02-02", "2026-03-02"].map(d => ({ txn_date: d, amount: -12000, description: "Rent - Unit 14 Epping" }));
+    expect(detectRecurringObligations(txns, { asOf: "2026-03-10" })[0].normalized_key).toBe("rent  unit 14 epping".replace(/\s+/g, " "));
+  });
+
+  it("projects a semimonthly obligation onto both paydays, end of month included", () => {
+    const ob = { label: "Payroll", cadence: "semimonthly", typical_amount: 12500, next_expected: "2026-11-15", last_seen: "2026-10-30", active: true };
+    // From 2026-11-01, 90 days ends 2027-01-30. 10-30 is not a month end, so
+    // that payday steps to the 30th: 11-30, 12-30, 2027-01-30.
+    const dates = projectForwardCalendar([ob], "2026-11-01", 90).map(e => e.date);
+    expect(dates).toEqual(["2026-11-15", "2026-11-30", "2026-12-15", "2026-12-30", "2027-01-15", "2027-01-30"]);
+  });
+
+  it("keeps a last-day-of-month payday on the last day", () => {
+    const ob = { label: "Payroll", cadence: "semimonthly", typical_amount: 1, next_expected: "2027-01-15", last_seen: "2026-12-31", active: true };
+    const dates = projectForwardCalendar([ob], "2027-01-01", 60).map(e => e.date);
+    expect(dates).toEqual(["2027-01-15", "2027-01-31", "2027-02-15", "2027-02-28"]);
+  });
+
+  it("counts twice-a-month bills at their true monthly weight in obligation-aware runway", () => {
+    const base = { currentCash: 100000, avgRev: 0, avgExp: 50000, fromDate: "2026-01-01", horizonDays: 30 };
+    const semi = computeForwardRunway({ ...base, obligations: [{ label: "Payroll", cadence: "semimonthly", typical_amount: 10000, next_expected: "2026-01-15", last_seen: "2025-12-31", active: true }] });
+    expect(semi.recurringMonthlyTotal).toBeCloseTo(20000, 5);   // 10,000 x 24 / 12
+    const bi = computeForwardRunway({ ...base, obligations: [{ label: "Payroll", cadence: "biweekly", typical_amount: 10000, next_expected: "2026-01-09", active: true }] });
+    expect(bi.recurringMonthlyTotal).toBeCloseTo(21666.67, 1); // 10,000 x 26 / 12
   });
 });
 

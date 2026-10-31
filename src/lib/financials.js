@@ -207,7 +207,11 @@ export function computeRevenueConcentration(transactions) {
 // setUTCDate, etc.), never the local-time ones — a "YYYY-MM-DD" string
 // parses as UTC midnight in JS, and mixing that with local-time .setDate()
 // silently shifts the result by a day in timezones behind UTC.
-const CADENCE_DAYS = { weekly: 7, monthly: 30, quarterly: 91, annual: 365 };
+const CADENCE_DAYS = { weekly: 7, biweekly: 14, semimonthly: 15, monthly: 30, quarterly: 91, annual: 365 };
+// Occurrences per year: the exact basis for a monthly equivalent. Dividing
+// 30 by the day-count instead undercounts every non-monthly cadence (a
+// twice-a-month bill would come out at 1.97 times a month, not 2).
+const CADENCE_PER_YEAR = { weekly: 52, biweekly: 26, semimonthly: 24, monthly: 12, quarterly: 4, annual: 1 };
 
 export function classifyCadence(avgIntervalDays) {
   if (avgIntervalDays >= 6   && avgIntervalDays <= 8)   return "weekly";
@@ -234,6 +238,76 @@ function addDaysUTC(dateStr, days) {
   const d = new Date(dateStr);
   d.setUTCDate(d.getUTCDate() + days);
   return d.toISOString().slice(0, 10);
+}
+
+const daysInMonthUTC = (year, month) => new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
+
+// The same day of the month `months` later, clamped to the target month's
+// length; a date on the last day of its month stays on the last day
+// (Feb 28 -> Mar 31), because "paid on the last day" is the usual intent.
+function addMonthsUTC(dateStr, months) {
+  const d = new Date(dateStr);
+  const y = d.getUTCFullYear(), m = d.getUTCMonth(), day = d.getUTCDate();
+  const isLastDay = day === daysInMonthUTC(y, m);
+  const target = new Date(Date.UTC(y, m + months, 1));
+  const ty = target.getUTCFullYear(), tm = target.getUTCMonth();
+  const tdays = daysInMonthUTC(ty, tm);
+  return new Date(Date.UTC(ty, tm, isLastDay ? tdays : Math.min(day, tdays))).toISOString().slice(0, 10);
+}
+
+// Payroll is usually paid twice a month, either every two weeks (biweekly:
+// always 14 days apart, so the day of the month drifts) or on two fixed
+// days of each month (semimonthly: the 1st and 15th, or the 15th and the
+// last day, with gaps alternating between about 13 and 18 days). Both
+// average a 14-15 day gap, which fits none of classifyCadence's bands, so
+// both used to go undetected.
+//
+// They are told apart by whether the day of the month holds still. Each
+// date's position in its month is put on a circle with the angle doubled,
+// which lands two paydays half a month apart on the same point; the
+// result is near 1 when they hold still and falls as biweekly dates drift
+// around the month. On a circle, a 1st-of-month payday moved back to the
+// 30th for a weekend stays next to its neighbours, which a plain
+// day-number comparison would get wrong.
+function semimonthlyConsistency(dates) {
+  let x = 0, y = 0;
+  dates.forEach(dateStr => {
+    const d = new Date(dateStr);
+    const position = (d.getUTCDate() - 1) / daysInMonthUTC(d.getUTCFullYear(), d.getUTCMonth());
+    x += Math.cos(4 * Math.PI * position);
+    y += Math.sin(4 * Math.PI * position);
+  });
+  return Math.hypot(x, y) / dates.length;
+}
+
+// Called only for patterns averaging a 12-17 day gap. With 3-4 dates the
+// day-of-month signal is too weak to separate the two (four biweekly dates
+// only drift about 85 degrees), so exact 14-day gaps, the mark of a fixed
+// weekday, decide it for biweekly first.
+export function classifyTwiceMonthly(dates, intervals) {
+  if (intervals.some(d => d < 8 || d > 22)) return null;
+  const nearFortnight = intervals.every(d => d >= 12 && d <= 16);
+  if (dates.length < 5 && intervals.every(d => d === 14)) return "biweekly";
+  if (semimonthlyConsistency(dates) >= 0.85) return "semimonthly";
+  return nearFortnight ? "biweekly" : null;
+}
+
+// Grouping key for a second pass over descriptions that did not repeat
+// exactly. Payroll and many other bank lines carry a reference number that
+// changes every run ("GUSTO PAY 482913 PPD ID 9138864001"), so the exact
+// description never recurs. normalizeDescription() is not changed to drop
+// digits because it also feeds the duplicate-upload hash; changing it would
+// duplicate every stored transaction on the next re-upload. A key made only
+// of generic banking words would lump unrelated payments together, so it
+// gets no key at all.
+const GENERIC_BANK_WORDS = new Set(["ach", "debit", "credit", "pos", "purchase", "payment", "pmt", "check", "chk", "cheque",
+  "withdrawal", "transfer", "xfer", "tfr", "card", "online", "web", "dd", "eft", "ref", "id", "ppd", "ccd", "deposit",
+  "fee", "fees", "to", "from", "the", "and", "of", "bill", "pay", "recurring", "autopay", "auto"]);
+function looseDescriptionKey(desc) {
+  const key = normalizeDescription(desc).replace(/\d+/g, " ").replace(/\s+/g, " ").trim();
+  const words = key.split(" ").filter(Boolean);
+  if (key.length < 3 || words.every(w => GENERIC_BANK_WORDS.has(w) || w.length < 2)) return null;
+  return key;
 }
 
 // Confidence for a detected obligation: occurrence count is the primary
@@ -263,11 +337,27 @@ export function detectRecurringObligations(transactions, options = {}) {
   const allDates = expenses.map(t => new Date(t.txn_date).getTime());
   const dataSpanDays = allDates.length > 1 ? Math.round((Math.max(...allDates) - Math.min(...allDates)) / 86400000) : 0;
 
-  const groups = {};
+  const exactGroups = {};
   expenses.forEach(t => {
     const key = normalizeDescription(t.description);
     if (!key) return;
-    (groups[key] = groups[key] || []).push(t);
+    (exactGroups[key] = exactGroups[key] || []).push(t);
+  });
+
+  // Descriptions that repeat exactly keep their exact key, so obligations
+  // stored before the second pass existed keep the same normalized_key and
+  // are not duplicated. Only the rest are regrouped with digits removed.
+  const groups = {};
+  const looseGroups = {};
+  Object.entries(exactGroups).forEach(([key, txns]) => {
+    if (txns.length >= 3) { groups[key] = txns; return; }
+    txns.forEach(t => {
+      const loose = looseDescriptionKey(t.description);
+      if (loose) (looseGroups[loose] = looseGroups[loose] || []).push(t);
+    });
+  });
+  Object.entries(looseGroups).forEach(([key, txns]) => {
+    if (!groups[key]) groups[key] = txns;
   });
 
   const obligations = [];
@@ -281,10 +371,18 @@ export function detectRecurringObligations(transactions, options = {}) {
     for (let i = 1; i < dates.length; i++) intervals.push(daysBetween(dates[i - 1], dates[i]));
     const avgInterval = mean(intervals);
     const intervalStd = stddev(intervals);
-    if (avgInterval <= 0 || intervalStd / avgInterval >= 0.20) return; // spacing isn't consistent enough to call this recurring
+    if (avgInterval <= 0) return;
 
-    const cadence = classifyCadence(avgInterval);
-    if (!cadence) return; // doesn't fit any known cadence band
+    let cadence;
+    if (avgInterval >= 12 && avgInterval <= 17) {
+      // Twice a month: semimonthly gaps alternate (13, 18, 13 ...) by design,
+      // so the day-of-month test replaces the spacing-consistency gate.
+      cadence = classifyTwiceMonthly(dates, intervals);
+    } else {
+      if (intervalStd / avgInterval >= 0.20) return; // spacing isn't consistent enough to call this recurring
+      cadence = classifyCadence(avgInterval);
+    }
+    if (!cadence) return; // doesn't fit any known cadence
 
     const avgAmount = mean(amounts);
     const amountStd = stddev(amounts);
@@ -293,7 +391,11 @@ export function detectRecurringObligations(transactions, options = {}) {
     const typicalAmount = amountVariance === "fixed" ? avgAmount : mean(amounts.slice(-3));
 
     const lastSeen = dates[dates.length - 1];
-    const nextExpected = addDaysUTC(lastSeen, Math.round(avgInterval));
+    // A semimonthly payment's next date is the other payday: the one before
+    // the last, a month on. Every other cadence steps from the last date.
+    const nextExpected = cadence === "semimonthly"
+      ? addMonthsUTC(dates[dates.length - 2], 1)
+      : addDaysUTC(lastSeen, cadence === "biweekly" ? 14 : Math.round(avgInterval));
 
     // A pattern gone quiet for more than 2 full cadence periods is treated
     // as ended, not still-recurring — recomputed fresh every run rather
@@ -329,13 +431,26 @@ export function projectForwardCalendar(obligations, fromDate, horizonDays = 90) 
   const endDate = addDaysUTC(fromDate, horizonDays);
   const events = [];
   (obligations || []).filter(o => o.active !== false).forEach(o => {
+    const push = date => events.push({ label: o.label, date, amount: Number(o.typical_amount) || 0, cadence: o.cadence, confidence: o.confidence, category: o.category });
+    if (o.cadence === "semimonthly") {
+      // Two fixed paydays a month: next_expected is one, and the last payday
+      // seen is the other. Each is stepped whole months from its own source
+      // date (k months from that date, never month by month from the last
+      // projection), so a 30th stays the 30th instead of turning into a
+      // month end the first time it lands on one, or a 28th after February.
+      const paydays = [[o.next_expected, 0], o.last_seen ? [o.last_seen, 1] : [addDaysUTC(o.next_expected, 15), 0]];
+      paydays.forEach(([source, firstK]) => {
+        for (let k = firstK, date = addMonthsUTC(source, k); date <= endDate && k < 400; date = addMonthsUTC(source, ++k)) {
+          if (date >= fromDate) push(date);
+        }
+      });
+      return;
+    }
     const step = CADENCE_DAYS[o.cadence] || 30;
     let date = o.next_expected;
     let guard = 0;
     while (date <= endDate && guard < 400) {
-      if (date >= fromDate) {
-        events.push({ label: o.label, date, amount: Number(o.typical_amount) || 0, cadence: o.cadence, confidence: o.confidence, category: o.category });
-      }
+      if (date >= fromDate) push(date);
       date = addDaysUTC(date, step);
       guard++;
     }
@@ -364,8 +479,7 @@ export function summarizeCalendarByWeek(events, fromDate, horizonDays = 90) {
 // amounts, so a forward simulation never double-counts a known obligation
 // once as a smoothed average and again as a discrete calendar event.
 function monthlyEquivalent(amount, cadence) {
-  const days = CADENCE_DAYS[cadence] || 30;
-  return (Number(amount) || 0) * (30 / days);
+  return (Number(amount) || 0) * (CADENCE_PER_YEAR[cadence] || 12) / 12;
 }
 
 // Obligation-aware runway: simulates cash day by day from `currentCash`,

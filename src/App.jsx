@@ -1722,6 +1722,7 @@ function KpiTile({ t, hero = false }) {
 }
 
 const capitalize = s => s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
+const CADENCE_LABEL = { weekly:"Weekly", biweekly:"Every 2 weeks", semimonthly:"Twice a month", monthly:"Monthly", quarterly:"Quarterly", annual:"Annual" };
 
 // ─── DASHBOARD (the signed-in workspace) ──────────────────────
 // Holds all data loading and every derived metric once, then renders the
@@ -3045,7 +3046,7 @@ function ForecastsSection({ ctx }) {
                 <li key={o.id}>
                   <div style={{ minWidth:0 }}>
                     <div className="batch-name" style={{ textTransform:"capitalize" }}>{o.label}</div>
-                    <div className="batch-meta" style={{ textTransform:"capitalize" }}>{o.cadence}{o.amount_variance === "variable" ? " · variable" : ""} · next {o.next_expected}</div>
+                    <div className="batch-meta">{CADENCE_LABEL[o.cadence] || capitalize(o.cadence)}{o.amount_variance === "variable" ? " · variable amount" : ""} · next {o.next_expected}</div>
                     <ConfidenceLine c={{ shown:true, level:o.confidence, reason:`${o.occurrences} occurrences observed` }}/>
                   </div>
                   <div style={{ textAlign:"right", flexShrink:0 }}>
