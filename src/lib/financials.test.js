@@ -73,7 +73,7 @@ describe("computeMetrics — manual entry", () => {
     // there's no runway to report — the company is cash-flow positive.
     expect(m.cashFlowPositive).toBe(true);
     expect(m.burnMonths).toBe(0);
-    expect(m.hireReady).toBe(false);              // free (2000) is nowhere near 150,000
+    expect(m.hiringCapacity).toBeCloseTo(3200, 5); // (10000-6000) monthly profit * (1 - 20% safe-mode safety share)
     expect(m.breakEven).toBeCloseTo(6000, 5);     // = avgExp (no fixed/variable split exists to do better)
     expect(m.hasData).toBe(true);
     expect(m.dataConfidence).toBe("low");         // a single manually-typed snapshot, no transaction history
@@ -87,6 +87,30 @@ describe("computeMetrics — manual entry", () => {
     const safetyBuffer = netBurn * 0.20; // one month's burn * sr, safe mode
     expect(m.cashFlowPositive).toBe(false);
     expect(m.burnMonths).toBeCloseTo((100000 - safetyBuffer) / netBurn, 5); // 9.8 months
+  });
+
+  it("sizes hiring capacity to the business, not to a fixed salary", () => {
+    // $5k/month revenue at 30% margin: a part-time contractor, not nothing.
+    const small = computeMetrics(null, { ...manual, mRev: 5000, mExp: 3500 }, "safe");
+    expect(small.hiringCapacity).toBeCloseTo(1200, 5);   // 1500 * 0.8
+    // ~$5M/year ($416,667/month) at 20% margin: several senior hires.
+    const large = computeMetrics(null, { ...manual, mRev: 416667, mExp: 333333 }, "safe");
+    expect(large.hiringCapacity).toBeCloseTo(66667.2, 1); // 83334 * 0.8
+    // Growth mode holds back less.
+    expect(computeMetrics(null, { ...manual, mRev: 5000, mExp: 3500 }, "growth").hiringCapacity).toBeCloseTo(1350, 5); // 1500 * 0.9
+  });
+
+  it("has no hiring capacity from profit when costs exceed revenue", () => {
+    const burning = { mRev: 30000, mExp: 40000, mCash: 100000, mCac: 0, mLtv: 0, mLeads: 0, mClose: 0 };
+    expect(computeMetrics(null, burning, "safe").hiringCapacity).toBe(0);
+  });
+
+  it("gives the same hiring capacity whatever the history length", () => {
+    const row = { revenue: 20000, expenses: 15000, cash: 50000, cogs: 0, marketing: 0, leads: 0, closures: 0, cac: 0, ltv: 0 };
+    const three = computeMetrics([row, row, row], manual, "safe").hiringCapacity;
+    const twentyFour = computeMetrics(Array(24).fill(row), manual, "safe").hiringCapacity;
+    expect(three).toBeCloseTo(4000, 5); // 5000 * 0.8
+    expect(twentyFour).toBeCloseTo(three, 5);
   });
 
   it("reserves nothing out of a loss, so True Free Cash is the whole loss", () => {
@@ -1275,7 +1299,7 @@ describe("detectMissedObligations", () => {
 });
 
 describe("computeDirective", () => {
-  const healthy = { margin: 25, burnMonths: 8, free: 20000, vel: 12, conv: 15, hireReady: false, ltvcac: 4, months: 6, concentration: null };
+  const healthy = { margin: 25, burnMonths: 8, free: 20000, vel: 12, conv: 15, ltvcac: 4, months: 6, concentration: null };
 
   it("issues negative_free_cash as critical, above every other signal", () => {
     const d = computeDirective({ ...healthy, free: -500, burnMonths: 1, ltvcac: 1 });
@@ -1325,11 +1349,9 @@ describe("computeDirective", () => {
     expect(d.severity).toBe("go");
   });
 
-  it("issues hire_ready as go", () => {
-    const d = computeDirective({ ...healthy, margin: 20, conv: 15, hireReady: true });
-    expect(d.rule).toBe("hire_ready");
-    expect(d.targetMetric).toBe("free");
-    expect(d.severity).toBe("go");
+  it("never tells a founder to hire, however much free cash there is", () => {
+    const d = computeDirective({ ...healthy, margin: 20, conv: 15, free: 10_000_000 });
+    expect(d.rule).not.toBe("hire_ready");
   });
 
   it("issues stalled_growth as warn when velocity is low but non-negative", () => {

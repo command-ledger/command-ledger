@@ -100,7 +100,7 @@ serve(async (req: Request) => {
       monthlyRevenue, totalRevenue, totalExpenses, netProfit,
       profitMargin, velocity, conversionRate, sovereigntyScore,
       trueFreeCash, burnRunway, cashFlowPositive, ltvCacRatio, cogsRatio, marketingRatio,
-      hireReady, breakEven, proj90,
+      hiringCapacity, breakEven, proj90,
       // Real payer-based concentration (replaces the retired single-month
       // maxRev/totRev metric). Only carries largestPct/top3Pct/hhi/etc. when
       // extraction confidence was moderate or high — otherwise it's just
@@ -114,7 +114,7 @@ serve(async (req: Request) => {
       // to the same month last year rather than last month.
       seasonalPattern, founderNarrative,
       // Per-metric confidence — { shown, level, reason } for each of
-      // runway, breakEven, proj90, hireReady, ltvCac, growth. `shown:false`
+      // runway, breakEven, proj90, hiringCapacity, ltvCac, growth. `shown:false`
       // means the metric's required inputs are absent (its raw value above
       // arrives as null) — that is a different failure than a thin history
       // and must be narrated differently.
@@ -275,7 +275,7 @@ UNIT ECONOMICS:
 - Marketing Spend as % of Revenue: ${pct(marketingRatio)}
 
 OPERATIONAL FLAGS:
-- Hire Readiness: ${describeMetric(hireReady, conf.hireReady, (v) => v ? "Yes — free cash supports new headcount" : "No — insufficient free cash")}
+- Hiring Capacity: ${describeMetric(hiringCapacity, conf.hiringCapacity, (v) => Number(v) > 0 ? `${fmt(v)}/month — the largest fully-loaded monthly cost average profit covers after the safety buffer; it is not a recommendation to hire` : "None — average costs exceed revenue, so any hire would be funded from cash")}
 
 REVENUE CONCENTRATION (by real paying client, extracted from transaction descriptions):
 ${concentrationSection}

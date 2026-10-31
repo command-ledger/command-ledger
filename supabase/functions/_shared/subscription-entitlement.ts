@@ -17,6 +17,8 @@ export type EventSub = {
   planKey: string | undefined
   // ISO timestamp from PayPal's subscription create_time.
   createTime: string | null | undefined
+  status?: string | null       // PayPal status of this subscription now
+  customId?: string | null     // PayPal custom_id: the user it was bought for
 }
 
 // The subscription currently on file for the profile, as PayPal reports it
@@ -25,15 +27,29 @@ export type StoredSub = {
   id: string
   status: string | null | undefined // PayPal status: ACTIVE, SUSPENDED, CANCELLED, EXPIRED, ...
   createTime: string | null | undefined
+  customId?: string | null
 } | null
 
+// `cancel` names a superseded subscription the webhook should cancel in
+// PayPal now. `duplicateOf` names one that is still billing but was not safe
+// to cancel automatically, so a person must look.
 export type EntitlementDecision =
-  | { kind: "grant"; planKey: string; subscriptionId: string; duplicateOf?: string }
+  | { kind: "grant"; planKey: string; subscriptionId: string; cancel?: string; duplicateOf?: string }
   | { kind: "revoke" }
   | { kind: "suspend" }
-  | { kind: "ignore"; reason: string; duplicateOf?: string }
+  | { kind: "ignore"; reason: string; cancel?: string; duplicateOf?: string }
 
 const ENDED = new Set(["CANCELLED", "EXPIRED"])
+const isActive = (status: string | null | undefined) => (status || "").toUpperCase() === "ACTIVE"
+
+// A superseded subscription is cancelled automatically only when the one
+// being kept is ACTIVE (never leave a customer with nothing that bills
+// successfully) and both were bought for the same user. Anything less sure
+// is left running and flagged for a person.
+function supersede(keep: { status?: string | null; customId?: string | null }, old: { id: string; customId?: string | null }) {
+  const sameOwner = !!keep.customId && keep.customId === old.customId
+  return isActive(keep.status) && sameOwner ? { cancel: old.id } : { duplicateOf: old.id }
+}
 
 // A grant event: ACTIVATED, or a completed renewal payment.
 // `onFileId` is profiles.paypal_subscription_id. `stored` must be supplied
@@ -54,15 +70,18 @@ export function decideGrant(event: EventSub, onFileId: string | null | undefined
   }
 
   // Both are live: the customer is paying twice. The newer subscription is
-  // what they chose last, so it decides access; the older one must be
-  // cancelled by hand (and refunded if appropriate) — this code does not
-  // cancel a customer's subscription on its own.
+  // what they chose last (an upgrade, or a switch back), so it decides access
+  // and the older one is cancelled.
   const eventTime = Date.parse(event.createTime ?? "")
   const storedTime = Date.parse(stored.createTime ?? "")
   if (Number.isFinite(eventTime) && Number.isFinite(storedTime) && eventTime > storedTime) {
-    return { kind: "grant", planKey: event.planKey, subscriptionId: event.id, duplicateOf: stored.id }
+    return { kind: "grant", planKey: event.planKey, subscriptionId: event.id, ...supersede(event, stored) }
   }
-  return { kind: "ignore", reason: "older than the live subscription on file", duplicateOf: event.id }
+  if (Number.isFinite(eventTime) && Number.isFinite(storedTime) && eventTime < storedTime) {
+    return { kind: "ignore", reason: "older than the live subscription on file", ...supersede(stored, event) }
+  }
+  // Equal or unreadable creation times: no way to tell which is newer.
+  return { kind: "ignore", reason: "cannot tell which live subscription is newer", duplicateOf: event.id }
 }
 
 // A CANCELLED / EXPIRED / SUSPENDED event for subscription `eventId`. Only the

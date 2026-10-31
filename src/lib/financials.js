@@ -1175,7 +1175,16 @@ export function computeMetrics(rows, manual, mode, context = {}) {
   // as a shorter runway the longer the selected history — and went negative
   // ("---", maximum risk) on a long enough one.
   const burnMonths = netBurn > 0 ? (activeCash - netBurn * sr) / netBurn : 0;
-  const hireReady  = free > 25000 * 6;
+  // Hiring capacity: the largest new fully-loaded monthly cost (salary,
+  // payroll tax, benefits) the business's own average monthly profit can
+  // carry without drawing down cash, after holding back the mode's safety
+  // share. It replaced a yes/no "hire ready" test that compared the whole
+  // period's profit against a fixed $25k/month hire — never true for a
+  // $5k/month business, always true for a $5M one, and different for every
+  // period filter. Measured against the founder's own numbers, it scales
+  // with them. Whether a specific salary also holds against cash and dated
+  // obligations is checkAffordability()'s job.
+  const hiringCapacity = Math.max(0, (avgRev - avgExp) * (1 - sr));
   // Real revenue concentration (by paying counterparty, not by calendar
   // month — a single highest MONTH is mechanically ~100% of a 1-month
   // total regardless of any real client-concentration risk, which is why
@@ -1229,7 +1238,7 @@ export function computeMetrics(rows, manual, mode, context = {}) {
   );
   const breakEvenConfidence = metricConfidence(hasData, "no revenue/expense data yet", n, lastTxnDate);
   const proj90Confidence    = metricConfidence(hasData, "no revenue/expense data yet", n, lastTxnDate);
-  const hireReadyConfidence = metricConfidence(hasData, "no revenue/expense data yet", n, lastTxnDate);
+  const hiringCapacityConfidence = metricConfidence(hasData, "no revenue/expense data yet", n, lastTxnDate);
   const ltvcacConfidence    = metricConfidence(hasUnitEconomicsData, "enter both CAC and LTV to calculate", n, lastTxnDate);
   const growthConfidence    = metricConfidence(hasData, "no revenue data yet", n, lastTxnDate);
 
@@ -1238,12 +1247,12 @@ export function computeMetrics(rows, manual, mode, context = {}) {
     hasConversionData, avgRev, netBurn, cashFlowPositive, dataConfidence,
     activeCash, activeCac, activeLtv, n, totPro, margin, vel, conv, ltvcac,
     cogsRatio, mktRatio, sov, sovLbl, taxV, safV, free, avgExp, burnMonths,
-    hireReady, concentration, concentrationReliable, revenueConcentration,
+    hiringCapacity, concentration, concentrationReliable, revenueConcentration,
     breakEven, proj90, proj90GrowthRate, hasData,
     growth, risk, trends, seasonalPattern, trajectory, historicalConfidence, founderNarrative,
     hasCashData, hasUnitEconomicsData,
     runwayConfidence, breakEvenConfidence, proj90Confidence,
-    hireReadyConfidence, ltvcacConfidence, growthConfidence,
+    hiringCapacityConfidence, ltvcacConfidence, growthConfidence,
   };
 }
 
@@ -1458,7 +1467,7 @@ export function buildFounderNarrative(trajectory, currentMargin) {
 // carries a stable `rule` id and a `targetMetric` naming which field of
 // the metrics object this call is trying to move, so an outcome can be
 // measured against the same value later without guessing.
-export function computeDirective({ margin, burnMonths, free, vel, conv, hireReady, ltvcac, months, concentration }) {
+export function computeDirective({ margin, burnMonths, free, vel, conv, ltvcac, months, concentration }) {
   const raw = (() => {
     if (safe(free) < 0) return {
       text: "Cut all non-essential spend before end of this week.",
@@ -1503,11 +1512,11 @@ export function computeDirective({ margin, burnMonths, free, vel, conv, hireRead
       reason: `Margin at ${pc(margin)} and conversion at ${pc(conv)} are both above threshold. This is a deployment window. Increase lead volume 30% --- the economics support it.`,
       severity: "go", rule: "scale_window", targetMetric: "vel",
     };
-    if (hireReady) return {
-      text: "You can afford the next hire. Move within 30 days.",
-      reason: `True Free Cash supports additional headcount for 6+ months. The opportunity cost of not hiring now exceeds the cost of hiring.`,
-      severity: "go", rule: "hire_ready", targetMetric: "free",
-    };
+    // There is no "hire now" directive. Telling a founder to hire needs a
+    // view of what the role costs and returns, which this engine does not
+    // have; the one it had assumed $25k/month for every business. Hiring
+    // capacity is shown as a figure instead, and a specific salary is tested
+    // with checkAffordability().
     if (safe(vel) < 5 && safe(vel) >= 0) return {
       text: "Revenue growth has stalled. Find the constraint this week.",
       reason: `Velocity at ${pc(vel)}/month signals a blockage --- pipeline, conversion, or retention. Diagnose before spending more on growth.`,

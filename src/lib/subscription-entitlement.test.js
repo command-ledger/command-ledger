@@ -4,9 +4,10 @@ import { decideGrant, decideEnd } from "../../supabase/functions/_shared/subscri
 // Imports the module paypal-webhook runs, not a copy, so a change to which
 // subscription controls access has to get past these first.
 
-const software = { id: "I-SOFTWARE", planKey: "software", createTime: "2026-01-05T10:00:00Z" };
-const advisory = { id: "I-ADVISORY", planKey: "advisory", createTime: "2026-03-02T10:00:00Z" };
-const live = sub => ({ id: sub.id, status: "ACTIVE", createTime: sub.createTime });
+const USER = "11111111-1111-1111-1111-111111111111";
+const software = { id: "I-SOFTWARE", planKey: "software", createTime: "2026-01-05T10:00:00Z", status: "ACTIVE", customId: USER };
+const advisory = { id: "I-ADVISORY", planKey: "advisory", createTime: "2026-03-02T10:00:00Z", status: "ACTIVE", customId: USER };
+const live = sub => ({ id: sub.id, status: "ACTIVE", createTime: sub.createTime, customId: sub.customId });
 
 describe("decideGrant", () => {
   it("grants a first subscription and records it", () => {
@@ -21,15 +22,33 @@ describe("decideGrant", () => {
     expect(decideGrant({ ...software, planKey: undefined }, null, null).kind).toBe("ignore");
   });
 
-  it("moves access to an upgrade and flags the older subscription still billing", () => {
+  it("moves access to an upgrade and cancels the older subscription", () => {
     const d = decideGrant(advisory, "I-SOFTWARE", live(software));
-    expect(d).toEqual({ kind: "grant", planKey: "advisory", subscriptionId: "I-ADVISORY", duplicateOf: "I-SOFTWARE" });
+    expect(d).toEqual({ kind: "grant", planKey: "advisory", subscriptionId: "I-ADVISORY", cancel: "I-SOFTWARE" });
   });
 
-  it("does not let the old subscription's renewal downgrade an upgraded customer", () => {
+  it("does not let the old subscription's renewal downgrade an upgraded customer, and cancels it", () => {
     const d = decideGrant(software, "I-ADVISORY", live(advisory));
     expect(d.kind).toBe("ignore");
+    expect(d.cancel).toBe("I-SOFTWARE");
+  });
+
+  it("never cancels the old subscription while the new one is not ACTIVE", () => {
+    const d = decideGrant({ ...advisory, status: "SUSPENDED" }, "I-SOFTWARE", live(software));
+    expect(d.cancel).toBeUndefined();
+    expect(d.duplicateOf).toBe("I-SOFTWARE"); // flagged for a person instead
+  });
+
+  it("never cancels a subscription bought for a different user", () => {
+    const d = decideGrant(advisory, "I-SOFTWARE", { ...live(software), customId: "22222222-2222-2222-2222-222222222222" });
+    expect(d.cancel).toBeUndefined();
     expect(d.duplicateOf).toBe("I-SOFTWARE");
+  });
+
+  it("cancels nothing when it cannot tell which subscription is newer", () => {
+    const d = decideGrant({ ...advisory, createTime: software.createTime }, "I-SOFTWARE", live(software));
+    expect(d.kind).toBe("ignore");
+    expect(d.cancel).toBeUndefined();
   });
 
   it("lets a new subscription replace one that has ended", () => {

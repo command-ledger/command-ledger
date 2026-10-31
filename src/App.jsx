@@ -685,8 +685,8 @@ function BChart({ data }) {
 const DIRECTIVE_SEVERITY_TAG = { critical:"critical", warn:"warning", go:"positive", stable:"neutral" };
 
 function Directive({ metrics, concentration }) {
-  const { margin, burnMonths, free, vel, conv, hireReady, ltvcac, n } = metrics;
-  const d = computeDirective({ margin, burnMonths, free, vel, conv, hireReady, ltvcac, months: n, concentration });
+  const { margin, burnMonths, free, vel, conv, ltvcac, n } = metrics;
+  const d = computeDirective({ margin, burnMonths, free, vel, conv, ltvcac, months: n, concentration });
   const { severity, wasCapped } = d;
   const uc = { critical:C.red, warn:C.amber, go:C.green, stable:C.gold }[severity];
   // Critical calls get a heavier frame, not just a red hue — weight and
@@ -830,9 +830,13 @@ function DataUpload({ onDataLoaded, hasData }) {
 // doubt the product over.
 const CHECKOUT_UNAVAILABLE = "Online checkout for this plan is not open right now. Nothing has been charged.";
 
-function PayModal({ planKey, userEmail, userId, onClose, onSuccess }) {
+function PayModal({ planKey, currentPlanKey, userEmail, userId, onClose, onSuccess }) {
   const plan = planOf(planKey);
   const resolvedKey = resolvePlanKey(planKey);
+  // An existing subscriber buying a different plan: paypal-webhook cancels
+  // the old subscription once this one is active, and the buyer is told so
+  // before paying.
+  const replaces = currentPlanKey && resolvePlanKey(currentPlanKey) !== resolvedKey ? planOf(currentPlanKey) : null;
   // What PayPal will actually bill for this plan, read live by the plan-pricing
   // Edge Function. Checkout stays closed until that arrives and every charge,
   // starting with the first, agrees with the price on this page. A visible
@@ -939,6 +943,11 @@ function PayModal({ planKey, userEmail, userId, onClose, onSuccess }) {
             <div className="plan-badge-price">${plan.usd.toLocaleString()} <span style={{ fontSize:14, color:C.inkDim }}>{plan.period}</span></div>
             <div className="plan-badge-sub">Billed monthly via PayPal. Cancel anytime.</div>
           </div>
+          {replaces && !done && (
+            <div className="d-alert info" style={{ marginBottom:16 }}>
+              This replaces your {replaces.name} plan. Its ${replaces.usd.toLocaleString()}/month subscription is cancelled automatically once {plan.name} is active, so you are not billed for both. Charges already made are not refunded automatically.
+            </div>
+          )}
 
           {done ? (
             <div style={{ textAlign:"center", padding:"12px 0" }}>
@@ -1422,16 +1431,16 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic }) {
     tr, sr, latest, prev, totRev, totExp, totCogs, totMkt, totL, totC,
     activeCash, activeCac, activeLtv, n, totPro, margin, vel, conv, ltvcac,
     cogsRatio, mktRatio, sov, sovLbl, taxV, safV, free, avgExp, burnMonths,
-    hireReady, concentration, concentrationReliable, breakEven, proj90, hasData,
+    hiringCapacity, concentration, concentrationReliable, breakEven, proj90, hasData,
     hasConversionData, cashFlowPositive, dataConfidence, growth, risk, trends,
     hasCashData, hasUnitEconomicsData, runwayConfidence, breakEvenConfidence,
-    proj90Confidence, hireReadyConfidence, ltvcacConfidence, growthConfidence,
+    proj90Confidence, hiringCapacityConfidence, ltvcacConfidence, growthConfidence,
     seasonalPattern, trajectory, historicalConfidence, founderNarrative,
   } = computeMetrics(
     rows, { mRev, mExp, mCash, mCac, mLtv, mLeads, mClose }, mode,
     { lastTxnDate: history.length > 0 ? lastTxnDate : null, revenueConcentration: concentrationData }
   );
-  const metrics = { margin, vel, conv, sov, free, burnMonths, hireReady, concentration, concentrationReliable, ltvcac, cashFlowPositive, n };
+  const metrics = { margin, vel, conv, sov, free, burnMonths, concentration, concentrationReliable, ltvcac, cashFlowPositive, n };
 
   const todayStr = new Date().toISOString().slice(0, 10);
   const activeObligations = obligations.filter(o => o.active !== false);
@@ -1482,7 +1491,7 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic }) {
   // computes the same directive Directive renders, so what's persisted
   // and what's shown can never disagree.
   const currentDirective = hasData
-    ? computeDirective({ margin, burnMonths, free, vel, conv, hireReady, ltvcac, months: n, concentration: concentrationData })
+    ? computeDirective({ margin, burnMonths, free, vel, conv, ltvcac, months: n, concentration: concentrationData })
     : null;
 
   // Persist a directive only when it genuinely differs from the most
@@ -1564,7 +1573,7 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic }) {
           ltvCacRatio:    ltvcacConfidence.shown ? ltvcac.toFixed(2) : null,
           cogsRatio:      cogsRatio.toFixed(1),
           marketingRatio: mktRatio.toFixed(1),
-          hireReady:      hireReadyConfidence.shown ? hireReady : null,
+          hiringCapacity: hiringCapacityConfidence.shown ? Math.round(hiringCapacity) : null,
           // Real payer-based concentration — null when extraction confidence
           // is low, so the model never narrates a percentage the parser
           // itself isn't confident in.
@@ -1603,7 +1612,7 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic }) {
             runway:    runwayConfidence,
             breakEven: breakEvenConfidence,
             proj90:    proj90Confidence,
-            hireReady: hireReadyConfidence,
+            hiringCapacity: hiringCapacityConfidence,
             ltvCac:    ltvcacConfidence,
             growth:    growthConfidence,
           },
@@ -2158,12 +2167,14 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic }) {
                     conf: runwayConfidence,
                   },
                   {
-                    lbl:"Hire Readiness",
-                    val: !hireReadyConfidence.shown ? "---" : hireReady ? "Ready" : "Not Yet",
-                    sub: !hireReadyConfidence.shown ? "Enter revenue and expenses to calculate" : hireReady ? "Free cash supports new headcount" : `Need ${fmt(Math.max(0, 25000*6-free))} more in free cash`,
-                    cls: hireReady ? "green" : "amber",
-                    col: hireReady ? C.green : C.amber,
-                    conf: hireReadyConfidence,
+                    lbl:"Hiring Capacity",
+                    val: !hiringCapacityConfidence.shown ? "---" : hiringCapacity > 0 ? `${fmt(hiringCapacity)}/mo` : "None from profit",
+                    sub: !hiringCapacityConfidence.shown ? "Enter revenue and expenses to calculate"
+                      : hiringCapacity > 0 ? "The largest fully-loaded monthly cost your average profit covers, after the safety buffer. Test a specific salary under Committed Costs."
+                      : "Costs exceed revenue on average, so any hire would be paid from cash. Test a specific salary under Committed Costs.",
+                    cls: hiringCapacity > 0 ? "green" : "amber",
+                    col: hiringCapacity > 0 ? C.green : C.amber,
+                    conf: hiringCapacityConfidence,
                   },
                   {
                     lbl:"LTV : CAC Ratio",
@@ -2251,9 +2262,9 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic }) {
                 )}
 
                 <div style={{ marginTop:20, paddingTop:16, borderTop:`1px solid ${C.border}` }}>
-                  <div className="card-lbl">Can I afford a recurring cost of $___ per month?</div>
+                  <div className="card-lbl">Can I afford a hire, or any recurring cost, of $___ per month?</div>
                   <div style={{ display:"flex", gap:8, marginTop:8 }}>
-                    <input type="number" min="0" className="di" placeholder="e.g. 1500"
+                    <input type="number" min="0" className="di" placeholder={hiringCapacity > 0 ? `e.g. ${Math.round(hiringCapacity)}` : "e.g. 1500"} aria-label="Monthly cost to test"
                       value={affordInput} onChange={e => setAffordInput(e.target.value)}
                       style={{ maxWidth:160 }}/>
                     <button className="btn btn-primary" style={{ fontSize:11, padding:"8px 16px" }} onClick={checkAfford}>Check</button>
@@ -2811,7 +2822,7 @@ function MarketingSite({ onLogin, onPlanSelect, onTerms, onPrivacy }) {
               },
               {
                 q: "Can I afford to hire another employee?",
-                a: "Use Scenario Planning: add the role's real fully-loaded monthly cost as an expense adjustment and see your margin, runway, and Risk Score recompute against that hire before you make it — not a rule of thumb, the same calculation engine your live numbers run through.",
+                a: "Your dashboard shows Hiring Capacity: the largest fully-loaded monthly cost your own average profit covers, sized to your business rather than an assumed salary. To test a specific role, enter its monthly cost under Committed Costs to see whether it holds for 12 months against your cash and real dated bills, or add it in Scenario Planning to see margin, runway and Risk Score recompute.",
               },
               {
                 q: "Why is my Risk Score increasing?",
@@ -3197,7 +3208,7 @@ export default function App() {
         <DiagnosticModal onClose={() => setPayModal(null)}/>
       )}
       {payModal && payModal !== "diagnostic" && user && (
-        <PayModal planKey={payModal} userEmail={user.email} userId={user.id} onClose={() => setPayModal(null)} onSuccess={handlePaySuccess}/>
+        <PayModal planKey={payModal} currentPlanKey={profile?.plan || null} userEmail={user.email} userId={user.id} onClose={() => setPayModal(null)} onSuccess={handlePaySuccess}/>
       )}
       {appState==="marketing" && (
         <MarketingSite onLogin={() => setAppState("login")} onPlanSelect={handlePlanSelect} onTerms={() => setAppState("terms")} onPrivacy={() => setAppState("privacy")}/>

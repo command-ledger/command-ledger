@@ -100,6 +100,28 @@ async function fetchSubscription(subscriptionId: string, accessToken: string) {
   return await res.json()
 }
 
+// Cancels a superseded subscription so the customer stops paying for a plan
+// they replaced. Already-paid periods are not refunded here; that stays a
+// human decision. A failure is logged rather than thrown: the access change
+// has already been applied, and a redelivered event would find the new
+// subscription on file and never retry the cancel — so the log line is the
+// record a person acts on.
+async function cancelSuperseded(userId: string, subscriptionId: string, replacedBy: string, accessToken: string) {
+  const res = await fetch(`${PAYPAL_API_BASE}/v1/billing/subscriptions/${subscriptionId}/cancel`, {
+    method: "POST",
+    headers: { "Authorization": `Bearer ${accessToken}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ reason: "Replaced by a newer Command Ledger subscription on the same account." }),
+  })
+  // 204 is success; 422 SUBSCRIPTION_STATUS_INVALID means it is already cancelled.
+  if (res.ok || res.status === 422) {
+    console.log("Superseded subscription cancelled.", { userId, cancelled: subscriptionId, keep: replacedBy, status: res.status })
+    return
+  }
+  console.error("Could not cancel superseded subscription; cancel it in PayPal by hand.", {
+    userId, cancel: subscriptionId, keep: replacedBy, status: res.status, body: await res.text(),
+  })
+}
+
 // requireRow is set for events that grant access. An update that matches no
 // row returns no error, so without this check a paying subscriber whose profile
 // row does not exist yet would be acknowledged with 200 and PayPal would stop
@@ -138,28 +160,33 @@ async function subscriptionOnFile(userId: string): Promise<string | null> {
 }
 
 // Applies a grant event for subscription `sub` (PayPal's subscription object)
-// according to decideGrant(). Every outcome other than a plain grant is
-// logged, because two live subscriptions mean a customer is being billed twice
-// and someone has to cancel one by hand.
+// according to decideGrant(). Two live subscriptions mean a customer is billed
+// twice: the superseded one is cancelled when that is safe, and logged for a
+// person when it is not.
 // deno-lint-ignore no-explicit-any
 async function applyGrant(userId: string, sub: any, accessToken: string) {
-  const event = { id: sub.id, planKey: planKeyForId(sub.plan_id), createTime: sub.create_time }
+  const event = { id: sub.id, planKey: planKeyForId(sub.plan_id), createTime: sub.create_time, status: sub.status, customId: sub.custom_id }
   const onFile = await subscriptionOnFile(userId)
   let stored = null
   if (onFile && onFile !== sub.id) {
     const s = await fetchSubscription(onFile, accessToken)
-    stored = s ? { id: onFile, status: s.status, createTime: s.create_time } : null
+    stored = s ? { id: onFile, status: s.status, createTime: s.create_time, customId: s.custom_id } : null
   }
   const decision: EntitlementDecision = decideGrant(event, onFile, stored)
+  const keep = decision.kind === "grant" ? sub.id : onFile
   if ("duplicateOf" in decision && decision.duplicateOf) {
-    console.error("Customer has two live subscriptions; cancel the older one in PayPal.", {
-      userId, keep: decision.kind === "grant" ? sub.id : onFile, cancel: decision.duplicateOf,
-    })
+    console.error("Customer has two live subscriptions; cancel the older one in PayPal.", { userId, keep, cancel: decision.duplicateOf })
   }
   if (decision.kind === "grant") {
+    // The profile moves to the new subscription before the old one is
+    // cancelled, so the CANCELLED event that follows is not the one on file
+    // and cannot revoke access.
     await setProfile(userId, { plan: decision.planKey, status: "active", paypal_subscription_id: decision.subscriptionId }, { requireRow: true })
   } else if (decision.kind === "ignore") {
     console.warn("Grant event not applied.", { userId, subscription: sub.id, reason: decision.reason })
+  }
+  if ("cancel" in decision && decision.cancel && keep) {
+    await cancelSuperseded(userId, decision.cancel, keep, accessToken)
   }
 }
 
