@@ -255,6 +255,56 @@ function addMonthsUTC(dateStr, months) {
   return new Date(Date.UTC(ty, tm, isLastDay ? tdays : Math.min(day, tdays))).toISOString().slice(0, 10);
 }
 
+// Monthly, quarterly and annual bills fall due on a day of the month, not
+// every N days: rent on the 1st is due on the 1st whether the month has 28
+// or 31 days. Stepping 30 days from the last payment drifted a day earlier
+// every month (1st, then 31st, 30th, 30th...) and inherited any weekend
+// shift of that one payment, so these cadences step whole months on the
+// bill's typical payday instead.
+const MONTH_STEP = { monthly: 1, quarterly: 3, annual: 12 };
+const LAST_DAY = 31; // as a payday: the last day of the month, whatever its length
+
+const paydayToken = dateStr => {
+  const d = new Date(dateStr);
+  const day = d.getUTCDate();
+  return day === daysInMonthUTC(d.getUTCFullYear(), d.getUTCMonth()) ? LAST_DAY : day;
+};
+
+// The day a bill is really due: the most common day across its payments,
+// so one payment moved for a weekend or holiday does not move the schedule.
+// A tie goes to the most recent payment's day.
+function typicalPayday(dates) {
+  const counts = new Map();
+  dates.forEach(d => { const t = paydayToken(d); counts.set(t, (counts.get(t) || 0) + 1); });
+  let best = null, bestCount = 0;
+  [...dates].reverse().forEach(d => {
+    const t = paydayToken(d);
+    if (counts.get(t) > bestCount) { best = t; bestCount = counts.get(t); }
+  });
+  return best;
+}
+
+// The payday in a month given as a running index (year * 12 + month),
+// clamped to the month's length; LAST_DAY always lands on the last day.
+function paydayInMonth(monthIndex, payday) {
+  const y = Math.floor(monthIndex / 12), m = monthIndex - y * 12;
+  return new Date(Date.UTC(y, m, Math.min(payday, daysInMonthUTC(y, m)))).toISOString().slice(0, 10);
+}
+
+// The scheduled payday a payment belongs to: the payday nearest it, in its
+// own month or a neighbour, so a 1st paid early on the 31st counts as the
+// following month's 1st. Returns that payday's month index.
+function scheduledMonthIndex(dateStr, payday) {
+  const d = new Date(dateStr);
+  const own = d.getUTCFullYear() * 12 + d.getUTCMonth();
+  let best = own, bestDist = Infinity;
+  for (const idx of [own - 1, own, own + 1]) {
+    const dist = Math.abs(daysBetween(paydayInMonth(idx, payday), dateStr));
+    if (dist < bestDist) { best = idx; bestDist = dist; }
+  }
+  return best;
+}
+
 // Payroll is usually paid twice a month, either every two weeks (biweekly:
 // always 14 days apart, so the day of the month drifts) or on two fixed
 // days of each month (semimonthly: the 1st and 15th, or the 15th and the
@@ -392,10 +442,15 @@ export function detectRecurringObligations(transactions, options = {}) {
 
     const lastSeen = dates[dates.length - 1];
     // A semimonthly payment's next date is the other payday: the one before
-    // the last, a month on. Every other cadence steps from the last date.
+    // the last, a month on. Monthly, quarterly and annual bills land on their
+    // typical payday one step after the payday the last payment covered.
+    // Weekly and biweekly bills step days from the last payment.
+    const payday = MONTH_STEP[cadence] ? typicalPayday(dates) : null;
     const nextExpected = cadence === "semimonthly"
       ? addMonthsUTC(dates[dates.length - 2], 1)
-      : addDaysUTC(lastSeen, cadence === "biweekly" ? 14 : Math.round(avgInterval));
+      : payday
+        ? paydayInMonth(scheduledMonthIndex(lastSeen, payday) + MONTH_STEP[cadence], payday)
+        : addDaysUTC(lastSeen, cadence === "biweekly" ? 14 : Math.round(avgInterval));
 
     // A pattern gone quiet for more than 2 full cadence periods is treated
     // as ended, not still-recurring — recomputed fresh every run rather
@@ -409,7 +464,9 @@ export function detectRecurringObligations(transactions, options = {}) {
       cadence,
       typical_amount: Math.round(typicalAmount * 100) / 100,
       amount_variance: amountVariance,
-      day_of_month: new Date(lastSeen).getUTCDate(),
+      // The typical payday (31 = last day of the month) for month-stepped
+      // cadences; the last payment's day otherwise.
+      day_of_month: payday || new Date(lastSeen).getUTCDate(),
       last_seen: lastSeen,
       next_expected: nextExpected,
       occurrences: sorted.length,
@@ -444,6 +501,17 @@ export function projectForwardCalendar(obligations, fromDate, horizonDays = 90) 
           if (date >= fromDate) push(date);
         }
       });
+      return;
+    }
+    if (MONTH_STEP[o.cadence]) {
+      // Whole months on the bill's payday. day_of_month carries the payday;
+      // without it, next_expected's own day stands in.
+      const payday = o.day_of_month >= 1 && o.day_of_month <= 31 ? o.day_of_month : paydayToken(o.next_expected);
+      const d = new Date(o.next_expected);
+      const startIndex = d.getUTCFullYear() * 12 + d.getUTCMonth();
+      for (let k = 0, date = o.next_expected; date <= endDate && k < 400; k++, date = paydayInMonth(startIndex + k * MONTH_STEP[o.cadence], payday)) {
+        if (date >= fromDate) push(date);
+      }
       return;
     }
     const step = CADENCE_DAYS[o.cadence] || 30;

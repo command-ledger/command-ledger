@@ -1242,14 +1242,57 @@ describe("twice-a-month obligations (payroll)", () => {
   });
 });
 
+describe("month-stepped obligations land on their real payday", () => {
+  it("keeps rent on the 1st when one month was paid early on the 31st", () => {
+    // 2026-08-01 is a Saturday, so August's rent went out on Friday 07-31.
+    const txns = ["2026-06-01", "2026-07-01", "2026-07-31", "2026-09-01"].map(d => ({ txn_date: d, amount: -4200, description: "Rent" }));
+    const [ob] = detectRecurringObligations(txns, { asOf: "2026-09-05" });
+    expect(ob.cadence).toBe("monthly");
+    expect(ob.day_of_month).toBe(1);
+    expect(ob.next_expected).toBe("2026-10-01"); // 30 days on would have said 10-01 only by luck; see next test
+  });
+
+  it("treats an early payment as the following month's, not a new payday", () => {
+    const txns = ["2026-06-01", "2026-07-01", "2026-07-31"].map(d => ({ txn_date: d, amount: -4200, description: "Rent" }));
+    const [ob] = detectRecurringObligations(txns, { asOf: "2026-08-05" });
+    expect(ob.next_expected).toBe("2026-09-01"); // 07-31 paid August's rent; 30 days on gave 08-30
+  });
+
+  it("keeps a last-day-of-month bill on the last day", () => {
+    const txns = ["2026-01-31", "2026-02-28", "2026-03-31", "2026-04-30"].map(d => ({ txn_date: d, amount: -900, description: "Software licence" }));
+    const [ob] = detectRecurringObligations(txns, { asOf: "2026-05-02" });
+    expect(ob.day_of_month).toBe(31); // 31 means "last day"
+    expect(ob.next_expected).toBe("2026-05-31");
+    expect(projectForwardCalendar([ob], "2026-05-01", 92).map(e => e.date)).toEqual(["2026-05-31", "2026-06-30", "2026-07-31"]);
+  });
+
+  it("steps a quarterly bill to the same day three months on", () => {
+    const txns = ["2026-01-15", "2026-04-15", "2026-07-15"].map(d => ({ txn_date: d, amount: -9000, description: "VAT Payment" }));
+    const [ob] = detectRecurringObligations(txns, { asOf: "2026-07-20" });
+    expect(ob.next_expected).toBe("2026-10-15"); // 91 days on gave 10-14
+  });
+
+  it("keeps a 30th-of-the-month payday on the 30th after February", () => {
+    const ob = { label: "Loan", cadence: "monthly", typical_amount: 500, next_expected: "2027-01-30", day_of_month: 30, active: true };
+    expect(projectForwardCalendar([ob], "2027-01-01", 90).map(e => e.date)).toEqual(["2027-01-30", "2027-02-28", "2027-03-30"]);
+  });
+
+  it("does not drift across a year", () => {
+    const ob = { label: "Rent", cadence: "monthly", typical_amount: 4200, next_expected: "2027-01-01", day_of_month: 1, active: true };
+    const dates = projectForwardCalendar([ob], "2027-01-01", 364).map(e => e.date);
+    expect(dates).toHaveLength(12);
+    expect(dates.every(d => d.endsWith("-01"))).toBe(true); // 30-day steps ended the year on 12-27
+  });
+});
+
 describe("projectForwardCalendar", () => {
   const monthly = { label: "Rent", cadence: "monthly", typical_amount: 12000, next_expected: "2026-01-31", active: true };
 
   it("projects an obligation's occurrences across the horizon, stepped by its cadence", () => {
+    // Due on the last day of the month: Jan 31, then Feb 28 and Mar 31, not
+    // 30-day steps (Mar 2, Apr 1) that slide off the month end.
     const events = projectForwardCalendar([monthly], "2026-01-01", 90);
-    const second = addDays("2026-01-31", 30);
-    const third = addDays(second, 30);
-    expect(events.map(e => e.date)).toEqual(["2026-01-31", second, third]);
+    expect(events.map(e => e.date)).toEqual(["2026-01-31", "2026-02-28", "2026-03-31"]);
     expect(events.every(e => e.amount === 12000)).toBe(true);
   });
 
@@ -1283,15 +1326,16 @@ describe("computeForwardRunway", () => {
   it("crosses zero on the obligation's actual due date, not a smoothed average", () => {
     // Background nets to zero by construction (avgExp fully accounted for
     // by the one recurring obligation), so the entire decline traces to
-    // the obligation's two dated hits at day 30 and day 60.
+    // the obligation's two dated hits: Jan 31 (day 30) and, for a bill due
+    // on the last day of the month, Feb 28 (day 58).
     const obligations = [{ label: "Rent", cadence: "monthly", typical_amount: 1000, next_expected: "2026-01-31", active: true }];
     const result = computeForwardRunway({
       currentCash: 1500, avgRev: 0, avgExp: 1000, obligations, fromDate: "2026-01-01", horizonDays: 90,
     });
     expect(result.crossesZero).toBe(true);
-    expect(result.crossDate).toBe(addDays("2026-01-01", 60));
-    expect(result.daysUntilCross).toBe(60);
-    expect(result.monthsUntilCross).toBe(2);
+    expect(result.crossDate).toBe("2026-02-28");
+    expect(result.daysUntilCross).toBe(58);
+    expect(result.monthsUntilCross).toBe(1.9); // 58 / 30, one decimal
   });
 
   it("does not cross zero when cash comfortably outlasts the horizon", () => {
@@ -1346,13 +1390,14 @@ describe("checkAffordability", () => {
 
   it("returns the specific month a hypothetical cost would break the runway", () => {
     // No existing obligations or background flow — isolates the synthetic
-    // cost's own two hits (day 0 and day 30) against a $3,000 cushion.
+    // cost's own monthly hits on the 1st (Jan 1, Feb 1, Mar 1) against a
+    // $3,000 cushion; the third empties it.
     const result = checkAffordability({
       currentCash: 3000, avgRev: 0, avgExp: 0, obligations: [], monthlyCost: 1000, fromDate: "2026-01-01",
     });
     expect(result.affordable).toBe(false);
     expect(result.breaksInMonth).toBe(2);
-    expect(result.breakDate).toBe(addDays("2026-01-01", 60));
+    expect(result.breakDate).toBe("2026-03-01");
   });
 
   it("treats the hypothetical cost as purely additive, not already reflected in avgExp", () => {
