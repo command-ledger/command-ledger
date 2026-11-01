@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { createClient } from "@supabase/supabase-js";
-import { fmt, pc, safe, parseAnyCSV, computeMetrics, runScenario, parseTransactions, computeDedupeHash, aggregateTransactionsByMonth, computeRevenueConcentration, detectRecurringObligations, computeForwardRunway, checkAffordability, detectMissedObligations, projectForwardCalendar, summarizeCalendarByWeek, computeDirective, getDirectiveMetricValue, describeDirectiveOutcome, checkoutBlockReason, computeConfidence, fmtCompact, filterTransactions, searchWorkspace, buildAlerts, buildReportCsv } from "./lib/financials.js";
+import { fmt, pc, safe, parseAnyCSV, computeMetrics, runScenario, parseTransactions, computeDedupeHash, aggregateTransactionsByMonth, computeRevenueConcentration, detectRecurringObligations, computeForwardRunway, checkAffordability, detectMissedObligations, projectForwardCalendar, summarizeCalendarByWeek, computeDirective, getDirectiveMetricValue, describeDirectiveOutcome, checkoutBlockReason, computeConfidence, fmtCompact, filterTransactions, searchWorkspace, buildAlerts, buildReportCsv, SUPPORTED_CURRENCIES, isSupportedCurrency, currencySymbol, currencyName, partitionByCurrency } from "./lib/financials.js";
 
 const supabase = createClient(
   import.meta.env.VITE_SUPABASE_URL,
@@ -822,10 +822,10 @@ function Ring({ score, size = 100, sw = 6 }) {
 
 // ─── CASH IN AND CASH OUT ─────────────────────────────────────
 // Money received against money spent, per month, from actual transactions
-// in USD. Both series share one scale, so a month whose costs beat its
+// in the business currency. Both series share one scale, so a month whose costs beat its
 // income is drawn taller, not clipped. History only: projections live
 // under Forecasts, never mixed into this chart.
-function BChart({ data, compact = false }) {
+function BChart({ data, compact = false, currency }) {
   if (!data || data.length === 0) return (
     <div className="panel-copy" style={{ textAlign:"center", padding:"36px 0" }}>Connect data to see money in and out.</div>
   );
@@ -839,16 +839,16 @@ function BChart({ data, compact = false }) {
     <div>
       {!compact && (
         <div className="chart-summary">
-          <span>In<b>{fmt(totIn)}</b></span>
-          <span>Out<b>{fmt(totOut)}</b></span>
-          <span>Net<b style={{ color: net >= 0 ? C.positive : C.danger }}>{fmt(net)}</b></span>
-          <span>Peak month<b>{fmt(maxV)}</b></span>
+          <span>In<b>{fmt(totIn, currency)}</b></span>
+          <span>Out<b>{fmt(totOut, currency)}</b></span>
+          <span>Net<b style={{ color: net >= 0 ? C.positive : C.danger }}>{fmt(net, currency)}</b></span>
+          <span>Peak month<b>{fmt(maxV, currency)}</b></span>
         </div>
       )}
       <div style={{ display:"flex", alignItems:"flex-end", gap: data.length > 18 ? 3 : 8, height:H + 24 }} role="img"
-        aria-label={`Money in and out by month, ${data[0].month} to ${last.month}. Total in ${fmt(totIn)}, total out ${fmt(totOut)}. Latest month, ${last.month}: in ${fmt(last.revenue)}, out ${fmt(last.expenses)}.`}>
+        aria-label={`Money in and out by month, ${data[0].month} to ${last.month}. Total in ${fmt(totIn, currency)}, total out ${fmt(totOut, currency)}. Latest month, ${last.month}: in ${fmt(last.revenue, currency)}, out ${fmt(last.expenses, currency)}.`}>
         {data.map((d, i) => (
-          <div key={i} title={`${d.month}: in ${fmt(d.revenue)}, out ${fmt(d.expenses)}, net ${fmt((d.revenue || 0) - (d.expenses || 0))}`}
+          <div key={i} title={`${d.month}: in ${fmt(d.revenue, currency)}, out ${fmt(d.expenses, currency)}, net ${fmt((d.revenue || 0) - (d.expenses || 0), currency)}`}
             style={{ flex:1, minWidth:0, display:"flex", flexDirection:"column", alignItems:"center", gap:6, height:"100%", justifyContent:"flex-end" }}>
             <div style={{ display:"flex", gap:3, alignItems:"flex-end", height:H, width:"100%", justifyContent:"center" }}>
               <div style={{ width:"42%", maxWidth:24, minHeight:2, height:`${(d.revenue / maxV) * H}px`, background:C.platinum, borderRadius:"2px 2px 0 0" }}/>
@@ -861,7 +861,7 @@ function BChart({ data, compact = false }) {
       <div className="chart-legend">
         <span><i style={{ background:C.platinum }}/>Money in</span>
         <span><i style={{ background:C.pewter }}/>Money out</span>
-        {!compact && <span style={{ marginLeft:"auto", color:C.text3 }}>Actual history from your transactions, USD</span>}
+        {!compact && <span style={{ marginLeft:"auto", color:C.text3 }}>Actual history from your transactions{currency ? `, ${currency}` : ""}</span>}
       </div>
     </div>
   );
@@ -899,28 +899,91 @@ function DirectiveStrip({ d, children, compact = false }) {
   );
 }
 
+// ─── CURRENCY ─────────────────────────────────────────────────
+// A business keeps its books in one currency. Nothing here converts: a
+// transaction in another currency is stored as it arrived and left out of
+// the figures, and the founder is told so.
+function CurrencySelect({ id, value, onChange, compact = false, ariaLabel, style }) {
+  const known = SUPPORTED_CURRENCIES.some(c => c.code === value);
+  return (
+    <select id={id} className="di" value={value || ""} aria-label={ariaLabel} onChange={e => onChange(e.target.value)}
+      style={compact ? { width:92, flex:"0 0 auto", ...style } : { maxWidth:320, ...style }}>
+      {!value && <option value="" disabled>Choose a currency</option>}
+      {SUPPORTED_CURRENCIES.map(c => <option key={c.code} value={c.code}>{compact ? c.code : `${c.name} (${c.code})`}</option>)}
+      {value && !known && <option value={value}>{value}</option>}
+    </select>
+  );
+}
+
+function CurrencyPrompt({ onSave }) {
+  const [code, setCode] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const save = async () => {
+    setBusy(true); setErr("");
+    const ok = await onSave(code);
+    setBusy(false);
+    if (!ok) setErr("Your business currency could not be saved. Nothing was changed, so try again.");
+  };
+  return (
+    <Panel title="Choose your business currency">
+      <p className="panel-copy">Every figure is shown in the currency your business keeps its books in. Command Ledger never converts between currencies, so choose this before you upload.</p>
+      <div style={{ display:"flex", gap:8, flexWrap:"wrap", marginTop:12 }}>
+        <CurrencySelect id="base-currency" ariaLabel="Business currency" value={code} onChange={setCode}/>
+        <button className="btn btn-primary btn-md" disabled={!code || busy} onClick={save}>{busy ? "Saving..." : "Save"}</button>
+      </div>
+      {err && <div className="d-alert crit" role="alert" style={{ marginTop:12 }}>{err}</div>}
+    </Panel>
+  );
+}
+
+function CurrencyNotice({ cur, excluded, onReview }) {
+  if (!cur || !excluded || excluded.length === 0) return null;
+  const total = excluded.reduce((sum, e) => sum + e.count, 0);
+  const detail = excluded.map(e => `${e.count.toLocaleString()} in ${e.currency === "unlabelled" ? "no stated currency" : e.currency}`).join(", ");
+  return (
+    <div className="d-alert warn" role="status" style={{ justifyContent:"space-between", alignItems:"center", flexWrap:"wrap" }}>
+      <span>{total.toLocaleString()} transaction{total === 1 ? " is" : "s are"} not included in your figures ({detail}). Your business currency is {cur}, and Command Ledger does not convert between currencies.</span>
+      {onReview && <button className="panel-link" onClick={onReview}>Review uploads<Icon name="arrow" size={14}/></button>}
+    </div>
+  );
+}
+
+// A form label with the business currency's symbol: "Cash balance (R)".
+const withSymbol = (label, cur) => cur ? `${label} (${currencySymbol(cur)})` : label;
+
 // ─── DATA UPLOAD ──────────────────────────────────────────────
-function DataUpload({ onDataLoaded, hasData }) {
+function DataUpload({ onDataLoaded, hasData, currency }) {
   const [drag,    setDrag]    = useState(false);
   const [parsing, setParsing] = useState(false);
   const [err,     setErr]     = useState("");
   const [csvUrl,  setCsvUrl]  = useState("");
   const [syncing, setSyncing] = useState(false);
+  // The currency this file's amounts are in. It starts as the business
+  // currency; with none chosen yet, the founder must pick, and that choice
+  // becomes the business currency.
+  const [fileCur, setFileCur] = useState(currency || "");
+  useEffect(() => { if (currency) setFileCur(c => c || currency); }, [currency]);
   const fileRef = useRef(null);
 
   const processCSVText = (text, source) => {
-    const result = parseAnyCSV(text);
+    const result = parseAnyCSV(text, { currency: fileCur });
     if (!result || result.rows.length === 0) {
-      setErr("No readable financial data found. Ensure the file has at minimum a Revenue column.");
+      setErr(`No readable financial data in ${fileCur} found. Ensure the file has at minimum a Revenue or Amount column.`);
       return false;
     }
     setErr("");
-    onDataLoaded(result.rows, source, result.detectedFields, text);
+    onDataLoaded(result.rows, source, result.detectedFields, text, fileCur);
+    return true;
+  };
+  const needCurrency = () => {
+    if (fileCur) return false;
+    setErr("Choose the currency this file is in first.");
     return true;
   };
 
   const handleFile = async (file) => {
-    if (!file) return;
+    if (!file || needCurrency()) return;
     setErr(""); setParsing(true);
     const ext = file.name.split(".").pop().toLowerCase();
     try {
@@ -944,7 +1007,7 @@ function DataUpload({ onDataLoaded, hasData }) {
   };
 
   const syncSheet = async () => {
-    if (!csvUrl.trim()) return;
+    if (!csvUrl.trim() || needCurrency()) return;
     setSyncing(true); setErr("");
     try {
       const url = csvUrl + (csvUrl.includes("?") ? "&" : "?") + "nocache=" + Date.now();
@@ -960,6 +1023,17 @@ function DataUpload({ onDataLoaded, hasData }) {
 
   return (
     <div style={{ display:"flex", flexDirection:"column", gap:16 }}>
+      <div className="input-group" style={{ marginBottom:0 }}>
+        <label className="di-lbl" htmlFor="file-currency">Amounts in this file are in</label>
+        <CurrencySelect id="file-currency" value={fileCur} onChange={v => { setFileCur(v); setErr(""); }}/>
+        <p className="panel-copy" style={{ marginTop:6 }}>
+          {currency
+            ? (fileCur && fileCur !== currency
+                ? `Your business currency is ${currency}. Transactions in ${fileCur} are stored, but not added to your figures, because Command Ledger never converts between currencies.`
+                : "Rows marked with another currency, such as $ or USD, keep that currency and are not added to your figures.")
+            : "This also sets your business currency, the one every figure is shown in. You can change it later in Settings."}
+        </p>
+      </div>
       <div
         className={`drop-zone${drag ? " drag" : ""}`}
         onDragOver={e => { e.preventDefault(); setDrag(true); }}
@@ -1126,12 +1200,12 @@ function PayModal({ planKey, currentPlanKey, userEmail, userId, onClose, onSucce
         <div className="modal-body">
           <div className="plan-badge">
             <div className="plan-badge-name">{plan.name}</div>
-            <div className="plan-badge-price">${plan.usd.toLocaleString()} <span style={{ fontSize:14, color:C.text3 }}>{plan.period}</span></div>
+            <div className="plan-badge-price">US${plan.usd.toLocaleString()} <span style={{ fontSize:14, color:C.text3 }}>{plan.period}</span></div>
             <div className="plan-badge-sub">Billed monthly via PayPal. Cancel anytime.</div>
           </div>
           {replaces && !done && (
             <div className="d-alert info" style={{ marginBottom:16 }}>
-              This replaces your {replaces.name} plan. Its ${replaces.usd.toLocaleString()}/month subscription is cancelled automatically once {plan.name} is active, so you are not billed for both. Charges already made are not refunded automatically.
+              This replaces your {replaces.name} plan. Its US${replaces.usd.toLocaleString()}/month subscription is cancelled automatically once {plan.name} is active, so you are not billed for both. Charges already made are not refunded automatically.
             </div>
           )}
 
@@ -1141,7 +1215,7 @@ function PayModal({ planKey, currentPlanKey, userEmail, userId, onClose, onSucce
                 {plan.name} is now active
               </div>
               <div style={{ fontSize:13, color:C.text2, fontFamily:"'Cormorant Garamond',serif", lineHeight:1.7, marginBottom:24 }}>
-                Subscription confirmed. You will be billed ${plan.usd}/month. A receipt was sent to {userEmail}.
+                Subscription confirmed. You will be billed US${plan.usd}/month. A receipt was sent to {userEmail}.
               </div>
               <button className="btn btn-full btn-primary" onClick={onClose}>Enter Dashboard</button>
             </div>
@@ -1337,7 +1411,7 @@ function DiagnosticModal({ onClose }) {
             <>
               <div className="plan-badge">
                 <div className="plan-badge-name">{DIAGNOSTIC.name}</div>
-                <div className="plan-badge-price">${DIAGNOSTIC.usd.toLocaleString()} <span style={{ fontSize:14, color:C.text3 }}>once</span></div>
+                <div className="plan-badge-price">US${DIAGNOSTIC.usd.toLocaleString()} <span style={{ fontSize:14, color:C.text3 }}>once</span></div>
                 <div className="plan-badge-sub">{DIAGNOSTIC.tagline}</div>
               </div>
 
@@ -1581,7 +1655,7 @@ function HeaderSearch({ transactions, onNavigate, onShowTransactions, mobileOpen
                   {opt.type === "txn" && <>
                     <span className="pop-date">{opt.t.txn_date}</span>
                     <span className="pop-main">{opt.t.description || "No description"}</span>
-                    <span className="pop-amt" style={{ color: Number(opt.t.amount) >= 0 ? C.positive : C.text2 }}>{fmt(opt.t.amount)}</span>
+                    <span className="pop-amt" style={{ color: Number(opt.t.amount) >= 0 ? C.positive : C.text2 }}>{fmt(opt.t.amount, opt.t.currency)}</span>
                   </>}
                   {opt.type === "all" && <span className="pop-main">Show all {results.transactionTotal} matching transactions</span>}
                 </div>
@@ -1850,6 +1924,10 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
   const [scCash,   setScCash]   = useState(0);
 
   const plan = resolvePlanKey(profile?.plan);
+  // The business currency. Every metric is computed from transactions in it
+  // and shown in it; null until the founder chooses one.
+  const cur = isSupportedCurrency(profile?.base_currency) ? profile.base_currency : null;
+  const [excludedByCurrency, setExcludedByCurrency] = useState([]);
   const userName  = profile?.name || user?.user_metadata?.full_name || user?.email?.split("@")[0] || "Founder";
   const userAvatar = user?.user_metadata?.avatar_url;
 
@@ -1894,7 +1972,10 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
     return d.toISOString().slice(0, 10);
   }, [periodFilter]);
 
-  const loadHistory = useCallback(async () => {
+  // `baseArg` lets an upload that has just set the business currency load
+  // with it before the profile change reaches this closure.
+  const loadHistory = useCallback(async (baseArg) => {
+    const base = baseArg || cur;
     setHistoryLoading(true);
     try {
       // `description` is fetched alongside the aggregates so real revenue
@@ -1902,27 +1983,33 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
       // at the transaction level, never in a monthly bucket.
       const cutoff = periodCutoff();
       const list = await selectAll(() => {
-        let query = supabase.from("transactions").select("id, txn_date, amount, category, description")
+        let query = supabase.from("transactions").select("id, txn_date, amount, category, description, currency")
           .order("txn_date", { ascending: true }).order("id", { ascending: true });
         if (cutoff) query = query.gte("txn_date", cutoff);
         return query;
       });
+      // Every figure comes from transactions in the business currency only.
+      // The rest stay listed under Transactions and are counted in a notice;
+      // they are never added in, and never converted.
+      const { included, excluded } = partitionByCurrency(list, base);
       setTxns(list);
-      setHistory(aggregateTransactionsByMonth(list));
-      setConcentrationData(computeRevenueConcentration(list));
+      setExcludedByCurrency(excluded);
+      setHistory(aggregateTransactionsByMonth(included));
+      setConcentrationData(computeRevenueConcentration(included));
       // Ascending order, so the last row is the most recent real transaction —
       // this is what the confidence model's recency check degrades against.
-      setLastTxnDate(list.length > 0 ? list[list.length - 1].txn_date : null);
+      setLastTxnDate(included.length > 0 ? included[included.length - 1].txn_date : null);
     } catch (e) {
       console.error("Failed to load transaction history:", e);
       setTxns([]);
+      setExcludedByCurrency([]);
       setHistory([]);
       setConcentrationData(computeRevenueConcentration([]));
       setLastTxnDate(null);
       setActionErr("Your transaction history could not be loaded. Refresh to try again.");
     }
     setHistoryLoading(false);
-  }, [periodCutoff]);
+  }, [periodCutoff, cur]);
 
   const loadBatches = useCallback(async () => {
     const { data: rows, error } = await supabase.from("upload_batches").select("*").order("uploaded_at", { ascending: false });
@@ -1934,11 +2021,15 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
   // transaction history, independent of the period filter — a quarterly or
   // annual obligation can't be reliably detected from a 3-month window even
   // if that's what's currently selected for display.
-  const loadObligations = useCallback(async () => {
+  const loadObligations = useCallback(async (baseArg) => {
+    const base = baseArg || cur;
+    if (!base) { setObligations([]); return; }
     try {
-      const all = await selectAll(() => supabase.from("transactions").select("txn_date, amount, description, category")
+      const all = await selectAll(() => supabase.from("transactions").select("txn_date, amount, description, category, currency")
         .order("txn_date", { ascending: true }).order("id", { ascending: true }));
-      const detected = detectRecurringObligations(all);
+      // Bills are detected from the business currency only, so a payment
+      // stream is never averaged across two currencies.
+      const detected = detectRecurringObligations(all.filter(t => t.currency === base));
 
       // If this read fails, every obligation the founder marked as ended
       // would look unseen and be upserted back to active — so it must throw.
@@ -1952,7 +2043,7 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
       // detector's own "gone quiet too long" call is allowed to flip
       // active:true -> false automatically.
       const rows = detected.map(o => ({
-        ...o, user_id: user.id,
+        ...o, user_id: user.id, currency: base,
         active: existingActiveByKey[o.normalized_key] === false ? false : o.active,
       }));
       if (rows.length > 0) {
@@ -1962,12 +2053,12 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
 
       const { data: persisted, error: persistErr } = await supabase.from("recurring_obligations").select("*").order("typical_amount", { ascending: false });
       if (persistErr) throw persistErr;
-      setObligations(persisted || []);
+      setObligations((persisted || []).filter(o => o.currency === base));
     } catch (e) {
       console.error("Failed to detect/load recurring obligations:", e);
       setObligations([]);
     }
-  }, [user]);
+  }, [user, cur]);
 
   const setObligationActive = async (id, active) => {
     const { error } = await supabase.from("recurring_obligations").update({ active }).eq("id", id);
@@ -1997,11 +2088,47 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
   useEffect(() => { loadObligations(); }, [loadObligations]);
   useEffect(() => { loadDirectives(); }, [loadDirectives]);
 
-  const handleDataLoaded = async (parsedRows, source, cols, rawText) => {
-    setData(parsedRows); setDataSource(source);
+  // Saves the business currency. Returns whether it was saved.
+  const saveBaseCurrency = async code => {
+    if (!isSupportedCurrency(code)) return false;
+    const { data: saved, error } = await supabase.from("profiles")
+      .update({ base_currency: code, updated_at: new Date().toISOString() })
+      .eq("id", user.id).select().single();
+    if (error) { console.error("Failed to save business currency:", error); return false; }
+    onProfileChange(saved);
+    return true;
+  };
+
+  // Corrects the currency an upload was labelled with. Amounts are never
+  // changed; only the label on the upload and the transactions it added.
+  const relabelBatch = async (batchId, code) => {
+    const { error } = await supabase.rpc("relabel_upload_currency", { p_batch_id: batchId, p_currency: code });
+    if (error) { console.error("Failed to change upload currency:", error); setActionErr("That upload's currency could not be changed. Nothing was changed, so try again."); return; }
+    await loadHistory(); await loadBatches(); await loadObligations();
+  };
+
+  const handleDataLoaded = async (parsedRows, source, cols, rawText, fileCurrency) => {
     setUploadStatus(""); setUploadErr(""); setUploadBusy(true);
+    const fileCur = fileCurrency || cur;
+    if (!fileCur) {
+      setUploadErr("Choose the currency this file is in, then upload it again.");
+      setUploadBusy(false);
+      return;
+    }
+    let base = cur;
+    if (!base) {
+      if (!(await saveBaseCurrency(fileCur))) {
+        setUploadErr("Your business currency could not be saved, so the file was not uploaded. Try again.");
+        setUploadBusy(false);
+        return;
+      }
+      base = fileCur;
+    }
+    // The session-only figures may be shown only when they are in the
+    // business currency; a file in another currency is stored, not shown.
+    if (fileCur === base) { setData(parsedRows); setDataSource(source); }
     try {
-      const parsed = parseTransactions(rawText);
+      const parsed = parseTransactions(rawText, { currency: fileCur });
       if (!parsed || parsed.transactions.length === 0) {
         setUploadErr("This file loaded for the current session, but no dated transactions could be added to your permanent history.");
         setUploadBusy(false);
@@ -2012,7 +2139,7 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
 
       const { data: batch, error: batchErr } = await supabase.from("upload_batches").insert({
         user_id: user.id, filename: source, row_count: transactions.length,
-        period_start: dates[0], period_end: dates[dates.length - 1], parser_mode: parserMode,
+        period_start: dates[0], period_end: dates[dates.length - 1], parser_mode: parserMode, currency: fileCur,
       }).select().single();
       if (batchErr) throw batchErr;
 
@@ -2039,10 +2166,15 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
         .eq("id", batch.id);
       if (countErr) console.error("Failed to record upload counts:", countErr);
 
-      setUploadStatus(`Added ${insertedCount} new transaction${insertedCount === 1 ? "" : "s"}. ${duplicateCount} already on file.`);
-      await loadHistory();
+      const otherCurrency = transactions.filter(t => t.currency !== base).length;
+      setUploadStatus([
+        `Added ${insertedCount} new transaction${insertedCount === 1 ? "" : "s"}. ${duplicateCount} already on file.`,
+        otherCurrency > 0 ? `${otherCurrency} ${otherCurrency === 1 ? "is" : "are"} in a currency other than ${base}, so ${otherCurrency === 1 ? "it is" : "they are"} stored but not added to your figures.` : "",
+        parsed.unreadable > 0 ? `${parsed.unreadable} amount${parsed.unreadable === 1 ? "" : "s"} could not be read as a number and ${parsed.unreadable === 1 ? "was" : "were"} skipped.` : "",
+      ].filter(Boolean).join(" "));
+      await loadHistory(base);
       await loadBatches();
-      await loadObligations();
+      await loadObligations(base);
     } catch (e) {
       console.error("Failed to save transaction history:", e);
       setUploadErr("Your file was read for this session, but saving it to your permanent history failed. The numbers are accurate for now; upload the file again to save them.");
@@ -2063,7 +2195,7 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
   const rows = history.length > 0 ? history : (data && data.length > 0 ? data : null);
   const m = computeMetrics(
     rows, { mRev, mExp, mCash, mCac, mLtv, mLeads, mClose }, mode,
-    { lastTxnDate: history.length > 0 ? lastTxnDate : null, revenueConcentration: concentrationData }
+    { lastTxnDate: history.length > 0 ? lastTxnDate : null, revenueConcentration: concentrationData, currency: cur }
   );
   const {
     tr, sr, latest, totRev, totExp, totCogs, activeCash, activeCac, activeLtv, n, totPro, margin, vel, conv, ltvcac,
@@ -2098,7 +2230,7 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
     setAffordAmount(monthlyCost > 0 ? monthlyCost : null);
   };
   const affordResult = affordAmount
-    ? checkAffordability({ currentCash: activeCash, avgRev, avgExp, obligations: activeObligations, monthlyCost: affordAmount, fromDate: todayStr })
+    ? checkAffordability({ currentCash: activeCash, avgRev, avgExp, obligations: activeObligations, monthlyCost: affordAmount, fromDate: todayStr, currency: cur })
     : null;
 
   const scenario = runScenario(
@@ -2115,7 +2247,7 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
   // same directive the strip renders, so what's persisted and what's shown
   // can never disagree.
   const currentDirective = hasData
-    ? computeDirective({ margin, burnMonths, free, vel, conv, ltvcac, months: n, concentration: concentrationData })
+    ? computeDirective({ margin, burnMonths, free, vel, conv, ltvcac, months: n, concentration: concentrationData, currency: cur })
     : null;
 
   // Persist a directive only when it genuinely differs from the most
@@ -2123,7 +2255,8 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
   // the initial fetch to land first, so an already-persisted directive
   // that just hasn't loaded into state yet is never duplicated.
   useEffect(() => {
-    if (!currentDirective || directivesLoading || directivesError) return;
+    // With no business currency there is nothing to label its figures with.
+    if (!currentDirective || !cur || directivesLoading || directivesError) return;
     const latestStored = directives[0];
     const isNew = !latestStored || latestStored.directive_text !== currentDirective.text || latestStored.trigger_rule !== currentDirective.rule;
     if (!isNew) return;
@@ -2138,6 +2271,7 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
         target_metric: currentDirective.targetMetric,
         metric_at_issue: value,
         snapshot: metrics,
+        currency: cur,
       }).select().single();
       if (error) console.error("Failed to record directive:", error);
       else if (inserted) setDirectives(ds => [inserted, ...ds]);
@@ -2158,6 +2292,9 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
     if (due.length === 0) return;
     (async () => {
       for (const d of due) {
+        // A money figure issued in one currency cannot be compared with
+        // today's figure in another; that outcome stays unmeasured.
+        if (d.target_metric === "free" && d.currency && d.currency !== cur) continue;
         const value = getDirectiveMetricValue(d.target_metric, metrics, concentrationData);
         if (value === null) continue;
         const patch = { outcome_metric: value, outcome_at: new Date().toISOString() };
@@ -2176,6 +2313,7 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
   const alerts = buildAlerts({
     hasData: hasData || historyLoading, missedObligations, currentDirective, needsAcknowledgement, latestDirective,
     lastTxnDate: history.length > 0 ? lastTxnDate : null, today: todayStr, showForwardRunway, forwardRunway, directives,
+    currency: cur,
   });
 
   // ── AI advisor ──
@@ -2189,6 +2327,9 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
     try {
       const { data: result, error } = await supabase.functions.invoke("analyze-finances", {
         body: {
+          // Every amount below is in this currency. The advisor is told so
+          // and writes its figures in it.
+          currency:       cur,
           monthlyRevenue: latest.revenue,
           totalRevenue:   totRev,
           totalExpenses:  totExp,
@@ -2274,7 +2415,7 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
             text: d.directive_text, severity: d.severity, issuedAt: d.issued_at,
             actionTaken: d.action_taken || "awaiting_response",
             founderNote: d.founder_note || null,
-            outcome: describeDirectiveOutcome(d),
+            outcome: describeDirectiveOutcome(d, d.currency || cur),
           })),
           // Expense breakdown from bank statement parser
           payroll:   totPayroll  || null,
@@ -2309,7 +2450,7 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
   const statusLine = !hasData
     ? (historyLoading ? "Loading your history" : "No data connected")
     : [
-        history.length > 0 ? `${txns.length.toLocaleString()} transactions` : (dataSource || "Manual entry"),
+        history.length > 0 ? `${(txns.length - excludedByCurrency.reduce((sum, e) => sum + e.count, 0)).toLocaleString()} transactions` : (dataSource || "Manual entry"),
         history.length > 0 ? periodLabel : null,
         `${capitalize(dataConfidence)} confidence`,
       ].filter(Boolean).join(" · ");
@@ -2319,11 +2460,11 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
   // KPI tiles. The first tile is chosen by severity, not fixed by position —
   // when free cash or runway turns critical, that is what leads the row.
   const tiles = {
-    revenue: { key:"revenue", lbl:"Monthly revenue", val:fmtCompact(latest.revenue), title:fmt(latest.revenue),
+    revenue: { key:"revenue", lbl:"Monthly revenue", val:fmtCompact(latest.revenue, cur), title:fmt(latest.revenue, cur),
       sub:`${vel >= 0 ? "+" : ""}${pc(vel)} vs prior month`, col:C.text },
     margin:  { key:"margin", lbl:"Profit margin", val:pc(margin), col: margin > 0 ? C.positive : C.danger,
-      sub:`${fmtCompact(totPro)} net in period` },
-    free:    { key:"free", lbl:"True free cash", val:fmtCompact(free), title:fmt(free), col: free >= 0 ? C.platinum : C.danger,
+      sub:`${fmtCompact(totPro, cur)} net in period` },
+    free:    { key:"free", lbl:"True free cash", val:fmtCompact(free, cur), title:fmt(free, cur), col: free >= 0 ? C.platinum : C.danger,
       sub:"After tax and safety reserves" },
     runway:  { key:"runway", lbl:"Runway", val:runwayText, conf:runwayConfidence,
       col: cashFlowPositive || burnMonths >= 6 ? C.positive : burnMonths >= 3 ? C.warning : runwayText === "---" ? C.text3 : C.danger,
@@ -2332,8 +2473,8 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
       col: risk.label === "Low" ? C.positive : risk.label === "Watch" ? C.platinum : risk.label === "Elevated" ? C.warning : C.danger,
       sub:`${risk.label}. Weighted from runway, margin and trend` },
     hiring:  { key:"hiring", lbl:"Hiring capacity", conf:hiringCapacityConfidence,
-      val: !hiringCapacityConfidence.shown ? "---" : hiringCapacity > 0 ? fmtCompact(hiringCapacity) : "None",
-      unit: hiringCapacityConfidence.shown && hiringCapacity > 0 ? "/mo" : null, title: fmt(hiringCapacity),
+      val: !hiringCapacityConfidence.shown ? "---" : hiringCapacity > 0 ? fmtCompact(hiringCapacity, cur) : "None",
+      unit: hiringCapacityConfidence.shown && hiringCapacity > 0 ? "/mo" : null, title: fmt(hiringCapacity, cur),
       col: hiringCapacity > 0 ? C.positive : C.warning,
       sub: hiringCapacity > 0 ? "Fully-loaded cost profit covers" : "Costs exceed revenue on average" },
   };
@@ -2347,14 +2488,14 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
   const supporting = ["revenue","margin","free","runway","risk","hiring"].filter(k => k !== hero.key).map(k => tiles[k]);
 
   const reportSummary = [
-    ["Latest month revenue", fmt(latest.revenue)],
+    ["Latest month revenue", fmt(latest.revenue, cur)],
     ["Profit margin", pc(margin)],
-    ["Net profit", fmt(totPro)],
-    ["True free cash", fmt(free)],
+    ["Net profit", fmt(totPro, cur)],
+    ["True free cash", fmt(free, cur)],
     ["Runway", cashFlowPositive ? "No burn" : runwayConfidence.shown && burnMonths > 0 ? `${safe(burnMonths).toFixed(1)} months` : "Not enough data"],
-    ["Break-even monthly revenue", breakEvenConfidence.shown && breakEven > 0 ? fmt(breakEven) : "Not enough data"],
-    ["90-day revenue projection", proj90Confidence.shown && proj90 > 0 ? fmt(proj90) : "Not enough data"],
-    ["Hiring capacity", hiringCapacityConfidence.shown ? (hiringCapacity > 0 ? `${fmt(hiringCapacity)}/month` : "None from profit") : "Not enough data"],
+    ["Break-even monthly revenue", breakEvenConfidence.shown && breakEven > 0 ? fmt(breakEven, cur) : "Not enough data"],
+    ["90-day revenue projection", proj90Confidence.shown && proj90 > 0 ? fmt(proj90, cur) : "Not enough data"],
+    ["Hiring capacity", hiringCapacityConfidence.shown ? (hiringCapacity > 0 ? `${fmt(hiringCapacity, cur)}/month` : "None from profit") : "Not enough data"],
     ["Risk score", `${risk.score.toFixed(0)}/100 (${risk.label})`],
     ["Growth score", `${growth.score.toFixed(0)}/100 (${growth.label})`],
     ["Largest client share", concentrationData?.shown ? pc(concentrationData.largestPct) : "Not enough data"],
@@ -2364,6 +2505,7 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
 
   const ctx = {
     user, profile, plan, userName, onUpgrade, onBuyDiagnostic, onProfileChange, go, mode, setMode,
+    cur, excludedByCurrency, saveBaseCurrency, relabelBatch,
     rows, txns, history, historyLoading, batches, dataSource, statusLine, periodLabel, todayStr,
     m, metrics, hero, supporting, tiles, runwayText, concentrationData, obligations, activeObligations, missedObligations, upcoming,
     forwardRunway, showForwardRunway, currentDirective, directives, directivesLoading, latestDirective, needsAcknowledgement,
@@ -2421,6 +2563,8 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
             <button className="modal-x" aria-label="Dismiss" onClick={() => setActionErr("")}>×</button>
           </div>
         )}
+        {!cur && <CurrencyPrompt onSave={saveBaseCurrency}/>}
+        <CurrencyNotice cur={cur} excluded={excludedByCurrency} onReview={section === "transactions" ? null : () => go("transactions")}/>
         {section === "dashboard"    && <DashboardHome ctx={ctx}/>}
         {section === "transactions" && <TransactionsSection ctx={ctx}/>}
         {section === "financials"   && <FinancialsSection ctx={ctx}/>}
@@ -2440,6 +2584,7 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
 // six vital numbers, then trend and what is coming. Detail lives on the
 // section pages each panel links to.
 function DashboardHome({ ctx }) {
+  const { cur } = ctx;
   const { m, hero, supporting, go, mode, setMode, statusLine, historyLoading, rows, concentrationData,
     currentDirective, needsAcknowledgement, missedObligations, showForwardRunway, forwardRunway, upcoming,
     directives, plan, onUpgrade, onBuyDiagnostic, growth, growthConfidence, risk, trends, seasonalPattern } = ctx;
@@ -2504,7 +2649,7 @@ function DashboardHome({ ctx }) {
 
       <div className="row row-21">
         <Panel title="Cash in and cash out" action={<PanelLink to="financials" onNavigate={go}>Monthly detail</PanelLink>}>
-          <BChart data={rows}/>
+          <BChart data={rows} currency={cur}/>
         </Panel>
         <Panel title="Trajectory" action={<PanelLink to="financials" onNavigate={go}>History</PanelLink>}>
           <div className="traj-pair">
@@ -2537,10 +2682,10 @@ function DashboardHome({ ctx }) {
             <>
               <ul className="mini-list">
                 {upcoming.slice(0, 4).map((e, i) => (
-                  <li key={i}><span className="mini-date">{e.date}</span><span className="mini-main">{capitalize(e.label)}</span><span className="mini-amt">{fmt(e.amount)}</span></li>
+                  <li key={i}><span className="mini-date">{e.date}</span><span className="mini-main">{capitalize(e.label)}</span><span className="mini-amt">{fmt(e.amount, cur)}</span></li>
                 ))}
               </ul>
-              <div className="mini-foot">{upcoming.length} payment{upcoming.length === 1 ? "" : "s"} due · {fmt(total90)} over 90 days</div>
+              <div className="mini-foot">{upcoming.length} payment{upcoming.length === 1 ? "" : "s"} due · {fmt(total90, cur)} over 90 days</div>
             </>
           )}
         </Panel>
@@ -2588,7 +2733,7 @@ function DashboardHome({ ctx }) {
         <div className="nudge-row">
           <div>
             <div className="nudge-row-title">Command Advisory adds the person who reads these numbers with you.</div>
-            <div className="nudge-row-sub">Monthly 1:1 call, a written board report every month, and a direct advisory line. Or start with a one-time ${DIAGNOSTIC.usd.toLocaleString()} Financial Diagnostic, credited to your first Advisory month.</div>
+            <div className="nudge-row-sub">Monthly 1:1 call, a written board report every month, and a direct advisory line. Or start with a one-time US${DIAGNOSTIC.usd.toLocaleString()} Financial Diagnostic, credited to your first Advisory month.</div>
           </div>
           <div style={{ display:"flex", gap:10, flexWrap:"wrap" }}>
             <button className="btn btn-primary btn-md" onClick={onUpgrade}>Add Command Advisory</button>
@@ -2603,7 +2748,7 @@ function DashboardHome({ ctx }) {
 // ─── SECTION: TRANSACTIONS ────────────────────────────────────
 function TransactionsSection({ ctx }) {
   const { txns, history, historyLoading, batches, handleDataLoaded, uploadBusy, uploadStatus, uploadErr, deleteBatch,
-    txQuery, setTxQuery, txDirection, setTxDirection, txLimit, setTxLimit, periodLabel, manual, go, m } = ctx;
+    txQuery, setTxQuery, txDirection, setTxDirection, txLimit, setTxLimit, periodLabel, manual, go, m, cur, relabelBatch } = ctx;
 
   const filtered = useMemo(() => {
     let list = filterTransactions(txns, txQuery);
@@ -2611,16 +2756,19 @@ function TransactionsSection({ ctx }) {
     else if (txDirection === "out") list = list.filter(t => Number(t.amount) < 0);
     return list.slice().sort((a, b) => String(b.txn_date).localeCompare(String(a.txn_date)));
   }, [txns, txQuery, txDirection]);
-  const totIn  = filtered.reduce((s, t) => s + Math.max(0, Number(t.amount) || 0), 0);
-  const totOut = filtered.reduce((s, t) => s + Math.max(0, -(Number(t.amount) || 0)), 0);
+  // Totals add the business currency only; other rows are listed, not summed.
+  const inBase = filtered.filter(t => t.currency === cur);
+  const otherCount = filtered.length - inBase.length;
+  const totIn  = inBase.reduce((s, t) => s + Math.max(0, Number(t.amount) || 0), 0);
+  const totOut = inBase.reduce((s, t) => s + Math.max(0, -(Number(t.amount) || 0)), 0);
   const shown = filtered.slice(0, txLimit);
 
   const manualFields = [
-    { lbl:"Monthly revenue ($)",           v:manual.mRev,   s:manual.setMRev },
-    { lbl:"Monthly expenses ($)",          v:manual.mExp,   s:manual.setMExp },
-    { lbl:"Cash balance ($)",              v:manual.mCash,  s:manual.setMCash },
-    { lbl:"Customer acquisition cost ($)", v:manual.mCac,   s:manual.setMCac },
-    { lbl:"Customer lifetime value ($)",   v:manual.mLtv,   s:manual.setMLtv },
+    { lbl:withSymbol("Monthly revenue", cur),           v:manual.mRev,   s:manual.setMRev },
+    { lbl:withSymbol("Monthly expenses", cur),          v:manual.mExp,   s:manual.setMExp },
+    { lbl:withSymbol("Cash balance", cur),              v:manual.mCash,  s:manual.setMCash },
+    { lbl:withSymbol("Customer acquisition cost", cur), v:manual.mCac,   s:manual.setMCac },
+    { lbl:withSymbol("Customer lifetime value", cur),   v:manual.mLtv,   s:manual.setMLtv },
     { lbl:"Leads this month",              v:manual.mLeads, s:manual.setMLeads },
     { lbl:"Deals closed",                  v:manual.mClose, s:manual.setMClose },
   ];
@@ -2631,7 +2779,7 @@ function TransactionsSection({ ctx }) {
 
       <div className="row row-21">
         <Panel title="Upload a file or sync a sheet">
-          <DataUpload hasData={m.hasData} onDataLoaded={handleDataLoaded}/>
+          <DataUpload hasData={m.hasData} onDataLoaded={handleDataLoaded} currency={cur}/>
           {uploadBusy && (
             <div className="busy-line"><span className="spinner"/>Saving to your transaction history...</div>
           )}
@@ -2655,8 +2803,13 @@ function TransactionsSection({ ctx }) {
                     <div className="batch-name">{b.filename || "Untitled upload"}</div>
                     <div className="batch-meta">
                       {new Date(b.uploaded_at).toLocaleDateString()} · {b.period_start} to {b.period_end} · {b.inserted_count ?? "pending"} added, {b.duplicate_count ?? "pending"} duplicate
+                      {b.currency !== cur && cur ? " · not in your figures" : ""}
                     </div>
                   </div>
+                  <CurrencySelect compact ariaLabel={`Currency of ${b.filename || "this upload"}`} value={b.currency}
+                    onChange={code => {
+                      if (code !== b.currency && window.confirm(`Label every transaction "${b.filename || "this upload"}" added as ${code}? Amounts stay exactly as they are; only the currency label changes.`)) relabelBatch(b.id, code);
+                    }}/>
                   <button className="modal-x" title="Delete this upload and its transactions" aria-label={`Delete upload ${b.filename || "Untitled upload"}`}
                     onClick={() => { if (window.confirm(`Delete "${b.filename}" and every transaction it added? This cannot be undone.`)) deleteBatch(b.id); }}>
                     ×
@@ -2678,7 +2831,8 @@ function TransactionsSection({ ctx }) {
             <option value="out">Money out</option>
           </select>
           <div className="tx-sum">
-            {filtered.length.toLocaleString()} shown · <span style={{ color:C.positive }}>{fmt(totIn)} in</span> · <span>{fmt(totOut)} out</span>
+            {filtered.length.toLocaleString()} shown · <span style={{ color:C.positive }}>{fmt(totIn, cur)} in</span> · <span>{fmt(totOut, cur)} out</span>
+            {otherCount > 0 && <> · {otherCount.toLocaleString()} in other currencies, not totalled</>}
           </div>
         </div>
         {historyLoading ? (
@@ -2697,8 +2851,8 @@ function TransactionsSection({ ctx }) {
                     <tr key={t.id ?? i}>
                       <td className="mono">{t.txn_date}</td>
                       <td>{t.description || <span className="muted">No description</span>}</td>
-                      <td className="muted">{t.category ? capitalize(t.category) : "Uncategorised"}</td>
-                      <td className="num" style={{ color: Number(t.amount) >= 0 ? C.positive : C.text }}>{fmt(t.amount)}</td>
+                      <td className="muted">{t.category ? capitalize(t.category) : "Uncategorised"}{t.currency !== cur ? ` · ${t.currency}, not in your figures` : ""}</td>
+                      <td className="num" style={{ color: t.currency !== cur ? C.text3 : Number(t.amount) >= 0 ? C.positive : C.text }}>{fmt(t.amount, t.currency)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -2733,6 +2887,7 @@ function TransactionsSection({ ctx }) {
 
 // ─── SECTION: FINANCIALS ──────────────────────────────────────
 function FinancialsSection({ ctx }) {
+  const { cur } = ctx;
   const { m, rows, mode, setMode, tr, sr, taxV, safV, concentrationData, statusLine, hasConversionData, sov, sovLbl,
     activeCac, activeLtv, cogsRatio, mktRatio, founderNarrative, seasonalPattern, historicalConfidence, go } = ctx;
   const { hasData, latest, totPro, free, margin, conv, ltvcac, ltvcacConfidence, breakEven, breakEvenConfidence } = m;
@@ -2758,17 +2913,17 @@ function FinancialsSection({ ctx }) {
                   return (
                     <tr key={i}>
                       <td>{r.month}</td>
-                      <td className="num">{fmt(r.revenue)}</td>
-                      <td className="num">{fmt(r.expenses)}</td>
-                      <td className="num" style={{ color: net >= 0 ? C.positive : C.danger }}>{fmt(net)}</td>
+                      <td className="num">{fmt(r.revenue, cur)}</td>
+                      <td className="num">{fmt(r.expenses, cur)}</td>
+                      <td className="num" style={{ color: net >= 0 ? C.positive : C.danger }}>{fmt(net, cur)}</td>
                       <td className="num muted">{r.revenue > 0 ? pc((net / r.revenue) * 100) : "---"}</td>
                     </tr>
                   );
                 })}
               </tbody>
               <tfoot><tr>
-                <th scope="row">Total</th><td className="num">{fmt(totals.rev)}</td><td className="num">{fmt(totals.exp)}</td>
-                <td className="num" style={{ color: totals.rev - totals.exp >= 0 ? C.positive : C.danger }}>{fmt(totals.rev - totals.exp)}</td>
+                <th scope="row">Total</th><td className="num">{fmt(totals.rev, cur)}</td><td className="num">{fmt(totals.exp, cur)}</td>
+                <td className="num" style={{ color: totals.rev - totals.exp >= 0 ? C.positive : C.danger }}>{fmt(totals.rev - totals.exp, cur)}</td>
                 <td className="num muted">{totals.rev > 0 ? pc(((totals.rev - totals.exp) / totals.rev) * 100) : "---"}</td>
               </tr></tfoot>
             </table>
@@ -2787,21 +2942,21 @@ function FinancialsSection({ ctx }) {
                 <div className="alloc-pct">{safe(a.pct).toFixed(0)}% of profit</div>
                 <div className="alloc-track"><div className="alloc-fill" style={{ width:`${Math.min(100, safe(a.pct))}%`, background:a.col }}/></div>
               </div>
-              <div className="alloc-amt" style={{ color:a.col }}>{fmt(a.amt)}</div>
+              <div className="alloc-amt" style={{ color:a.col }}>{fmt(a.amt, cur)}</div>
             </div>
           ))}
           <p className="panel-copy" style={{ marginTop:10 }}>
-            {totPro > 0 ? `${mode === "safe" ? "Safe" : "Growth"} mode reserves are taken from ${fmt(totPro)} net profit in the period.` : "A loss in the period: nothing is reserved, and free cash is the full loss."}
+            {totPro > 0 ? `${mode === "safe" ? "Safe" : "Growth"} mode reserves are taken from ${fmt(totPro, cur)} net profit in the period.` : "A loss in the period: nothing is reserved, and free cash is the full loss."}
           </p>
         </Panel>
       </div>
 
       <div className="row row-3">
         <Panel title="Break-even">
-          <div className="big-num">{breakEvenConfidence.shown && breakEven > 0 ? fmt(breakEven) : "---"}</div>
+          <div className="big-num">{breakEvenConfidence.shown && breakEven > 0 ? fmt(breakEven, cur) : "---"}</div>
           <p className="panel-copy">
             {breakEvenConfidence.shown && latest.revenue > 0 && breakEven > 0
-              ? latest.revenue >= breakEven ? `Monthly revenue needed to cover average costs. You are ${fmt(latest.revenue - breakEven)} above it.` : `Monthly revenue needed to cover average costs. You are ${fmt(breakEven - latest.revenue)} below it.`
+              ? latest.revenue >= breakEven ? `Monthly revenue needed to cover average costs. You are ${fmt(latest.revenue - breakEven, cur)} above it.` : `Monthly revenue needed to cover average costs. You are ${fmt(breakEven - latest.revenue, cur)} below it.`
               : "Enter revenue and expenses to calculate."}
           </p>
           <ConfidenceLine c={breakEvenConfidence}/>
@@ -2810,8 +2965,8 @@ function FinancialsSection({ ctx }) {
         <Panel title="Unit economics">
           <dl className="kv">
             <dt>LTV : CAC</dt><dd>{ltvcacConfidence.shown ? `${safe(ltvcac).toFixed(1)}x` : "---"}</dd>
-            <dt>Acquisition cost</dt><dd>{activeCac > 0 ? fmt(activeCac) : "---"}</dd>
-            <dt>Lifetime value</dt><dd>{activeLtv > 0 ? fmt(activeLtv) : "---"}</dd>
+            <dt>Acquisition cost</dt><dd>{activeCac > 0 ? fmt(activeCac, cur) : "---"}</dd>
+            <dt>Lifetime value</dt><dd>{activeLtv > 0 ? fmt(activeLtv, cur) : "---"}</dd>
             <dt>Lead conversion</dt><dd>{hasConversionData ? pc(conv) : "---"}</dd>
             <dt>COGS / revenue</dt><dd>{pc(cogsRatio)}</dd>
             <dt>Marketing / revenue</dt><dd>{pc(mktRatio)}</dd>
@@ -2933,13 +3088,14 @@ function AdvisorSection({ ctx }) {
 // board: the same profit-and-loss table and metrics shown in the app,
 // downloadable as CSV or printed to PDF from the browser.
 function ReportsSection({ ctx }) {
+  const { cur } = ctx;
   const { m, rows, reportSummary, periodLabel, todayStr, profile, userName, plan, statusLine, go } = ctx;
   if (!m.hasData) return <><PageHead title="Reports" meta={statusLine}/><EmptyData go={go}/></>;
 
   const monthly = rows || [];
   const totals = monthly.reduce((a, r) => ({ rev:a.rev + (r.revenue || 0), exp:a.exp + (r.expenses || 0) }), { rev:0, exp:0 });
   const downloadCsv = () => {
-    const csv = buildReportCsv({ periodLabel, generatedAt: todayStr, rows: monthly, summary: reportSummary });
+    const csv = buildReportCsv({ periodLabel, generatedAt: todayStr, rows: monthly, summary: reportSummary, currency: cur });
     const url = URL.createObjectURL(new Blob([csv], { type:"text/csv;charset=utf-8" }));
     const a = document.createElement("a");
     a.href = url; a.download = `command-ledger-summary-${todayStr}.csv`;
@@ -2958,7 +3114,7 @@ function ReportsSection({ ctx }) {
         <div className="report-head">
           <div>
             <div className="report-title">Financial summary</div>
-            <div className="page-meta">{profile?.business || userName} · {periodLabel} · generated {todayStr}</div>
+            <div className="page-meta">{profile?.business || userName} · {periodLabel} · {currencyName(cur)} · generated {todayStr}</div>
           </div>
           <div className="page-meta">Command Ledger</div>
         </div>
@@ -2977,10 +3133,10 @@ function ReportsSection({ ctx }) {
                 <tbody>
                   {monthly.map((r, i) => {
                     const net = (r.revenue || 0) - (r.expenses || 0);
-                    return <tr key={i}><td>{r.month}</td><td className="num">{fmt(r.revenue)}</td><td className="num">{fmt(r.expenses)}</td><td className="num">{fmt(net)}</td><td className="num">{r.revenue > 0 ? pc((net / r.revenue) * 100) : "---"}</td></tr>;
+                    return <tr key={i}><td>{r.month}</td><td className="num">{fmt(r.revenue, cur)}</td><td className="num">{fmt(r.expenses, cur)}</td><td className="num">{fmt(net, cur)}</td><td className="num">{r.revenue > 0 ? pc((net / r.revenue) * 100) : "---"}</td></tr>;
                   })}
                 </tbody>
-                <tfoot><tr><th scope="row">Total</th><td className="num">{fmt(totals.rev)}</td><td className="num">{fmt(totals.exp)}</td><td className="num">{fmt(totals.rev - totals.exp)}</td><td className="num">{totals.rev > 0 ? pc(((totals.rev - totals.exp) / totals.rev) * 100) : "---"}</td></tr></tfoot>
+                <tfoot><tr><th scope="row">Total</th><td className="num">{fmt(totals.rev, cur)}</td><td className="num">{fmt(totals.exp, cur)}</td><td className="num">{fmt(totals.rev - totals.exp, cur)}</td><td className="num">{totals.rev > 0 ? pc(((totals.rev - totals.exp) / totals.rev) * 100) : "---"}</td></tr></tfoot>
               </table>
             </div>
           </div>
@@ -2997,6 +3153,7 @@ function ReportsSection({ ctx }) {
 
 // ─── SECTION: DECISION LOG ────────────────────────────────────
 function DecisionLogSection({ ctx }) {
+  const { cur } = ctx;
   const { currentDirective, directives, directivesLoading, latestDirective, needsAcknowledgement, ackNote, setAckNote, acknowledgeDirective } = ctx;
   return (
     <>
@@ -3029,7 +3186,7 @@ function DecisionLogSection({ ctx }) {
           <ul className="log-list">
             {directives.map(d => {
               const uc = { critical:C.danger, warn:C.warning, go:C.positive, stable:C.platinum }[d.severity] || C.platinum;
-              const outcome = describeDirectiveOutcome(d);
+              const outcome = describeDirectiveOutcome(d, d.currency || cur);
               const actionLabel = { acted:"Acted", partially:"Partially acted", ignored:"Ignored", disagreed:"Disagreed" }[d.action_taken] || "Awaiting response";
               const outcomeColor = outcome.status === "measured"
                 ? (outcome.improved === true ? C.positive : outcome.improved === false ? C.danger : C.text2)
@@ -3054,6 +3211,7 @@ function DecisionLogSection({ ctx }) {
 
 // ─── SECTION: FORECASTS ───────────────────────────────────────
 function ForecastsSection({ ctx }) {
+  const { cur } = ctx;
   const { m, statusLine, go, runwayText, forwardRunway, activeObligations, upcoming, todayStr, setObligationActive,
     affordInput, setAffordInput, setAffordAmount, affordResult, checkAfford, scenario, scenarioRunway,
     scRevPct, setScRevPct, scExpPct, setScExpPct, scHire, setScHire, scCash, setScCash } = ctx;
@@ -3069,7 +3227,7 @@ function ForecastsSection({ ctx }) {
 
       <div className="row row-3">
         <Panel title="90-day revenue projection">
-          <div className="big-num">{proj90Confidence.shown && safe(proj90) > 0 ? fmt(proj90) : "---"}</div>
+          <div className="big-num">{proj90Confidence.shown && safe(proj90) > 0 ? fmt(proj90, cur) : "---"}</div>
           <p className="panel-copy">Monthly revenue in three months at your trailing growth rate ({pc(vel)} last month), capped at ±50% a month.</p>
           <ConfidenceLine c={proj90Confidence}/>
         </Panel>
@@ -3102,7 +3260,7 @@ function ForecastsSection({ ctx }) {
                     <ConfidenceLine c={{ shown:true, level:o.confidence, reason:`${o.occurrences} occurrences observed` }}/>
                   </div>
                   <div style={{ textAlign:"right", flexShrink:0 }}>
-                    <div className="mini-amt">{fmt(o.typical_amount)}</div>
+                    <div className="mini-amt">{fmt(o.typical_amount, cur)}</div>
                     <button className="panel-link" style={{ marginTop:4 }} onClick={() => setObligationActive(o.id, false)}>Mark ended</button>
                   </div>
                 </li>
@@ -3120,7 +3278,7 @@ function ForecastsSection({ ctx }) {
                 <li key={w.weekStart}>
                   <span className="mini-date">{w.weekStart.slice(5)}</span>
                   <span className="bar-track week-bar"><span style={{ width:`${(w.total / maxWeek) * 100}%`, background: w.total > 0 ? C.platinum : "transparent" }}/></span>
-                  <span className="mini-amt">{w.total > 0 ? fmt(w.total) : "None"}</span>
+                  <span className="mini-amt">{w.total > 0 ? fmt(w.total, cur) : "None"}</span>
                 </li>
               ))}
             </ul>
@@ -3130,14 +3288,14 @@ function ForecastsSection({ ctx }) {
 
       <div className="row row-12">
         <Panel title="Can I afford it?">
-          <label className="di-lbl" htmlFor="afford-input">A hire, or any recurring cost, per month ($)</label>
+          <label className="di-lbl" htmlFor="afford-input">{withSymbol("A hire, or any recurring cost, per month", cur)}</label>
           <div style={{ display:"flex", gap:8 }}>
             <input id="afford-input" type="number" min="0" className="di" placeholder={hiringCapacity > 0 ? `e.g. ${Math.round(hiringCapacity)}` : "e.g. 1500"}
               value={affordInput} onChange={e => { setAffordInput(e.target.value); setAffordAmount(null); }} onKeyDown={e => e.key === "Enter" && checkAfford()}/>
             <button className="btn btn-primary btn-md" onClick={checkAfford}>Check</button>
           </div>
           {affordResult && <div className={`d-alert ${affordResult.affordable ? "ok" : "crit"}`} style={{ marginTop:12 }}>{affordResult.message}</div>}
-          <p className="panel-copy" style={{ marginTop:10 }}>Tested over 12 months against your cash and recurring bills on their real dates.{hiringCapacity > 0 ? ` Your average profit alone covers up to ${fmt(hiringCapacity)}/month.` : ""}</p>
+          <p className="panel-copy" style={{ marginTop:10 }}>Tested over 12 months against your cash and recurring bills on their real dates.{hiringCapacity > 0 ? ` Your average profit alone covers up to ${fmt(hiringCapacity, cur)}/month.` : ""}</p>
         </Panel>
 
         <Panel title="Scenario planning" action={(scRevPct !== 0 || scExpPct !== 0 || scHire !== 0 || scCash !== 0)
@@ -3146,8 +3304,8 @@ function ForecastsSection({ ctx }) {
             {[
               { id:"sc-rev",  lbl:"Revenue change (%)",         v:scRevPct, s:setScRevPct },
               { id:"sc-exp",  lbl:"Expense change (%)",         v:scExpPct, s:setScExpPct },
-              { id:"sc-hire", lbl:"New hire, monthly cost ($)", v:scHire,   s:setScHire, min:0 },
-              { id:"sc-cash", lbl:"One-time cash change ($)",   v:scCash,   s:setScCash },
+              { id:"sc-hire", lbl:withSymbol("New hire, monthly cost", cur), v:scHire,   s:setScHire, min:0 },
+              { id:"sc-cash", lbl:withSymbol("One-time cash change", cur),   v:scCash,   s:setScCash },
             ].map(f => (
               <div key={f.id} className="input-group">
                 <label className="di-lbl" htmlFor={f.id}>{f.lbl}</label>
@@ -3158,7 +3316,7 @@ function ForecastsSection({ ctx }) {
           <div className="kpi4" style={{ gap:12 }}>
             {[
               { lbl:"Margin", before:pc(scenario.before.margin), after:pc(scenario.after.margin), better: scenario.after.margin >= scenario.before.margin },
-              { lbl:"True free cash", before:fmt(scenario.before.free), after:fmt(scenario.after.free), better: scenario.after.free >= scenario.before.free },
+              { lbl:"True free cash", before:fmt(scenario.before.free, cur), after:fmt(scenario.after.free, cur), better: scenario.after.free >= scenario.before.free },
               { lbl:"Cash position", before:scenarioRunway(scenario.before), after:scenarioRunway(scenario.after),
                 better: scenario.after.cashFlowPositive || scenario.after.burnMonths >= scenario.before.burnMonths },
               { lbl:"Risk score", before:`${scenario.before.risk.score.toFixed(0)} - ${scenario.before.risk.label}`, after:`${scenario.after.risk.score.toFixed(0)} - ${scenario.after.risk.label}`, better: scenario.after.risk.score <= scenario.before.risk.score },
@@ -3182,17 +3340,23 @@ function SettingsSection({ ctx }) {
   const { user, profile, plan, mode, setMode, onUpgrade, onBuyDiagnostic, onProfileChange, go } = ctx;
   const [name, setName] = useState(profile?.name || "");
   const [business, setBusiness] = useState(profile?.business || "");
+  const [baseCur, setBaseCur] = useState(profile?.base_currency || "");
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState(null);
-  const dirty = name.trim() !== (profile?.name || "") || business.trim() !== (profile?.business || "");
+  const currencyChanged = !!baseCur && baseCur !== (profile?.base_currency || "");
+  const dirty = name.trim() !== (profile?.name || "") || business.trim() !== (profile?.business || "") || currencyChanged;
 
   const save = async e => {
     e.preventDefault();
+    // Changing the currency converts nothing. Say what happens to the
+    // transactions already on file before it is saved.
+    if (currencyChanged && profile?.base_currency && !window.confirm(
+      `Change your business currency from ${profile.base_currency} to ${baseCur}? Nothing is converted. Transactions in ${profile.base_currency} will be left out of your figures until you change the currency of their upload under Transactions.`)) return;
     setSaving(true); setMsg(null);
     // plan, status and paypal_subscription_id are never sent: the database
     // guard would discard them anyway, and only the PayPal webhook sets them.
     const { data, error } = await supabase.from("profiles")
-      .update({ name: name.trim() || null, business: business.trim() || null, updated_at: new Date().toISOString() })
+      .update({ name: name.trim() || null, business: business.trim() || null, ...(currencyChanged ? { base_currency: baseCur } : {}), updated_at: new Date().toISOString() })
       .eq("id", user.id).select().single();
     setSaving(false);
     if (error) { console.error("Profile update failed:", error); setMsg({ t:"crit", text:"Your profile could not be saved. Nothing was changed, so try again." }); return; }
@@ -3217,6 +3381,10 @@ function SettingsSection({ ctx }) {
               <input id="set-business" className="di" value={business} maxLength={160} onChange={e => setBusiness(e.target.value)} placeholder="Shown on your reports"/>
             </div>
             <div className="input-group">
+              <label className="di-lbl" htmlFor="set-currency">Business currency</label>
+              <CurrencySelect id="set-currency" value={baseCur} onChange={setBaseCur}/>
+            </div>
+            <div className="input-group">
               <label className="di-lbl" htmlFor="set-email">Email</label>
               <input id="set-email" className="di" value={user?.email || ""} readOnly aria-readonly="true"/>
             </div>
@@ -3230,7 +3398,7 @@ function SettingsSection({ ctx }) {
         <Panel title="Plan and billing">
           <dl className="kv">
             <dt>Plan</dt><dd>{PLANS[plan].name}</dd>
-            <dt>Price</dt><dd>${PLANS[plan].usd.toLocaleString()} {PLANS[plan].period}</dd>
+            <dt>Price</dt><dd>US${PLANS[plan].usd.toLocaleString()} {PLANS[plan].period}</dd>
             <dt>Status</dt><dd>{statusText}</dd>
           </dl>
           <div style={{ display:"flex", gap:10, flexWrap:"wrap", marginTop:14 }}>
@@ -3239,9 +3407,9 @@ function SettingsSection({ ctx }) {
           </div>
           <p className="panel-copy" style={{ marginTop:12 }}>
             Subscriptions are billed and cancelled through PayPal. Upgrading cancels your current subscription automatically once the new one is active.
-            {plan === "software" && " Annual billing ($990/year) is arranged by email."}
+            {plan === "software" && " Annual billing (US$990/year) is arranged by email."}
           </p>
-          <button className="panel-link" style={{ marginTop:8 }} onClick={onBuyDiagnostic}>Buy a one-time ${DIAGNOSTIC.usd.toLocaleString()} Financial Diagnostic<Icon name="arrow" size={14}/></button>
+          <button className="panel-link" style={{ marginTop:8 }} onClick={onBuyDiagnostic}>Buy a one-time US${DIAGNOSTIC.usd.toLocaleString()} Financial Diagnostic<Icon name="arrow" size={14}/></button>
         </Panel>
       </div>
 
@@ -3547,14 +3715,17 @@ function HeroDemo() {
     try {
       const parsed = parseAnyCSV(await file.text());
       if (!parsed || parsed.rows.length === 0) { setErr("No revenue or expense columns were found in that file."); return; }
-      setErr(""); setOwn({ rows: parsed.rows, label: file.name });
+      setErr(""); setOwn({ rows: parsed.rows, label: file.name, currency: parsed.currency });
     } catch { setErr("That file could not be read."); }
   };
   const rows = own ? own.rows : SAMPLE.rows;
-  const m = own ? computeMetrics(rows, NO_MANUAL, "safe") : SAMPLE.metrics;
+  // The sample is in US dollars. A visitor's file is shown in the currency
+  // it declares, or as bare numbers when it declares none.
+  const demoCur = own ? own.currency : "USD";
+  const m = own ? computeMetrics(rows, NO_MANUAL, "safe", { currency: demoCur }) : SAMPLE.metrics;
   const tiles = [
-    { key:"free", lbl:"True free cash", val:fmtCompact(m.free), title:fmt(m.free), col: m.free >= 0 ? C.text : C.danger, sub:"After tax and safety reserves" },
-    { key:"margin", lbl:"Profit margin", val:pc(m.margin), col: m.margin > 0 ? C.positive : C.danger, sub:`${fmtCompact(m.totPro)} net over ${m.n} month${m.n === 1 ? "" : "s"}` },
+    { key:"free", lbl:"True free cash", val:fmtCompact(m.free, demoCur), title:fmt(m.free, demoCur), col: m.free >= 0 ? C.text : C.danger, sub:"After tax and safety reserves" },
+    { key:"margin", lbl:"Profit margin", val:pc(m.margin), col: m.margin > 0 ? C.positive : C.danger, sub:`${fmtCompact(m.totPro, demoCur)} net over ${m.n} month${m.n === 1 ? "" : "s"}` },
     { key:"runway", lbl:"Runway", val: m.cashFlowPositive ? "No burn" : (m.runwayConfidence.shown && m.burnMonths > 0) ? `${safe(m.burnMonths).toFixed(1)} mo` : "---",
       col: m.cashFlowPositive ? C.positive : C.text, sub: m.cashFlowPositive ? "Revenue covers costs" : "Needs a cash balance" },
     { key:"risk", lbl:"Risk score", val: m.risk.score.toFixed(0), unit:"/100", col: riskTone(m.risk.label), sub: m.risk.label },
@@ -3572,9 +3743,9 @@ function HeroDemo() {
         <div className="panel" style={{ padding:"14px 16px" }}>
           <div className="panel-head" style={{ marginBottom:10 }}>
             <h3 className="panel-title">Cash in and cash out</h3>
-            <span className="page-meta" style={{ marginTop:0 }}>Monthly, USD</span>
+            <span className="page-meta" style={{ marginTop:0 }}>{demoCur ? `Monthly, ${demoCur}` : "Monthly"}</span>
           </div>
-          <BChart data={rows} compact/>
+          <BChart data={rows} currency={demoCur} compact/>
         </div>
       </div>
       <div className="mk-demo-foot">
@@ -3717,8 +3888,8 @@ function MarketingSite({ onLogin, onPlanSelect, onTerms, onPrivacy }) {
                 <h3 className="mk-h3">True free cash and runway</h3>
                 <p className="mk-p">Revenue is not money you can spend. Command Ledger sets aside tax and a safety buffer first and shows what remains, then measures runway against net burn rather than gross spending, so a profitable month is never mistaken for a crisis.</p>
                 <div className="mk-cap-figures">
-                  <KpiTile t={{ lbl:"True free cash", val:fmt(m.free), col:C.text, sub:"Three months, after reserves" }}/>
-                  <KpiTile t={{ lbl:"Break-even revenue", val:fmt(m.breakEven), col:C.text, sub:`Monthly. June revenue: ${fmt(s.last.revenue)}` }}/>
+                  <KpiTile t={{ lbl:"True free cash", val:fmt(m.free, "USD"), col:C.text, sub:"Three months, after reserves" }}/>
+                  <KpiTile t={{ lbl:"Break-even revenue", val:fmt(m.breakEven, "USD"), col:C.text, sub:`Monthly. June revenue: ${fmt(s.last.revenue, "USD")}` }}/>
                 </div>
                 <p className="mk-cap-note">Sample data. Safe mode reserves 30% of profit for tax and 20% as a safety buffer.</p>
               </article>
@@ -3730,11 +3901,11 @@ function MarketingSite({ onLogin, onPlanSelect, onTerms, onPrivacy }) {
                     <li key={o.normalized_key}>
                       <span className="mini-main">{o.label}</span>
                       <span className="mini-date">next {o.next_expected}</span>
-                      <span className="mini-amt">{fmt(o.typical_amount)}</span>
+                      <span className="mini-amt">{fmt(o.typical_amount, "USD")}</span>
                     </li>
                   ))}
                 </ul>
-                <p className="mk-cap-note">Detected from the sample file: {fmt(s.committed)} a month committed.</p>
+                <p className="mk-cap-note">Detected from the sample file: {fmt(s.committed, "USD")} a month committed.</p>
               </article>
               <article className="mk-cap full">
                 <div style={{ display:"flex", justifyContent:"space-between", gap:16, flexWrap:"wrap", alignItems:"baseline" }}>
@@ -3744,8 +3915,8 @@ function MarketingSite({ onLogin, onPlanSelect, onTerms, onPrivacy }) {
                 <p className="mk-p" style={{ maxWidth:820 }}>On request, Command Ledger sends your computed metrics to Claude, by Anthropic, and returns a structured brief. It is built to narrate the risk score already computed from your data rather than invent its own, its confidence is tied to how much history you have, and a single month of data can never be rated critical.</p>
                 <dl className="mk-brief">
                   <div><dt>What happened</dt><dd>Revenue fell {Math.abs(s.revenueChange).toFixed(0)}% from April to June while costs rose {s.costChange.toFixed(0)}%. Margin fell from {pc(s.marginFirst)} to {pc(s.marginLast)}.</dd></div>
-                  <div><dt>Why it happened</dt><dd>Ad spend rose from {fmt(s.first.marketing)} to {fmt(s.last.marketing)} a month and payroll from {fmt(s.first.payroll)} to {fmt(s.last.payroll)}, while revenue declined.</dd></div>
-                  <div><dt>Business impact</dt><dd>In June the business kept {fmt(s.last.revenue - s.last.expenses)} of {fmt(s.last.revenue)} in revenue{s.topClient ? `, and ${pc(s.topClientPct)} of revenue came from ${s.topClient}` : ""}.</dd></div>
+                  <div><dt>Why it happened</dt><dd>Ad spend rose from {fmt(s.first.marketing, "USD")} to {fmt(s.last.marketing, "USD")} a month and payroll from {fmt(s.first.payroll, "USD")} to {fmt(s.last.payroll, "USD")}, while revenue declined.</dd></div>
+                  <div><dt>Business impact</dt><dd>In June the business kept {fmt(s.last.revenue - s.last.expenses, "USD")} of {fmt(s.last.revenue, "USD")} in revenue{s.topClient ? `, and ${pc(s.topClientPct)} of revenue came from ${s.topClient}` : ""}.</dd></div>
                   <div><dt>Recommended action</dt><dd>{s.directive.text}</dd></div>
                   <div><dt>Expected outcome</dt><dd>With ad spend back at April's level, June's margin would have been {pc(s.juneAdsAtApril)} instead of {pc(s.marginLast)}.</dd></div>
                   <div><dt>Risk and confidence</dt><dd>{m.risk.label} risk ({m.risk.score.toFixed(0)}/100). Confidence {s.confidence.level}, {s.confidence.reason}.</dd></div>
@@ -3799,7 +3970,7 @@ function MarketingSite({ onLogin, onPlanSelect, onTerms, onPrivacy }) {
                   <caption className="sr-only">Sample transactions, April to June 2026</caption>
                   <tbody>
                     {s.txns.map((t, i) => (
-                      <tr key={i}><td>{t.txn_date}</td><td>{t.description}</td><td style={{ color: t.amount > 0 ? C.positive : C.text2 }}>{fmt(t.amount)}</td></tr>
+                      <tr key={i}><td>{t.txn_date}</td><td>{t.description}</td><td style={{ color: t.amount > 0 ? C.positive : C.text2 }}>{fmt(t.amount, "USD")}</td></tr>
                     ))}
                   </tbody>
                 </table>
@@ -3810,7 +3981,7 @@ function MarketingSite({ onLogin, onPlanSelect, onTerms, onPrivacy }) {
                 <ul className="mk-insights">
                   <li><b>{pc(s.marginFirst)} to {pc(s.marginLast)}</b><span>Profit margin from April to June. Costs rose {s.costChange.toFixed(0)}% while revenue fell {Math.abs(s.revenueChange).toFixed(0)}%.</span></li>
                   {s.topClient && <li><b>{pc(s.topClientPct)}</b><span>of revenue comes from one client, {s.topClient}. Losing it would remove most of the income.</span></li>}
-                  <li><b>{fmt(s.committed)} a month</b><span>is committed to payroll, advertising and hosting, each detected as a monthly obligation with its next due date.</span></li>
+                  <li><b>{fmt(s.committed, "USD")} a month</b><span>is committed to payroll, advertising and hosting, each detected as a monthly obligation with its next due date.</span></li>
                   <li><b>{s.adsChange > 0 ? "+" : ""}{s.adsChange.toFixed(0)}% ad spend</b><span>in three months, while revenue declined over the same period.</span></li>
                 </ul>
                 <div className="mk-verdict">
@@ -3831,13 +4002,13 @@ function MarketingSite({ onLogin, onPlanSelect, onTerms, onPrivacy }) {
             <div className="mk-prices">
               {[
                 { key:"software", name:PLANS.software.name, forWho:"For founders who want the system and will read the numbers themselves.",
-                  fig:`$${PLANS.software.usd}`, per:"per month", alt:`or $${PLANS.software.annualUsd.toLocaleString()} a year, arranged by email`,
+                  fig:`US$${PLANS.software.usd}`, per:"per month", alt:`or US$${PLANS.software.annualUsd.toLocaleString()} a year, arranged by email`,
                   list:PLANS.software.features, cta:"Get started", featured:false },
                 { key:"advisory", name:PLANS.advisory.name, forWho:"For founders who want an advisor reading the numbers with them every month.",
-                  fig:`$${PLANS.advisory.usd.toLocaleString()}`, per:"per month", alt:`${PLANS.advisory.seats} seats in total`,
+                  fig:`US$${PLANS.advisory.usd.toLocaleString()}`, per:"per month", alt:`${PLANS.advisory.seats} seats in total`,
                   list:PLANS.advisory.features, cta:"Request a seat", featured:true },
                 { key:"diagnostic", name:DIAGNOSTIC.name, forWho:"For founders who want one rigorous review before committing to anything ongoing.",
-                  fig:`$${DIAGNOSTIC.usd}`, per:"once", alt:"Credited in full against your first Advisory month",
+                  fig:`US$${DIAGNOSTIC.usd}`, per:"once", alt:"Credited in full against your first Advisory month",
                   list:["Send twelve months of bank or accounting exports", "Receive the full analysis and a written findings memo", "A one-time payment, not a subscription"], cta:"Buy the diagnostic", featured:false },
               ].map(p => (
                 <article key={p.key} className={`mk-price${p.featured ? " featured" : ""}`}>
@@ -4012,7 +4183,7 @@ function PaywallGate({ user, activating, onSelectPlan, onLogout }) {
                   <div>
                     <div style={{ fontSize:10, letterSpacing:"0.16em", textTransform:"uppercase", color:C.platinum, fontWeight:600, marginBottom:4 }}>{pl.name}</div>
                     <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:22, color:C.text }}>
-                      ${pl.usd.toLocaleString()} <span style={{ fontSize:12, color:C.text3 }}>{pl.period}</span>
+                      US${pl.usd.toLocaleString()} <span style={{ fontSize:12, color:C.text3 }}>{pl.period}</span>
                     </div>
                   </div>
                   <button className={`btn ${p.hot ? "btn-primary" : "btn-outline"}`} style={{ padding:"10px 22px", fontSize:11, whiteSpace:"nowrap" }} onClick={() => onSelectPlan(p.key)}
@@ -4036,7 +4207,7 @@ function PaywallGate({ user, activating, onSelectPlan, onLogout }) {
             <div>
               <div style={{ fontSize:10, letterSpacing:"0.16em", textTransform:"uppercase", color:C.platinum, fontWeight:600, marginBottom:4 }}>{DIAGNOSTIC.name}</div>
               <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:22, color:C.text }}>
-                ${DIAGNOSTIC.usd.toLocaleString()} <span style={{ fontSize:12, color:C.text3 }}>once, not a subscription</span>
+                US${DIAGNOSTIC.usd.toLocaleString()} <span style={{ fontSize:12, color:C.text3 }}>once, not a subscription</span>
               </div>
             </div>
             <button className="btn btn-outline" style={{ padding:"10px 22px", fontSize:11, whiteSpace:"nowrap" }} onClick={() => onSelectPlan("diagnostic")}>

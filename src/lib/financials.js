@@ -2,17 +2,92 @@
 // Extracted from src/App.jsx so this math can be unit tested independently
 // of React rendering — this is the code founders' real decisions run on.
 
-export const fmt  = n => new Intl.NumberFormat("en-US",{style:"currency",currency:"USD",maximumFractionDigits:0}).format(Number(n)||0);
+// ─── MONEY ──────────────────────────────────────────────────────
+// A business keeps its books in one base currency (ISO 4217), chosen by the
+// founder, and every figure is shown in it. Amounts are never converted:
+// a transaction in another currency is stored as it arrived and left out of
+// the metrics, with a notice, because adding rand to dollars produces a
+// number that is wrong in both.
+//
+// To support a currency: add it here, and widen the database's
+// `*_currency_check` constraints first (see the business-currency migration).
+// `materialMove` is the smallest month-on-month change in net burn worth
+// reporting as a trend, in that currency's own units. It is a materiality
+// judgment set by hand per currency, not an exchange rate.
+export const SUPPORTED_CURRENCIES = [
+  { code: "USD", name: "US dollar",          locale: "en-US", materialMove: 500 },
+  { code: "ZAR", name: "South African rand", locale: "en-ZA", materialMove: 10000 },
+];
+const CURRENCY_BY_CODE = Object.fromEntries(SUPPORTED_CURRENCIES.map(c => [c.code, c]));
+export const isSupportedCurrency = code => Object.prototype.hasOwnProperty.call(CURRENCY_BY_CODE, code);
+
+const moneyFormatters = new Map();
+function moneyFormatter(currency, compact) {
+  const key = `${currency}|${compact ? "c" : ""}`;
+  if (!moneyFormatters.has(key)) {
+    const base = compact ? { notation: "compact", maximumFractionDigits: 1 } : { maximumFractionDigits: 0 };
+    let f;
+    if (!currency) {
+      // No currency chosen yet: a bare number, never a guessed symbol.
+      f = new Intl.NumberFormat("en-US", base);
+    } else {
+      try {
+        f = new Intl.NumberFormat(CURRENCY_BY_CODE[currency]?.locale || "en-US", { style: "currency", currency, ...base });
+      } catch {
+        // Not an ISO code Intl knows. Show the code beside the number rather
+        // than a symbol that could belong to another currency.
+        const plain = new Intl.NumberFormat("en-US", base);
+        f = { format: v => `${currency} ${plain.format(v)}` };
+      }
+    }
+    moneyFormatters.set(key, f);
+  }
+  return moneyFormatters.get(key);
+}
+
+// `currency` is the ISO code of the amount. It defaults to USD only so that
+// older callers and tests keep their meaning; every call in App.jsx passes
+// it explicitly (workspace.test.js enforces that). `null` means the founder
+// has not chosen a currency yet, and prints the number without a symbol.
+export const fmt = (n, currency = "USD") => moneyFormatter(currency, false).format(Number(n) || 0);
 export const pc   = n => `${(Number(n)||0).toFixed(1)}%`;
-// Large amounts in compact form ("$1.2M") where a tile has no room for every
-// digit. Below $100k the full figure is short enough and more useful, so a
-// $5k/month business still sees exact numbers.
-export const fmtCompact = n => {
+// Large amounts in compact form ("$1.2M", "R 1,2M") where a tile has no room
+// for every digit. Below 100,000 units the full figure is short enough and
+// more useful, so a small business still sees exact numbers.
+export const fmtCompact = (n, currency = "USD") => {
   const v = Number(n) || 0;
-  return Math.abs(v) >= 100000
-    ? new Intl.NumberFormat("en-US",{style:"currency",currency:"USD",notation:"compact",maximumFractionDigits:1}).format(v)
-    : fmt(v);
+  return Math.abs(v) >= 100000 ? moneyFormatter(currency, true).format(v) : fmt(v, currency);
 };
+// The symbol a currency is written with in its own locale ("$", "R"), for
+// labels such as "Monthly revenue (R)". Falls back to the ISO code.
+export function currencySymbol(currency) {
+  if (!currency) return "";
+  try {
+    const parts = new Intl.NumberFormat(CURRENCY_BY_CODE[currency]?.locale || "en-US", { style: "currency", currency }).formatToParts(1);
+    return parts.find(p => p.type === "currency")?.value || currency;
+  } catch { return currency; }
+}
+export const currencyName = code => CURRENCY_BY_CODE[code]?.name || code || "No currency chosen";
+
+// Splits stored transactions into those in the base currency, which every
+// metric is computed from, and those in any other currency, which are kept
+// and listed but never added in. A row with no currency is not assumed to
+// be in the base currency.
+export function partitionByCurrency(transactions, baseCurrency) {
+  const included = [];
+  const excludedCounts = {};
+  (transactions || []).forEach(t => {
+    if (baseCurrency && t.currency === baseCurrency) included.push(t);
+    else {
+      const code = t.currency || "unlabelled";
+      excludedCounts[code] = (excludedCounts[code] || 0) + 1;
+    }
+  });
+  const excluded = Object.entries(excludedCounts)
+    .map(([currency, count]) => ({ currency, count }))
+    .sort((a, b) => b.count - a.count);
+  return { included, excluded, excludedTotal: (transactions || []).length - included.length };
+}
 export const safe = n => { const v=Number(n); return isNaN(v)||!isFinite(v)?0:v; };
 
 const EXPENSE_CATEGORIES = {
@@ -605,7 +680,7 @@ export function computeForwardRunway({ currentCash, avgRev, avgExp, obligations,
 // forward calendar (real obligations on their real dates), not against a
 // flat current-cash check. Layers a synthetic monthly obligation onto the
 // existing ones and re-runs the same simulation over a 12-month horizon.
-export function checkAffordability({ currentCash, avgRev, avgExp, obligations, monthlyCost, fromDate }) {
+export function checkAffordability({ currentCash, avgRev, avgExp, obligations, monthlyCost, fromDate, currency = "USD" }) {
   // No cash balance on file (0 is how "not entered" arrives) leaves nothing
   // to simulate from: the run would start at $0 and call every cost
   // unaffordable on day one, even for a profitable business. Answer from
@@ -617,8 +692,8 @@ export function checkAffordability({ currentCash, avgRev, avgExp, obligations, m
     return {
       affordable: covered, needsCash: true,
       message: covered
-        ? `Your average monthly profit (${fmt(monthlyProfit)}) covers this. Add a cash balance to also test it against your bills on their real dates.`
-        : `This is more than your average monthly profit (${fmt(Math.max(0, monthlyProfit))}) covers, and with no cash balance entered there is nothing to fund the gap. Add a cash balance to see how long it would last.`,
+        ? `Your average monthly profit (${fmt(monthlyProfit, currency)}) covers this. Add a cash balance to also test it against your bills on their real dates.`
+        : `This is more than your average monthly profit (${fmt(Math.max(0, monthlyProfit), currency)}) covers, and with no cash balance entered there is nothing to fund the gap. Add a cash balance to see how long it would last.`,
     };
   }
   const horizonDays = 365;
@@ -661,7 +736,134 @@ export function detectMissedObligations(obligations, asOf) {
 //   - Tab-separated files
 //   - Semicolon-separated files
 
-export const parseAnyCSV = (text) => {
+// ─── AMOUNT PARSING ─────────────────────────────────────────────
+// Exports write money in many ways: "$1,234.56", "R 1 234,56", "1.234,56",
+// "(1,234.56)", "1,234.56 Cr", "1,000.00 Dr", "ZAR 1500.00". Both parsers
+// read amounts through parseAmount(), so they can never disagree.
+//
+// Whether "," or "." is the decimal mark is decided once per column from
+// every value in it (detectDecimalStyle), because a lone "1,234" cannot say
+// which it is. A column that never settles it keeps the dot reading, which
+// is how every file was read before comma decimals were supported.
+//
+// A marker on the amount ("R", "$", "ZAR") or a Currency column records the
+// row's currency. It is never used to convert anything.
+
+// Longest first, so "US$" is not read as "$" and "R$" (Brazilian real) is
+// not read as "R" (rand). A bare "$" is taken as US dollars.
+const CURRENCY_MARKERS = [
+  ["US$", "USD"], ["AU$", "AUD"], ["CA$", "CAD"], ["NZ$", "NZD"],
+  ["A$", "AUD"], ["C$", "CAD"], ["R$", "BRL"],
+  ["$", "USD"], ["€", "EUR"], ["£", "GBP"], ["R", "ZAR"],
+];
+
+// A Currency column's value ("ZAR", "zar", "R", "$") as an ISO code, or null.
+export function currencyCode(val) {
+  const s = String(val ?? "").trim();
+  if (/^[A-Za-z]{3}$/.test(s)) return s.toUpperCase();
+  const marker = CURRENCY_MARKERS.find(([sym]) => sym === s);
+  return marker ? marker[1] : null;
+}
+
+// Strips signs, Cr/Dr, currency codes and symbols from an amount, leaving
+// only digits and separators in `core`.
+function amountCore(raw) {
+  let s = String(raw ?? "").replace(/[   ]/g, " ").trim();
+  if (s === "" || s === "-" || s === "—" || s === "–") return { empty: true, core: "", negative: false, currency: null };
+  let negative = false;
+  let currency = null;
+  const paren = s.match(/^\((.*)\)$/);
+  if (paren) { negative = true; s = paren[1].trim(); }
+  // An ISO code before or after the number: "ZAR 1500.00", "1500.00 USD".
+  let m = s.match(/^([A-Z]{3})\s*([-+(]?[\d.,].*)$/);
+  if (m) { currency = m[1]; s = m[2].trim(); }
+  else {
+    m = s.match(/^(.*[\d.,)])\s*([A-Z]{3})$/);
+    if (m) { currency = m[2]; s = m[1].trim(); }
+  }
+  // Bank statements mark direction with a suffix: Cr is money in, Dr money out.
+  m = s.match(/^(.*?)\s*(cr|dr)\.?$/i);
+  if (m && /[\d]/.test(m[1])) { if (m[2].toLowerCase() === "dr") negative = true; s = m[1].trim(); }
+  const takeSign = () => {
+    if (s.startsWith("-")) { negative = true; s = s.slice(1).trim(); }
+    else if (s.startsWith("+")) s = s.slice(1).trim();
+  };
+  takeSign();
+  const prefix = CURRENCY_MARKERS.find(([sym]) => s.startsWith(sym));
+  if (prefix) { currency = currency || prefix[1]; s = s.slice(prefix[0].length).trim(); takeSign(); }
+  if (s.endsWith("-")) { negative = true; s = s.slice(0, -1).trim(); }
+  const suffix = CURRENCY_MARKERS.find(([sym]) => s.endsWith(sym) && /[\d.,]\s*$/.test(s.slice(0, -sym.length)));
+  if (suffix) { currency = currency || suffix[1]; s = s.slice(0, -suffix[0].length).trim(); }
+  const paren2 = s.match(/^\((.*)\)$/);
+  if (paren2) { negative = true; s = paren2[1].trim(); }
+  return { empty: false, core: s.replace(/[\s']/g, ""), negative, currency };
+}
+
+// "comma" when the column writes decimals with a comma ("1 234,56",
+// "1.234,56", "250,75"), otherwise "dot".
+export function detectDecimalStyle(values) {
+  let comma = 0, dot = 0;
+  (values || []).forEach(v => {
+    const { core } = amountCore(v);
+    const lastComma = core.lastIndexOf(",");
+    const lastDot = core.lastIndexOf(".");
+    if (lastComma >= 0 && lastDot >= 0) { if (lastComma > lastDot) comma++; else dot++; return; }
+    if (lastComma >= 0) {
+      if ((core.match(/,/g) || []).length > 1) dot++;           // 1,234,567: commas group thousands
+      else if (core.length - lastComma - 1 !== 3) comma++;      // 250,75
+      // exactly three digits after one comma fits either reading: no vote
+    } else if (lastDot >= 0) {
+      if ((core.match(/\./g) || []).length > 1) comma++;        // 1.234.567: dots group thousands
+      else if (core.length - lastDot - 1 !== 3) dot++;          // 250.75
+    }
+  });
+  return comma > dot ? "comma" : "dot";
+}
+
+// One amount as { value, currency, ok }. An empty cell is 0 and ok; text
+// that is not a number is 0 and not ok, so the caller can count it rather
+// than silently treating it as zero.
+export function parseAmount(raw, decimalStyle = "dot") {
+  const a = amountCore(raw);
+  if (a.empty) return { value: 0, currency: null, ok: true };
+  let s = a.core;
+  if (!/^[\d.,]*\d[\d.,]*$/.test(s)) return { value: 0, currency: a.currency, ok: false };
+  s = decimalStyle === "comma" ? s.replace(/\./g, "").replace(",", ".") : s.replace(/,/g, "");
+  if (!/^\d*\.?\d+$|^\d+\.$/.test(s)) return { value: 0, currency: a.currency, ok: false };
+  const n = Number(s);
+  if (!Number.isFinite(n)) return { value: 0, currency: a.currency, ok: false };
+  return { value: a.negative ? -n : n, currency: a.currency, ok: true };
+}
+
+// Reads amounts from one parsed sheet, deciding each column's decimal mark
+// from the whole column the first time it is read.
+function columnAmountReader(dataRows) {
+  const styles = new Map();
+  return (row, col) => {
+    if (col === -1) return { value: 0, currency: null, ok: true };
+    if (!styles.has(col)) styles.set(col, detectDecimalStyle(dataRows.map(r => r[col])));
+    return parseAmount(row[col], styles.get(col));
+  };
+}
+
+const CURRENCY_HEADERS = ["currency", "ccy", "curr", "cur", "currency code"];
+
+// The currency a row declares, from its Currency column or a marker on any
+// of its amounts, or null when it declares none.
+function rowDeclaredCurrency(row, currencyCol, amountCols) {
+  if (currencyCol !== -1) {
+    const code = currencyCode(row[currencyCol]);
+    if (code) return code;
+  }
+  for (const col of amountCols) {
+    if (col === -1) continue;
+    const c = amountCore(row[col]).currency;
+    if (c) return c;
+  }
+  return null;
+}
+
+export const parseAnyCSV = (text, options = {}) => {
   // ── Detect delimiter ─────────────────────────────────────────
   const firstLine = text.trim().split(/\r?\n/)[0] || "";
   const delimiter = firstLine.includes("\t") ? "\t" : firstLine.includes(";") ? ";" : ",";
@@ -716,16 +918,27 @@ export const parseAnyCSV = (text) => {
   const balanceCol = findCol(["balance","running balance","closing balance","available"]);
   const revenueCol = findCol(["revenue","income","sales","turnover","gross sales","total income","receipts earned"]);
   const expenseCol = findCol(["expenses","expense","costs","total expenses","expenditure","overheads","total costs"]);
+  const currencyCol = headers.findIndex(h => CURRENCY_HEADERS.includes(h));
 
-  // ── Parse a number cleanly from any format ────────────────────
-  const toNum = (val) => {
-    if (val === undefined || val === null || val === "" || val === "-" || val === "—") return 0;
-    const cleaned = String(val)
-      .replace(/[R$£€\s,]/g, "")      // Remove currency symbols and commas
-      .replace(/\(([^)]+)\)/, "-$1"); // (1234) = -1234
-    const n = Number(cleaned);
-    return isNaN(n) ? 0 : n;
+  // ── Amounts, and the one currency these monthly totals are in ─
+  // Monthly buckets add rows together, so they may only hold one currency:
+  // the one the caller names, else the one most rows declare. Rows that
+  // declare another are left out and counted, never added in.
+  const readAmount = columnAmountReader(dataRows);
+  let unreadable = 0;
+  const toNum = (row, col) => {
+    const a = readAmount(row, col);
+    if (!a.ok) unreadable++;
+    return a.value;
   };
+  const amountCols = [revenueCol, expenseCol, debitCol, creditCol, amountCol];
+  let currency = options.currency || null;
+  if (!currency) {
+    const counts = {};
+    dataRows.forEach(r => { const c = rowDeclaredCurrency(r, currencyCol, amountCols); if (c) counts[c] = (counts[c] || 0) + 1; });
+    currency = Object.keys(counts).sort((a, b) => counts[b] - counts[a])[0] || null;
+  }
+  const excludedCounts = {};
 
   // ── Parse a date and return YYYY-MM ──────────────────────────
   const toMonthKey = (val) => {
@@ -800,21 +1013,19 @@ export const parseAnyCSV = (text) => {
 
     if (isNamedMode) {
       // Structured export — named columns
-      revenue  = Math.abs(toNum(row[revenueCol]));
-      expenses = Math.abs(toNum(row[expenseCol]));
-      if (balanceCol !== -1) cash = toNum(row[balanceCol]);
+      revenue  = Math.abs(toNum(row, revenueCol));
+      expenses = Math.abs(toNum(row, expenseCol));
 
     } else if (isSplitMode) {
       // Debit/Credit columns
-      const debit  = Math.abs(toNum(row[debitCol]));
-      const credit = Math.abs(toNum(row[creditCol]));
+      const debit  = Math.abs(toNum(row, debitCol));
+      const credit = Math.abs(toNum(row, creditCol));
       expenses = debit;
       revenue  = credit;
-      if (balanceCol !== -1) cash = toNum(row[balanceCol]);
 
     } else if (isBankMode) {
       // Single amount column — positive = in, negative = out
-      const amt = toNum(row[amountCol]);
+      const amt = toNum(row, amountCol);
       if (amt > 0) {
         // Money in — classify as revenue unless description says otherwise
         revenue = amt;
@@ -822,11 +1033,17 @@ export const parseAnyCSV = (text) => {
         // Money out — classify as expense
         expenses = Math.abs(amt);
       }
-      if (balanceCol !== -1) cash = toNum(row[balanceCol]);
     }
+    if (balanceCol !== -1) cash = readAmount(row, balanceCol).value;
 
     // Skip rows with no financial data
     if (revenue === 0 && expenses === 0) return;
+
+    const rowCurrency = rowDeclaredCurrency(row, currencyCol, amountCols);
+    if (currency && rowCurrency && rowCurrency !== currency) {
+      excludedCounts[rowCurrency] = (excludedCounts[rowCurrency] || 0) + 1;
+      return;
+    }
 
     // Bucket by month
     if (!monthBuckets[monthKey]) {
@@ -885,7 +1102,8 @@ export const parseAnyCSV = (text) => {
   if (descCol !== -1)  detectedFields.push("Categories");
   if (balanceCol !== -1) detectedFields.push("Balance");
 
-  return { rows, detectedFields, mode: isNamedMode?"named":isSplitMode?"split":"bank" };
+  const excluded = Object.entries(excludedCounts).map(([code, count]) => ({ currency: code, count }));
+  return { rows, detectedFields, mode: isNamedMode?"named":isSplitMode?"split":"bank", currency, excluded, unreadable };
 };
 
 // ─── TRANSACTION EVENT PARSER ───────────────────────────────────
@@ -894,7 +1112,7 @@ export const parseAnyCSV = (text) => {
 // transaction event store — the DB is the source of truth, and monthly
 // aggregation happens as a read-time derivation (aggregateTransactionsByMonth),
 // never as something stored.
-export const parseTransactions = (text) => {
+export const parseTransactions = (text, options = {}) => {
   const firstLine = text.trim().split(/\r?\n/)[0] || "";
   const delimiter = firstLine.includes("\t") ? "\t" : firstLine.includes(";") ? ";" : ",";
 
@@ -939,13 +1157,19 @@ export const parseTransactions = (text) => {
   const creditCol  = findCol(["credit","credit amount","deposit","in","receipts","money in"]);
   const revenueCol = findCol(["revenue","income","sales","turnover","gross sales","total income","receipts earned"]);
   const expenseCol = findCol(["expenses","expense","costs","total expenses","expenditure","overheads","total costs"]);
+  const currencyCol = headers.findIndex(h => CURRENCY_HEADERS.includes(h));
 
-  const toNum = (val) => {
-    if (val === undefined || val === null || val === "" || val === "-" || val === "—") return 0;
-    const cleaned = String(val).replace(/[R$£€\s,]/g, "").replace(/\(([^)]+)\)/, "-$1");
-    const n = Number(cleaned);
-    return isNaN(n) ? 0 : n;
+  // Each transaction keeps the currency it arrived in: the one its row
+  // declares, else the one the founder said the file is in, else null.
+  // Nothing is converted.
+  const readAmount = columnAmountReader(dataRows);
+  let unreadable = 0;
+  const toNum = (row, col) => {
+    const a = readAmount(row, col);
+    if (!a.ok) unreadable++;
+    return a.value;
   };
+  const amountCols = [revenueCol, expenseCol, debitCol, creditCol, amountCol];
 
   // Full date (YYYY-MM-DD), unlike parseAnyCSV's month-only key — a real
   // event store needs the actual day, both for display and because it's
@@ -987,11 +1211,11 @@ export const parseTransactions = (text) => {
 
     let amount = 0;
     if (isNamedMode) {
-      amount = Math.abs(toNum(row[revenueCol])) - Math.abs(toNum(row[expenseCol]));
+      amount = Math.abs(toNum(row, revenueCol)) - Math.abs(toNum(row, expenseCol));
     } else if (isSplitMode) {
-      amount = Math.abs(toNum(row[creditCol])) - Math.abs(toNum(row[debitCol]));
+      amount = Math.abs(toNum(row, creditCol)) - Math.abs(toNum(row, debitCol));
     } else if (isBankMode) {
-      amount = toNum(row[amountCol]);
+      amount = toNum(row, amountCol);
     }
     if (amount === 0) return;
 
@@ -999,13 +1223,14 @@ export const parseTransactions = (text) => {
       txn_date: txnDate,
       description: desc,
       amount: Math.round(amount * 100) / 100,
+      currency: rowDeclaredCurrency(row, currencyCol, amountCols) || options.currency || null,
       category: amount < 0 ? detectExpenseCategory(desc) : null,
       counterparty: amount > 0 ? extractCounterparty(desc) : null,
     });
   });
 
   if (transactions.length === 0) return null;
-  return { transactions, mode: isNamedMode ? "named" : isSplitMode ? "split" : "bank" };
+  return { transactions, mode: isNamedMode ? "named" : isSplitMode ? "split" : "bank", unreadable };
 };
 
 // ─── DEDUPLICATION ──────────────────────────────────────────────
@@ -1195,7 +1420,7 @@ export function computeRiskScore({ cashFlowPositive, burnMonths, runwayKnown = t
 // real, but it isn't necessarily a new problem, and the founder should
 // see both facts. Expense-category creep isn't annotated: it isn't a
 // consequence of revenue seasonality the way margin and burn are.
-export function detectTrends(rows, seasonalPattern = null) {
+export function detectTrends(rows, seasonalPattern = null, currency = "USD") {
   if (!rows || rows.length < 3) return [];
   const trends = [];
 
@@ -1238,11 +1463,12 @@ export function detectTrends(rows, seasonalPattern = null) {
     const prior = burns.slice(0, -1);
     const avgPrior = prior.reduce((s, v) => s + v, 0) / prior.length;
     const delta = latest - avgPrior;
-    if (Math.abs(delta) >= Math.max(500, Math.abs(avgPrior) * 0.15)) {
+    const materialMove = CURRENCY_BY_CODE[currency]?.materialMove ?? CURRENCY_BY_CODE.USD.materialMove;
+    if (Math.abs(delta) >= Math.max(materialMove, Math.abs(avgPrior) * 0.15)) {
       trends.push({
         type: "burn",
         direction: delta < 0 ? "improving" : "worsening",
-        message: `Net burn ${delta < 0 ? "improved" : "worsened"} to ${fmt(latest)}/mo this month, vs a ${fmt(avgPrior)}/mo average.`,
+        message: `Net burn ${delta < 0 ? "improved" : "worsened"} to ${fmt(latest, currency)}/mo this month, vs a ${fmt(avgPrior, currency)}/mo average.`,
       });
     }
   }
@@ -1319,7 +1545,7 @@ export function capSeverityForVolume(severity, months) {
 // outside this function because it needs transaction descriptions, which
 // monthly-aggregated `rows` never carry.
 export function computeMetrics(rows, manual, mode, context = {}) {
-  const { lastTxnDate = null, revenueConcentration = null } = context;
+  const { lastTxnDate = null, revenueConcentration = null, currency = "USD" } = context;
   const { mRev, mExp, mCash, mCac, mLtv, mLeads, mClose } = manual;
 
   const tr = mode === "safe" ? 0.30 : 0.25;
@@ -1420,7 +1646,7 @@ export function computeMetrics(rows, manual, mode, context = {}) {
   const dataConfidence = !rows ? "low" : n >= 3 ? "high" : "medium";
 
   const growth = computeGrowthScore(rows, vel, seasonalAdjustedVel);
-  const trends = detectTrends(rows, seasonalPattern);
+  const trends = detectTrends(rows, seasonalPattern, currency);
   const risk = computeRiskScore({ cashFlowPositive, burnMonths, runwayKnown: activeCash > 0, concentration, concentrationReliable, ltvcac, margin, trends, growthScore: growth.score });
 
   // Long-run trajectory, seasonality, and a plain-language narrative —
@@ -1673,11 +1899,11 @@ export function buildFounderNarrative(trajectory, currentMargin) {
 // carries a stable `rule` id and a `targetMetric` naming which field of
 // the metrics object this call is trying to move, so an outcome can be
 // measured against the same value later without guessing.
-export function computeDirective({ margin, burnMonths, free, vel, conv, ltvcac, months, concentration }) {
+export function computeDirective({ margin, burnMonths, free, vel, conv, ltvcac, months, concentration, currency = "USD" }) {
   const raw = (() => {
     if (safe(free) < 0) return {
       text: "Cut all non-essential spend before end of this week.",
-      reason: `Your True Free Cash is ${fmt(free)}. After tax obligations and safety buffer, you owe more than you earn. Every day of inaction erodes your position further.`,
+      reason: `Your True Free Cash is ${fmt(free, currency)}. After tax obligations and safety buffer, you owe more than you earn. Every day of inaction erodes your position further.`,
       severity: "critical", rule: "negative_free_cash", targetMetric: "free",
     };
     if (safe(burnMonths) > 0 && safe(burnMonths) < 3) return {
@@ -1752,7 +1978,7 @@ export function getDirectiveMetricValue(targetMetric, metrics, concentration) {
 }
 
 const DIRECTIVE_METRIC_LABELS = {
-  free: { label: "True Free Cash", fmt: fmt, higherIsBetter: true },
+  free: { label: "True Free Cash", fmt: (v, currency) => fmt(v, currency), higherIsBetter: true },
   burnMonths: { label: "Burn Runway", fmt: (v) => `${v.toFixed(1)} months`, higherIsBetter: true },
   concentration: { label: "Revenue concentration in your largest client", fmt: (v) => `${v.toFixed(1)}%`, higherIsBetter: false },
   ltvcac: { label: "LTV:CAC ratio", fmt: (v) => `${v.toFixed(1)}x`, higherIsBetter: true },
@@ -1765,7 +1991,7 @@ const DIRECTIVE_METRIC_LABELS = {
 // directive. State the fact and the consequence" applies just as much to
 // a directive they DID act on: the number either moved or it didn't, and
 // that's what gets said, independent of the action they logged.
-export function describeDirectiveOutcome(directive) {
+export function describeDirectiveOutcome(directive, currency = "USD") {
   const meta = DIRECTIVE_METRIC_LABELS[directive?.target_metric] || null;
   if (directive?.outcome_metric === null || directive?.outcome_metric === undefined || !meta) {
     const daysSince = directive?.issued_at
@@ -1788,8 +2014,8 @@ export function describeDirectiveOutcome(directive) {
     status: "measured",
     improved: unchanged ? null : improved,
     message: unchanged
-      ? `${meta.label} has not moved: still ${meta.fmt(after)}.`
-      : `${meta.label} moved from ${meta.fmt(before)} to ${meta.fmt(after)}.`,
+      ? `${meta.label} has not moved: still ${meta.fmt(after, currency)}.`
+      : `${meta.label} moved from ${meta.fmt(before, currency)} to ${meta.fmt(after, currency)}.`,
   };
 }
 
@@ -1872,7 +2098,7 @@ export function searchWorkspace(query, { transactions = [], destinations = [], l
 export function buildAlerts({
   hasData = false, missedObligations = [], currentDirective = null,
   needsAcknowledgement = false, latestDirective = null, lastTxnDate = null,
-  today, showForwardRunway = false, forwardRunway = null, directives = [],
+  today, showForwardRunway = false, forwardRunway = null, directives = [], currency = "USD",
 } = {}) {
   const alerts = [];
   if (!hasData) {
@@ -1908,7 +2134,7 @@ export function buildAlerts({
     (directives || [])
       .filter(d => d.outcome_at && daysBetween(String(d.outcome_at).slice(0, 10), today) <= 14)
       .forEach(d => alerts.push({ id: `outcome-${d.id}`, severity: "info", title: "Directive outcome measured",
-        detail: `"${d.directive_text}": ${describeDirectiveOutcome(d).message}`, section: "decisions" }));
+        detail: `"${d.directive_text}": ${describeDirectiveOutcome(d, currency).message}`, section: "decisions" }));
   }
   const rank = { critical: 0, warning: 1, info: 2 };
   return alerts.sort((a, b) => rank[a.severity] - rank[b.severity]);
@@ -1928,9 +2154,12 @@ function csvCell(v) {
   return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
-export function buildReportCsv({ title = "Command Ledger financial summary", periodLabel = "", generatedAt = "", rows = [], summary = [] } = {}) {
-  const lines = [[title], ["Period", periodLabel], ["Generated", generatedAt], [],
-    ["Month", "Revenue", "Expenses", "Net", "Margin %"]];
+export function buildReportCsv({ title = "Command Ledger financial summary", periodLabel = "", generatedAt = "", rows = [], summary = [], currency = "USD" } = {}) {
+  // Every amount in the file is in one currency, named in its own row and in
+  // each money column, so a spreadsheet total can never mix currencies.
+  const unit = currency || "no currency chosen";
+  const lines = [[title], ["Period", periodLabel], ["Currency", unit], ["Generated", generatedAt], [],
+    ["Month", `Revenue (${unit})`, `Expenses (${unit})`, `Net (${unit})`, "Margin %"]];
   let rev = 0, exp = 0;
   (rows || []).forEach(r => {
     const net = (r.revenue || 0) - (r.expenses || 0);

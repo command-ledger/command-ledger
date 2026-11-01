@@ -132,7 +132,26 @@ serve(async (req: Request) => {
       payroll, rent, marketing, software, cogs,
     } = body
 
-    const fmt = (n) => `$${Math.round(Number(n) || 0).toLocaleString("en-US")}`
+    // Every amount arrives in the business's own currency, chosen by the
+    // founder. Only a well-formed ISO 4217 code is used; anything else is
+    // treated as "not stated" and amounts are written as plain numbers, so
+    // the model is never handed a symbol that could be the wrong currency.
+    const currency = typeof body.currency === "string" && /^[A-Z]{3}$/.test(body.currency) ? body.currency : null
+    const CURRENCY_LOCALE: Record<string, string> = { USD: "en-US", ZAR: "en-ZA" }
+    const CURRENCY_NAME: Record<string, string> = { USD: "US dollars (USD)", ZAR: "South African rand (ZAR)" }
+    const fmt = (n) => {
+      const v = Math.round(Number(n) || 0)
+      if (!currency) return v.toLocaleString("en-US")
+      try {
+        return new Intl.NumberFormat(CURRENCY_LOCALE[currency] ?? "en-US", { style: "currency", currency, maximumFractionDigits: 0 })
+          .format(v).replace(/[\u00a0\u202f]/g, " ")
+      } catch {
+        return `${currency} ${v.toLocaleString("en-US")}`
+      }
+    }
+    const currencyLine = currency
+      ? `CURRENCY: Every amount below is in ${CURRENCY_NAME[currency] ?? currency}. Write every amount in ${currency}, in the same format as the figures below. Never convert, and never mention another currency.`
+      : "CURRENCY: Not stated. Write amounts as plain numbers with no currency symbol, and never assume dollars."
     const pct = (n) => `${Number(n || 0).toFixed(1)}%`
 
     // Narrates one confidence-gated metric for the prompt: a metric whose
@@ -244,10 +263,12 @@ Rules:
 - If a Missed Obligation is listed, treat it as an active, first-priority signal — a bill that stopped appearing on schedule is often the earliest sign of a cash problem, worth flagging even ahead of other observations.
 - Read DECISION HISTORY below and reference it directly, not generically. If the founder ignored the same or a substantially similar directive twice, say so plainly — name it. If they acted and the outcome shows improvement, confirm it worked and state the measured change. If they disagreed, treat their note as a real input to weigh, not something to override by default — their reasoning may be correct.
 - Never shame the founder for an ignored directive. State the fact and the consequence, nothing more — e.g. "You have not reduced X since the Y directive; Z has since moved from A to B," never a judgment about the founder's choice.
-- If SEASONAL CONTEXT is present below, the current month's dip or spike is an established, repeating pattern, not a new problem — never call it a decline, a red flag, or something to fix. Say plainly that it's seasonal and reference the historical pattern.`
+- If SEASONAL CONTEXT is present below, the current month's dip or spike is an established, repeating pattern, not a new problem — never call it a decline, a red flag, or something to fix. Say plainly that it's seasonal and reference the historical pattern.
+- Write every amount in the CURRENCY stated below, formatted exactly like the figures you are given. Never write a dollar sign unless that currency is USD, and never convert between currencies.`
 
     const userPrompt = `Here is the complete financial position of this business. Analyze it and tell the founder exactly what is happening and what to do:
 
+${currencyLine}
 REPORTING PERIOD: ${dataMonths} month(s) of data
 DATA CONFIDENCE: ${dataConfidence === "low" ? "Low — a single manually-entered snapshot, no transaction history" : dataConfidence === "medium" ? "Medium — real uploaded data, but under 3 months of history" : "High — real uploaded data with 3+ months of history"}
 ALLOCATION MODE: ${mode === "growth" ? "Aggressive (Growth)" : "Conservative (Safe)"}

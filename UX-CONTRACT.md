@@ -21,6 +21,10 @@ a defect, however good it looks. Visual rules live in `DESIGN.md`.
 6. **History and forecast stay apart.** The cash chart shows actual
    transactions only; projections live under Forecasts.
 7. **Model output is text.** AI briefs render as React text, never as HTML.
+8. **One currency per figure, never converted.** Every figure is in the
+   business currency chosen in Settings and carries its symbol. Transactions
+   in any other currency are listed in their own currency and counted in a
+   notice, never added in. Command Ledger's own prices are written "US$".
 
 ## Accessibility
 

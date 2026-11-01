@@ -118,3 +118,29 @@ describe("buildReportCsv", () => {
     expect(lines).toContain('Free cash,"-$5,000"');
   });
 });
+
+// Every figure App.jsx shows must name its currency. fmt() still defaults to
+// USD for older callers, so a call that forgets the currency would print "$"
+// beside rand figures without any error. This reads the source and fails on
+// any fmt( or fmtCompact( call with a single argument.
+describe("App.jsx money formatting", () => {
+  it("passes a currency to every fmt and fmtCompact call", async () => {
+    const { readFileSync } = await import("node:fs");
+    const src = readFileSync(new URL("../App.jsx", import.meta.url), "utf8");
+    const missing = [];
+    const pattern = /(?<![.\w])(fmtCompact|fmt)\(/g;
+    let match;
+    while ((match = pattern.exec(src))) {
+      let depth = 1, i = pattern.lastIndex, comma = false;
+      while (depth > 0 && i < src.length) {
+        const ch = src[i];
+        if ("([{".includes(ch)) depth++;
+        else if (")]}".includes(ch)) depth--;
+        else if (ch === "," && depth === 1) comma = true;
+        i++;
+      }
+      if (!comma) missing.push(`line ${src.slice(0, match.index).split("\n").length}: ${src.slice(match.index, i)}`);
+    }
+    expect(missing).toEqual([]);
+  });
+});
