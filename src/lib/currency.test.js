@@ -235,3 +235,24 @@ describe("messages carry the business currency", () => {
     expect(csv).toContain("Month,Revenue (ZAR),Expenses (ZAR),Net (ZAR),Margin %");
   });
 });
+
+describe("a separate Dr/Cr column", () => {
+  it("signs unsigned amounts by their direction, and leaves blank directions as written", () => {
+    const csv = `Date,Description,Amount,Dr/Cr
+2026-04-03,Client,"1,500.00",Cr
+2026-04-04,Rent,800.00,Dr
+2026-04-05,Fee,-25.00,
+2026-04-06,Refund,40.00,C`;
+    expect(parseTransactions(csv, { currency: "ZAR" }).transactions.map(t => t.amount)).toEqual([1500, -800, -25, 40]);
+    const monthly = parseAnyCSV(csv, { currency: "ZAR" }).rows[0];
+    expect([monthly.revenue, monthly.expenses]).toEqual([1540, 825]);
+  });
+
+  it("reads the common header and value spellings", () => {
+    const csv = `Date,Description,Amount,Debit/Credit
+2026-04-03,Client,1500.00,Credit
+2026-04-04,Rent,800.00,Debit
+2026-04-05,Stock,300.00,DR.`;
+    expect(parseTransactions(csv).transactions.map(t => t.amount)).toEqual([1500, -800, -300]);
+  });
+});

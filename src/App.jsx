@@ -1473,6 +1473,13 @@ const sectionById = id => SECTIONS.find(s => s.id === id) || SECTIONS[0];
 const sectionFromPath = path => (SECTIONS.find(s => s.path === path) || SECTIONS[0]).id;
 const isAppPath = path => SECTIONS.some(s => s.path === path);
 
+// Public pages with their own address, so search engines can index them and
+// payment providers can link to them. Everything else a signed-out visitor
+// sees lives at "/".
+const LEGAL_PATHS = { "/terms": "terms", "/privacy": "privacy" };
+const PAGE_TITLES = { terms: "Terms of Service | Command Ledger", privacy: "Privacy Policy | Command Ledger" };
+const SITE_ORIGIN = "https://www.commandledger.com";
+
 // Words the header search maps to each section, so "runway" or "export"
 // finds the page that answers it.
 const SECTION_KEYWORDS = {
@@ -4077,8 +4084,8 @@ function MarketingSite({ onLogin, onPlanSelect, onTerms, onPrivacy }) {
             <div>
               <h5>Legal</h5>
               <ul>
-                <li><button onClick={onPrivacy}>Privacy policy</button></li>
-                <li><button onClick={onTerms}>Terms of service</button></li>
+                <li><a href="/privacy" onClick={e => { e.preventDefault(); onPrivacy(); }}>Privacy policy</a></li>
+                <li><a href="/terms" onClick={e => { e.preventDefault(); onTerms(); }}>Terms of service</a></li>
               </ul>
             </div>
           </div>
@@ -4134,9 +4141,9 @@ function PrivacyPage({ onBack }) {
       <LegalTop onBack={onBack}/>
       <main className="page-wrap">
         <h1 className="page-title">Privacy Policy</h1>
-        <div className="page-date">Last updated: June 2026</div>
+        <div className="page-date">Last updated: November 2026</div>
         <h2 className="page-h2">1. What We Collect</h2>
-        <p className="page-p">Name, email, and authentication details on sign-in. Financial data you upload or connect. Usage data such as features accessed and session duration.</p>
+        <p className="page-p">Name, email, and authentication details on sign-in. Financial data you upload. Usage data such as features accessed and session duration.</p>
         <h2 className="page-h2">2. How We Use It</h2>
         <p className="page-p">To provide the Service, process payments, deliver AI analysis, and send account updates. We do not sell your data.</p>
         <h2 className="page-h2">3. Security</h2>
@@ -4255,22 +4262,63 @@ export default function App() {
       setUser(u);
       setProfile(data);
       if (window.location.hash) window.history.replaceState(null, "", window.location.pathname);
-      setAppState("dashboard");
+      setAppState(LEGAL_PATHS[window.location.pathname] || "dashboard");
     } catch (err) {
       console.error("Profile error:", err);
       // Fallback: still show the gate, never grant free access on error
       setUser(u);
       setProfile({ id:u.id, email:u.email, name:u.user_metadata?.full_name||u.email?.split("@")[0]||"Founder", plan:null });
-      setAppState("dashboard");
+      setAppState(LEGAL_PATHS[window.location.pathname] || "dashboard");
     }
   }, []);
 
   // Workspace paths (/dashboard, /reports ...) belong to the signed-in app.
-  // A signed-out visitor on one is shown the marketing site at "/".
+  // A signed-out visitor on one is shown the marketing site at "/". The
+  // legal pages keep their own address.
   const showMarketing = useCallback(() => {
+    const legal = LEGAL_PATHS[window.location.pathname];
+    if (legal) { setAppState(legal); return; }
     if (isAppPath(window.location.pathname)) window.history.replaceState(null, "", "/");
     setAppState("marketing");
   }, []);
+
+  const openLegal = useCallback(page => {
+    if (window.location.pathname !== `/${page}`) window.history.pushState(null, "", `/${page}`);
+    setAppState(page);
+    window.scrollTo(0, 0);
+  }, []);
+  const closeLegal = useCallback(() => {
+    window.history.pushState(null, "", user ? "/dashboard" : "/");
+    setAppState(user ? "dashboard" : "marketing");
+    window.scrollTo(0, 0);
+  }, [user]);
+  // Back and forward between the site and a legal page. Inside the
+  // workspace, useSection handles its own paths.
+  useEffect(() => {
+    const onPop = () => {
+      const legal = LEGAL_PATHS[window.location.pathname];
+      if (legal) setAppState(legal);
+      else setAppState(s => (s === "terms" || s === "privacy") ? (user ? "dashboard" : "marketing") : s);
+    };
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, [user]);
+
+  // Search engines read each public page's title and canonical address after
+  // rendering. index.html cannot know the path, so they are set here; the
+  // workspace paths are kept out of search by vercel.json.
+  const defaultTitle = useRef(document.title);
+  useEffect(() => {
+    const legal = appState === "terms" || appState === "privacy";
+    document.title = legal ? PAGE_TITLES[appState] : defaultTitle.current;
+    let link = document.querySelector('link[rel="canonical"]');
+    if (!link) {
+      link = document.createElement("link");
+      link.rel = "canonical";
+      document.head.appendChild(link);
+    }
+    link.href = `${SITE_ORIGIN}${legal ? `/${appState}` : "/"}`;
+  }, [appState]);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -4368,7 +4416,7 @@ export default function App() {
         <PayModal planKey={payModal} currentPlanKey={profile?.plan || null} userEmail={user.email} userId={user.id} onClose={() => setPayModal(null)} onSuccess={handlePaySuccess}/>
       )}
       {appState==="marketing" && (
-        <MarketingSite onLogin={() => setAppState("login")} onPlanSelect={handlePlanSelect} onTerms={() => setAppState("terms")} onPrivacy={() => setAppState("privacy")}/>
+        <MarketingSite onLogin={() => setAppState("login")} onPlanSelect={handlePlanSelect} onTerms={() => openLegal("terms")} onPrivacy={() => openLegal("privacy")}/>
       )}
       {appState==="login" && (
         <LoginPage onBack={() => setAppState("marketing")}/>
@@ -4392,8 +4440,8 @@ export default function App() {
           />
         )
       )}
-      {appState==="terms"   && <TermsPage   onBack={() => setAppState("marketing")}/>}
-      {appState==="privacy" && <PrivacyPage onBack={() => setAppState("marketing")}/>}
+      {appState==="terms"   && <TermsPage   onBack={closeLegal}/>}
+      {appState==="privacy" && <PrivacyPage onBack={closeLegal}/>}
     </>
   );
 }

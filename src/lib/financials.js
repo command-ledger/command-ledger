@@ -848,6 +848,25 @@ function columnAmountReader(dataRows) {
 
 const CURRENCY_HEADERS = ["currency", "ccy", "curr", "cur", "currency code"];
 
+// Some bank exports give an unsigned Amount and state its direction in a
+// column of its own ("Dr/Cr": Dr is money out, Cr money in). Headers arrive
+// lowercased with spaces, underscores and hyphens collapsed to one space.
+const DIRECTION_HEADERS = ["dr/cr", "cr/dr", "dr cr", "cr dr", "drcr", "crdr", "d/c", "c/d", "dr or cr", "cr or dr", "debit/credit", "credit/debit"];
+// +1 for money in, -1 for money out, 0 when the cell does not say.
+function directionSign(val) {
+  const v = String(val ?? "").trim().toLowerCase().replace(/\.$/, "");
+  if (["dr", "d", "debit"].includes(v)) return -1;
+  if (["cr", "c", "credit"].includes(v)) return 1;
+  return 0;
+}
+// Applies a Dr/Cr column to a bank-mode amount. A cell that says nothing
+// leaves the amount exactly as the file wrote it.
+function withDirection(amount, row, directionCol) {
+  if (directionCol === -1) return amount;
+  const sign = directionSign(row[directionCol]);
+  return sign === 0 ? amount : sign * Math.abs(amount);
+}
+
 // The currency a row declares, from its Currency column or a marker on any
 // of its amounts, or null when it declares none.
 function rowDeclaredCurrency(row, currencyCol, amountCols) {
@@ -919,6 +938,7 @@ export const parseAnyCSV = (text, options = {}) => {
   const revenueCol = findCol(["revenue","income","sales","turnover","gross sales","total income","receipts earned"]);
   const expenseCol = findCol(["expenses","expense","costs","total expenses","expenditure","overheads","total costs"]);
   const currencyCol = headers.findIndex(h => CURRENCY_HEADERS.includes(h));
+  const directionCol = headers.findIndex(h => DIRECTION_HEADERS.includes(h));
 
   // ── Amounts, and the one currency these monthly totals are in ─
   // Monthly buckets add rows together, so they may only hold one currency:
@@ -1025,7 +1045,7 @@ export const parseAnyCSV = (text, options = {}) => {
 
     } else if (isBankMode) {
       // Single amount column — positive = in, negative = out
-      const amt = toNum(row, amountCol);
+      const amt = withDirection(toNum(row, amountCol), row, directionCol);
       if (amt > 0) {
         // Money in — classify as revenue unless description says otherwise
         revenue = amt;
@@ -1158,6 +1178,7 @@ export const parseTransactions = (text, options = {}) => {
   const revenueCol = findCol(["revenue","income","sales","turnover","gross sales","total income","receipts earned"]);
   const expenseCol = findCol(["expenses","expense","costs","total expenses","expenditure","overheads","total costs"]);
   const currencyCol = headers.findIndex(h => CURRENCY_HEADERS.includes(h));
+  const directionCol = headers.findIndex(h => DIRECTION_HEADERS.includes(h));
 
   // Each transaction keeps the currency it arrived in: the one its row
   // declares, else the one the founder said the file is in, else null.
@@ -1215,7 +1236,7 @@ export const parseTransactions = (text, options = {}) => {
     } else if (isSplitMode) {
       amount = Math.abs(toNum(row, creditCol)) - Math.abs(toNum(row, debitCol));
     } else if (isBankMode) {
-      amount = toNum(row, amountCol);
+      amount = withDirection(toNum(row, amountCol), row, directionCol);
     }
     if (amount === 0) return;
 
