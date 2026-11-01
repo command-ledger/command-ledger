@@ -57,7 +57,7 @@ The one exception to the single-file rule is `src/lib/financials.js`, which hold
 
 **Edge Function secret naming is non-standard — check before assuming.** The PayPal client secret is stored under `PAYPAL_SECRET_ID`, not the more conventional `PAYPAL_CLIENT_SECRET`. `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` are injected automatically into every Edge Function and don't need to be set manually. `PAYPAL_API_BASE` defaults to the PayPal sandbox API if unset — it must be explicitly set to `https://api-m.paypal.com` for the webhook to verify events from a live PayPal app.
 
-**Deployment is Vercel**, with `vercel.json` rewriting all paths to `index.html` for SPA routing. Note that Vercel serves an existing static file before applying that rewrite — any file placed at the repo root (as `checkout.html` was, before it was removed as dead/misleading code) is still directly reachable at its own URL regardless of the rewrite rule, even if nothing in the app links to it.
+**Deployment is Vercel**, with `vercel.json` rewriting every path except `/_vercel/` to `index.html` for SPA routing. `/_vercel/` is left alone so Vercel Web Analytics (`/_vercel/insights/script.js`, loaded from `index.html`) answers 404 while Analytics is disabled for the project, instead of index.html arriving as a broken script; enabling Analytics in the Vercel dashboard starts counting with no deploy. Note that Vercel serves an existing static file before applying that rewrite — any file placed at the repo root (as `checkout.html` was, before it was removed as dead/misleading code) is still directly reachable at its own URL regardless of the rewrite rule, even if nothing in the app links to it.
 
 ## Development workflow
 
