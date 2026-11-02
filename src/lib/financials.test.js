@@ -1809,59 +1809,91 @@ describe("Excel upload contract (sheet_to_csv output)", () => {
 // ── Checkout price integrity ─────────────────────────────────────
 // The one bug class here that costs real money: the page promising one charge
 // while PayPal bills another. LIVE_SOFTWARE and LIVE_ADVISORY are the exact
-// plan summaries plan-pricing returned from live PayPal on 2026-09-13.
+// plan summaries plan-pricing returns from live PayPal on 2026-11-03; the
+// software plan adds 15% tax on top of US$99. RETIRED_ADVISORY is the
+// US$3,000 plan with a US$1,950 first month that Advisory used before, kept
+// to test the intro rule.
 describe("checkoutBlockReason", () => {
-  const software = { usd: 99, interval: "MONTH" };
-  // The page discloses Advisory's introductory first month (PLANS in App.jsx).
-  const advisory = { usd: 3000, interval: "MONTH", intro: { usd: 1950, months: 1 } };
-  const advisoryNoIntro = { usd: 3000, interval: "MONTH" };
-  const LIVE_SOFTWARE = { planKey:"software", planId:"P-8CD25808KD889454JNKS7S7I", name:"Command Essentials", status:"ACTIVE", amount:99, currency:"USD", intervalUnit:"MONTH", intervalCount:1, hasTrial:false, trials:[], setupFee:0 };
-  const LIVE_ADVISORY = { planKey:"advisory", planId:"P-7M170334YK027974RNITP7NY", name:"Command Pro", status:"ACTIVE", amount:3000, currency:"USD", intervalUnit:"MONTH", intervalCount:1, hasTrial:true, trials:[{ amount:1950, currency:"USD", intervalUnit:"MONTH", intervalCount:1, totalCycles:1 }], setupFee:0 };
+  // As in PLANS in App.jsx.
+  const software = { usd: 99, interval: "MONTH", tax: { percent: 15 } };
+  const advisory = { usd: 1500, interval: "MONTH" };
+  const withIntro = { usd: 3000, interval: "MONTH", intro: { usd: 1950, months: 1 } };
+  const withoutIntro = { usd: 3000, interval: "MONTH" };
+  const LIVE_SOFTWARE = { planKey:"software", planId:"P-8CD25808KD889454JNKS7S7I", name:"Command Ledger", status:"ACTIVE", amount:99, currency:"USD", intervalUnit:"MONTH", intervalCount:1, hasTrial:false, trials:[], setupFee:0, taxPercent:15, taxInclusive:false };
+  const LIVE_ADVISORY = { planKey:"advisory", planId:"P-2X763934UU660913BNLUSB7Q", name:"Command Advisory", status:"ACTIVE", amount:1500, currency:"USD", intervalUnit:"MONTH", intervalCount:1, hasTrial:false, trials:[], setupFee:0, taxPercent:0, taxInclusive:true };
+  const RETIRED_ADVISORY = { planKey:"advisory", planId:"P-7M170334YK027974RNITP7NY", name:"Command Advisory", status:"ACTIVE", amount:3000, currency:"USD", intervalUnit:"MONTH", intervalCount:1, hasTrial:true, trials:[{ amount:1950, currency:"USD", intervalUnit:"MONTH", intervalCount:1, totalCycles:1 }], setupFee:0, taxPercent:0, taxInclusive:true };
   const clean = over => ({ ...LIVE_SOFTWARE, ...over });
 
-  it("opens checkout for the live software plan, whose terms match the page exactly", () => {
+  it("opens the live software plan: US$99 plus the 15% tax the page discloses", () => {
     expect(checkoutBlockReason(software, LIVE_SOFTWARE)).toBeNull();
   });
 
-  it("opens the live advisory plan: PayPal bills exactly the disclosed US$1,950 first month, then US$3,000", () => {
+  it("opens the live US$1,500 advisory plan: no trial, no setup fee, no tax", () => {
     expect(checkoutBlockReason(advisory, LIVE_ADVISORY)).toBeNull();
   });
 
-  it("keeps advisory closed when the page does not disclose PayPal's trial month", () => {
-    expect(checkoutBlockReason(advisoryNoIntro, LIVE_ADVISORY)).toBe("first_charge_differs");
+  it("keeps the retired US$3,000 price closed against the new plan", () => {
+    expect(checkoutBlockReason(withoutIntro, LIVE_ADVISORY)).toBe("price_mismatch");
+  });
+
+  // ── Tax ──
+  it("blocks a page that hides tax PayPal adds on top", () => {
+    expect(checkoutBlockReason({ usd: 99, interval: "MONTH" }, LIVE_SOFTWARE)).toBe("tax_mismatch");
+  });
+
+  it("blocks a disclosed tax at a different rate, or one PayPal no longer adds", () => {
+    expect(checkoutBlockReason(software, clean({ taxPercent: 10 }))).toBe("tax_mismatch");
+    expect(checkoutBlockReason(software, clean({ taxPercent: 0, taxInclusive: true }))).toBe("tax_mismatch");
+  });
+
+  it("treats an inclusive tax as part of the price shown, needing no disclosure", () => {
+    expect(checkoutBlockReason(advisory, { ...LIVE_ADVISORY, taxPercent: 15, taxInclusive: true })).toBeNull();
+    expect(checkoutBlockReason(software, clean({ taxInclusive: true }))).toBe("tax_mismatch");
+  });
+
+  it("blocks when PayPal's tax could not be read, or was not reported at all", () => {
+    expect(checkoutBlockReason(software, clean({ taxPercent: null }))).toBe("price_unverified");
+    const { taxPercent: _omit, ...noTaxField } = LIVE_SOFTWARE;
+    expect(checkoutBlockReason(software, noTaxField)).toBe("price_unverified");
+  });
+
+  // ── Intro month ──
+  it("opens a plan whose page discloses PayPal's intro month exactly", () => {
+    expect(checkoutBlockReason(withIntro, RETIRED_ADVISORY)).toBeNull();
+  });
+
+  it("keeps a plan closed when the page does not disclose PayPal's trial month", () => {
+    expect(checkoutBlockReason(withoutIntro, RETIRED_ADVISORY)).toBe("first_charge_differs");
   });
 
   it("blocks a disclosed intro that PayPal no longer bills, since the page would promise a price nobody is charged", () => {
-    expect(checkoutBlockReason(advisory, { ...LIVE_ADVISORY, hasTrial:false, trials:[] })).toBe("first_charge_differs");
-  });
-
-  it("opens advisory without an intro once both the trial and the page's intro are removed", () => {
-    expect(checkoutBlockReason(advisoryNoIntro, { ...LIVE_ADVISORY, hasTrial:false, trials:[] })).toBeNull();
+    expect(checkoutBlockReason(withIntro, { ...RETIRED_ADVISORY, hasTrial:false, trials:[] })).toBe("first_charge_differs");
   });
 
   it("blocks any intro PayPal bills differently from the one the page states", () => {
-    const trial = over => ({ ...LIVE_ADVISORY, trials:[{ ...LIVE_ADVISORY.trials[0], ...over }] });
-    expect(checkoutBlockReason(advisory, trial({ amount: 1500 }))).toBe("first_charge_differs");
-    expect(checkoutBlockReason(advisory, trial({ amount: 0 }))).toBe("first_charge_differs");
-    expect(checkoutBlockReason(advisory, trial({ totalCycles: 2 }))).toBe("first_charge_differs");
-    expect(checkoutBlockReason(advisory, trial({ currency: "ZAR" }))).toBe("first_charge_differs");
-    expect(checkoutBlockReason(advisory, trial({ intervalUnit: "YEAR" }))).toBe("first_charge_differs");
-    expect(checkoutBlockReason(advisory, trial({ intervalCount: 3 }))).toBe("first_charge_differs");
-    expect(checkoutBlockReason(advisory, { ...LIVE_ADVISORY, trials:[LIVE_ADVISORY.trials[0], LIVE_ADVISORY.trials[0]] })).toBe("first_charge_differs");
-    expect(checkoutBlockReason(advisory, { ...LIVE_ADVISORY, trials:[] })).toBe("first_charge_differs");
+    const trial = over => ({ ...RETIRED_ADVISORY, trials:[{ ...RETIRED_ADVISORY.trials[0], ...over }] });
+    expect(checkoutBlockReason(withIntro, trial({ amount: 1500 }))).toBe("first_charge_differs");
+    expect(checkoutBlockReason(withIntro, trial({ amount: 0 }))).toBe("first_charge_differs");
+    expect(checkoutBlockReason(withIntro, trial({ totalCycles: 2 }))).toBe("first_charge_differs");
+    expect(checkoutBlockReason(withIntro, trial({ currency: "ZAR" }))).toBe("first_charge_differs");
+    expect(checkoutBlockReason(withIntro, trial({ intervalUnit: "YEAR" }))).toBe("first_charge_differs");
+    expect(checkoutBlockReason(withIntro, trial({ intervalCount: 3 }))).toBe("first_charge_differs");
+    expect(checkoutBlockReason(withIntro, { ...RETIRED_ADVISORY, trials:[RETIRED_ADVISORY.trials[0], RETIRED_ADVISORY.trials[0]] })).toBe("first_charge_differs");
   });
 
   it("still blocks a setup fee on a plan with a disclosed intro", () => {
-    expect(checkoutBlockReason(advisory, { ...LIVE_ADVISORY, setupFee: 100 })).toBe("first_charge_differs");
+    expect(checkoutBlockReason(withIntro, { ...RETIRED_ADVISORY, setupFee: 100 })).toBe("first_charge_differs");
   });
 
+  // ── Everything else ──
   it("blocks when PayPal bills a different recurring price than displayed", () => {
     expect(checkoutBlockReason(software, clean({ amount: 1250 }))).toBe("price_mismatch");
     expect(checkoutBlockReason(software, clean({ amount: 98.99 }))).toBe("price_mismatch");
   });
 
-  it("reports a wrong recurring price ahead of a trial, since it is the larger error", () => {
-    expect(checkoutBlockReason(advisory, { ...LIVE_ADVISORY, amount: 2475 })).toBe("price_mismatch");
+  it("reports a wrong recurring price ahead of a trial or tax, since it is the larger error", () => {
+    expect(checkoutBlockReason(withIntro, { ...RETIRED_ADVISORY, amount: 2475 })).toBe("price_mismatch");
+    expect(checkoutBlockReason(software, clean({ amount: 120, taxPercent: 10 }))).toBe("price_mismatch");
   });
 
   it("blocks a setup fee, and a setup fee that could not be read", () => {

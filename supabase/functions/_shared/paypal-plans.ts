@@ -15,18 +15,18 @@ export type PlanKey = "software" | "advisory"
 // Plans currently sold.
 export const CURRENT_PLAN_IDS: Record<PlanKey, string> = {
   software: "P-8CD25808KD889454JNKS7S7I",
-  advisory: "P-7M170334YK027974RNITP7NY",
+  advisory: "P-2X763934UU660913BNLUSB7Q", // US$1,500/month, created 2026-11-03
 }
 
 // Plans no longer sold. Kept so an existing subscriber's renewal still resolves
 // to an entitlement, mapped by what they bought rather than what they paid.
 // Remove an entry only once no live subscription remains on that plan.
 //
-// P-7M170334YK027974RNITP7NY is absent on purpose: it was sold as Command Pro
-// under the retired pricing and was repriced in place to become Command
-// Advisory, so it is a current plan and already maps to "advisory" above.
 const RETIRED_PLAN_IDS: Record<string, PlanKey> = {
   "P-1NE00583S5561651HNITP2ZI": "software", // Command Essentials — software only
+  // Sold as Command Pro, then repriced in place to Command Advisory at
+  // US$1,950 for the first month and US$3,000 after. Replaced on 2026-11-03.
+  "P-7M170334YK027974RNITP7NY": "advisory",
 }
 
 // Resolves a PayPal plan id to the entitlement it grants. Returns undefined for

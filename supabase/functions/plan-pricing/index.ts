@@ -65,7 +65,8 @@ async function getAccessToken(): Promise<string> {
 
 // Reduces PayPal's plan resource to the terms that decide what a subscriber is
 // charged. Only the REGULAR billing cycle carries the recurring price; a TRIAL
-// cycle or a setup fee means the first charge differs from that price.
+// cycle or a setup fee means the first charge differs from that price, and a
+// tax that is not inclusive is added on top of every charge.
 // deno-lint-ignore no-explicit-any
 function summarise(plan: any) {
   const cycles = Array.isArray(plan?.billing_cycles) ? plan.billing_cycles : []
@@ -104,6 +105,9 @@ function summarise(plan: any) {
     hasTrial: trials.length > 0,
     trials,
     setupFee: Number.isFinite(setupFee) ? setupFee : null,
+    // 0 when the plan carries no tax; null when PayPal's value is unreadable.
+    taxPercent: plan?.taxes ? (Number.isFinite(Number(plan.taxes.percentage)) ? Number(plan.taxes.percentage) : null) : 0,
+    taxInclusive: plan?.taxes ? plan.taxes.inclusive === true : true,
   }
 }
 

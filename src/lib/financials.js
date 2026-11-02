@@ -2057,8 +2057,13 @@ export function describeDirectiveOutcome(directive, currency = "USD") {
 // the plan's interval, for that many cycles. An undisclosed trial blocks even
 // when it favours the customer, and so does a disclosed intro that PayPal no
 // longer bills, because the page would then promise a price nobody is
-// charged. Checks run from the most serious disagreement to the least, so a
-// wrong recurring price is reported ahead of a trial.
+// charged. Tax works the same way: a tax PayPal adds on top of each charge
+// (not inclusive) must be disclosed as the plan's `tax` ({ percent }) at the
+// same rate, and a disclosed tax PayPal does not add blocks too; an inclusive
+// tax is already inside the price shown. A tax PayPal reports but plan-pricing
+// could not read blocks as unverified. Checks run from the most serious
+// disagreement to the least, so a wrong recurring price is reported ahead of
+// a trial.
 //
 // Returns null when checkout is safe, otherwise a machine-readable reason.
 export function checkoutBlockReason(plan, verified) {
@@ -2069,6 +2074,9 @@ export function checkoutBlockReason(plan, verified) {
   if (verified.intervalUnit !== (plan.interval || "MONTH") || verified.intervalCount !== 1) return "interval_mismatch";
   if (typeof verified.amount !== "number" || !Number.isFinite(verified.amount)) return "price_unverified";
   if (verified.amount !== plan.usd) return "price_mismatch";
+  if (typeof verified.taxPercent !== "number" || !Number.isFinite(verified.taxPercent)) return "price_unverified";
+  const taxAdded = verified.taxInclusive === true ? 0 : verified.taxPercent;
+  if (taxAdded !== (plan.tax ? plan.tax.percent : 0)) return "tax_mismatch";
   if (verified.setupFee !== 0) return "first_charge_differs";
   const trials = Array.isArray(verified.trials) ? verified.trials : [];
   if (plan.intro) {

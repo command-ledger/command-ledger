@@ -16,7 +16,10 @@ const PAYPAL_CLIENT_ID = import.meta.env.VITE_PAYPAL_CLIENT_ID;
 
 const PLANS = {
   software: {
-    name:"Command Ledger", usd:99, annualUsd:990, interval:"MONTH", period:"per month",
+    // `tax` mirrors the PayPal plan, which adds 15% on top of US$99. It is shown
+    // wherever this price is, and checkoutBlockReason() opens checkout only
+    // while PayPal's tax setting matches it exactly.
+    name:"Command Ledger", usd:99, annualUsd:990, interval:"MONTH", period:"per month", tax:{ percent:15 },
     tagline:"The system. Your numbers, read correctly, every week.",
     features:[
       "On-demand AI strategic brief",
@@ -28,30 +31,39 @@ const PLANS = {
       "Confidence scoring on every metric",
       "Decision log with outcome tracking",
       "CSV, Excel and live sheet sync",
+      "Email support, reply within 2 business days",
     ],
   },
   advisory: {
-    // `intro` is the first month PayPal bills before the regular price. It is
-    // shown wherever the price is, and checkoutBlockReason() opens checkout
-    // only while PayPal's trial cycle matches it exactly.
-    name:"Command Advisory", usd:3000, interval:"MONTH", period:"per month", seats:6, intro:{ usd:1950, months:1 },
+    // Taken by six clients at a time. No intro month and no tax on this plan;
+    // add either here only together with the matching PayPal setting.
+    name:"Command Advisory", usd:1500, interval:"MONTH", period:"per month", clients:6,
     tagline:"The system, plus the person who reads it with you.",
     features:[
       "Everything in Command Ledger",
-      "Done-for-you data configuration",
-      "Monthly 1:1 advisory call",
-      "Monthly written board report",
-      "Direct advisory line (email)",
-      "Priority 4-hour response",
+      "Your data processed every month",
+      "A 60-minute advisory call every month",
+      "A written board pack every month (2 to 4 pages)",
+      "A 12-month forecast, refreshed every quarter",
+      "Email line, reply within 24 hours on business days",
     ],
   },
 };
 
-// A plan's introductory terms in one sentence, or null when it has none:
+// What PayPal bills, in words. Every place a plan's price appears uses these,
+// so the page always states the first charge, any intro and any tax.
+const usd2 = n => n.toLocaleString("en-US", { minimumFractionDigits:2, maximumFractionDigits:2 });
+const priceWithTax = plan => Math.round(plan.usd * (100 + plan.tax.percent)) / 100;
+// "Plus 15% tax: US$113.85 per month in total."
+const taxTerms = plan => plan?.tax ? `Plus ${plan.tax.percent}% tax: US$${usd2(priceWithTax(plan))} ${plan.period} in total.` : null;
 // "US$1,950 for your first month, then US$3,000 per month."
 const introTerms = plan => plan?.intro
-  ? `US$${plan.intro.usd.toLocaleString()} for your ${plan.intro.months === 1 ? "first month" : `first ${plan.intro.months} months`}, then US$${plan.usd.toLocaleString()} ${plan.period}.`
+  ? `US$${plan.intro.usd.toLocaleString()} for your ${plan.intro.months === 1 ? "first month" : `first ${plan.intro.months} months`}, then US$${plan.usd.toLocaleString()} ${plan.period}.${plan.tax ? ` Plus ${plan.tax.percent}% tax on each charge.` : ""}`
   : null;
+// The confirmation sentence after subscribing.
+const billedTerms = plan => plan.intro ? introTerms(plan)
+  : plan.tax ? `US$${usd2(priceWithTax(plan))}/month (US$${plan.usd.toLocaleString()} plus ${plan.tax.percent}% tax).`
+  : `US$${plan.usd.toLocaleString()}/month.`;
 
 // Bought through DiagnosticModal. The price shown here is display only: the
 // charge is set on the server by the diagnostic-order Edge Function, from
@@ -59,8 +71,8 @@ const introTerms = plan => plan?.intro
 // show PayPal unless the server's amount equals this one.
 const DIAGNOSTIC = {
   name:"Financial Diagnostic", usd:750,
-  tagline:"One-time. Send twelve months of exports, receive the full analysis and a written findings memo.",
-  note:"Credited in full against your first month of Command Advisory.",
+  tagline:"One-time. Send twelve months of exports. Within 10 business days you receive a written findings memo and a 60-minute call to walk through it.",
+  note:"Credited in full against Command Advisory if you join within 30 days.",
 };
 
 // Profiles created under the old pricing still hold these values, and the
@@ -1217,7 +1229,7 @@ function PayModal({ planKey, currentPlanKey, userEmail, userId, onClose, onSucce
             ) : (
               <>
                 <div className="plan-badge-price">US${plan.usd.toLocaleString()} <span style={{ fontSize:14, color:C.text3 }}>{plan.period}</span></div>
-                <div className="plan-badge-sub">Billed monthly via PayPal. Cancel anytime.</div>
+                <div className="plan-badge-sub">{plan.tax ? `${taxTerms(plan)} Billed monthly via PayPal. Cancel anytime.` : "Billed monthly via PayPal. Cancel anytime."}</div>
               </>
             )}
           </div>
@@ -1233,7 +1245,7 @@ function PayModal({ planKey, currentPlanKey, userEmail, userId, onClose, onSucce
                 {plan.name} is now active
               </div>
               <div style={{ fontSize:13, color:C.text2, fontFamily:"'Cormorant Garamond',serif", lineHeight:1.7, marginBottom:24 }}>
-                Subscription confirmed. {plan.intro ? `You will be billed ${introTerms(plan)}` : `You will be billed US$${plan.usd.toLocaleString()}/month.`} A receipt was sent to {userEmail}.
+                Subscription confirmed. You will be billed {billedTerms(plan)} A receipt was sent to {userEmail}.
               </div>
               <button className="btn btn-full btn-primary" onClick={onClose}>Enter Dashboard</button>
             </div>
@@ -1282,7 +1294,7 @@ function PayModal({ planKey, currentPlanKey, userEmail, userId, onClose, onSucce
 const DIAGNOSTIC_OUTCOME = {
   completed: {
     title: "Payment received",
-    body: "Next, email your last twelve months of bank or accounting exports. You will receive the full analysis and a written findings memo.",
+    body: "Next, email your last twelve months of bank or accounting exports. Within 10 business days of receiving them, you will get a written findings memo covering your cash, runway, profit, client concentration and costs, with the 3 to 5 decisions that matter most and the money attached to each. We then book a 60-minute call to walk you through it.",
     action: "Email your exports",
   },
   pending: {
@@ -2758,7 +2770,7 @@ function DashboardHome({ ctx }) {
         <div className="nudge-row">
           <div>
             <div className="nudge-row-title">Command Advisory adds the person who reads these numbers with you.</div>
-            <div className="nudge-row-sub">Monthly 1:1 call, a written board report every month, and a direct advisory line. Or start with a one-time US${DIAGNOSTIC.usd.toLocaleString()} Financial Diagnostic, credited to your first Advisory month.</div>
+            <div className="nudge-row-sub">A 60-minute call and a written board pack every month, a quarterly 12-month forecast, and an email line answered within 24 hours on business days. Or start with a one-time US${DIAGNOSTIC.usd.toLocaleString()} Financial Diagnostic, credited against Advisory if you join within 30 days.</div>
           </div>
           <div style={{ display:"flex", gap:10, flexWrap:"wrap" }}>
             <button className="btn btn-primary btn-md" onClick={onUpgrade}>Add Command Advisory</button>
@@ -3170,7 +3182,7 @@ function ReportsSection({ ctx }) {
       </div>
 
       {plan === "advisory" && (
-        <p className="panel-copy">Your written monthly board report is prepared by your advisor and delivered by email; this page is the self-serve summary.</p>
+        <p className="panel-copy">Your written monthly board pack is prepared by your advisor and delivered by email; this page is the self-serve summary.</p>
       )}
     </>
   );
@@ -3423,7 +3435,7 @@ function SettingsSection({ ctx }) {
         <Panel title="Plan and billing">
           <dl className="kv">
             <dt>Plan</dt><dd>{PLANS[plan].name}</dd>
-            <dt>Price</dt><dd>US${PLANS[plan].usd.toLocaleString()} {PLANS[plan].period}</dd>
+            <dt>Price</dt><dd>US${PLANS[plan].usd.toLocaleString()} {PLANS[plan].period}{PLANS[plan].tax ? ` plus ${PLANS[plan].tax.percent}% tax` : ""}</dd>
             <dt>Status</dt><dd>{statusText}</dd>
           </dl>
           <div style={{ display:"flex", gap:10, flexWrap:"wrap", marginTop:14 }}>
@@ -3543,11 +3555,11 @@ function HelpSection({ ctx }) {
       <PageHead title="Help & Support" meta="How the numbers work, and how to reach us"/>
       <div className="row row-12">
         <Panel title="Contact">
-          <p className="panel-copy">Questions about your numbers, your data or your subscription:</p>
+          <p className="panel-copy">Questions about your numbers, your data or your subscription. We reply by email within 2 business days{plan === "advisory" ? ", and within 24 hours on business days on your advisory line" : ""}.</p>
           <a className="btn btn-primary btn-md" style={{ marginTop:12, alignSelf:"flex-start" }} href="mailto:commandledger@gmail.com?subject=Command%20Ledger%20support">Email support</a>
           {plan === "advisory" && (
             <>
-              <p className="panel-copy" style={{ marginTop:16 }}>Command Advisory: direct line for capital decisions, priority 4-hour response, and your monthly 60-minute strategy call.</p>
+              <p className="panel-copy" style={{ marginTop:16 }}>Command Advisory: your email line, answered within 24 hours on business days, and your monthly 60-minute call.</p>
               <div style={{ display:"flex", gap:10, flexWrap:"wrap", marginTop:12 }}>
                 <a className="btn btn-outline btn-md" href="mailto:commandledger@gmail.com?subject=Advisory%20support%20request">Email the advisory line</a>
                 <a className="btn btn-outline btn-md" href="https://calendly.com/commandledger" target="_blank" rel="noopener noreferrer">Book a session</a>
@@ -3804,8 +3816,12 @@ const MK_FAQ = [
     "No. Command Ledger never asks for your bank login. It works from the exports you choose to upload and the sheet you choose to sync."],
   ["What happens when I cancel?",
     "You can cancel at any time from your PayPal account, and your access ends when PayPal confirms the cancellation. First-time monthly subscribers can request a refund within 7 days, and annual subscriptions can be refunded pro rata within 30 days. Your uploaded history stays in your account until you delete it or ask us to delete your account."],
+  ["What support comes with Command Ledger?",
+    "Email support: we reply within 2 business days. Calls are part of Command Advisory and the Financial Diagnostic, not the US$99 plan."],
   ["How does Command Advisory work?",
-    "Advisory includes everything in Command Ledger, plus done-for-you data configuration, a monthly one-to-one call, a written board report every month and a direct advisory line with priority four-hour response. There are six seats in total. You can start with the $750 Financial Diagnostic, which is credited in full against your first Advisory month."],
+    "Advisory includes everything in Command Ledger, plus your data processed every month, a 60-minute call every month, a written board pack every month, a 12-month forecast refreshed every quarter, and an email line answered within 24 hours on business days. We take six Advisory clients at a time. You can start with the US$750 Financial Diagnostic, which is credited in full against Advisory if you join within 30 days."],
+  ["What do I get from the Financial Diagnostic?",
+    "You send twelve months of bank or accounting exports. Within 10 business days of receiving them you get a written findings memo covering your cash, runway, profit, client concentration and costs, with the 3 to 5 decisions that matter most and the money attached to each, and a 60-minute call to walk you through it. It is a one-time payment, not a subscription."],
 ];
 
 function MarketingSite({ onLogin, onPlanSelect, onTerms, onPrivacy }) {
@@ -4027,14 +4043,14 @@ function MarketingSite({ onLogin, onPlanSelect, onTerms, onPrivacy }) {
             <div className="mk-prices">
               {[
                 { key:"software", name:PLANS.software.name, forWho:"For founders who want the system and will read the numbers themselves.",
-                  fig:`US$${PLANS.software.usd}`, per:"per month", alt:`or US$${PLANS.software.annualUsd.toLocaleString()} a year, arranged by email`,
+                  fig:`US$${PLANS.software.usd}`, per:"per month", alt:`${taxTerms(PLANS.software)} Or US$${PLANS.software.annualUsd.toLocaleString()} a year, arranged by email.`,
                   list:PLANS.software.features, cta:"Get started", featured:false },
                 { key:"advisory", name:PLANS.advisory.name, forWho:"For founders who want an advisor reading the numbers with them every month.",
-                  fig:`US$${PLANS.advisory.usd.toLocaleString()}`, per:"per month", alt:`First month US$${PLANS.advisory.intro.usd.toLocaleString()}. ${PLANS.advisory.seats} seats in total.`,
-                  list:PLANS.advisory.features, cta:"Request a seat", featured:true },
+                  fig:`US$${PLANS.advisory.usd.toLocaleString()}`, per:"per month", alt:`We take ${PLANS.advisory.clients} Advisory clients at a time.`,
+                  list:PLANS.advisory.features, cta:"Start Advisory", featured:true },
                 { key:"diagnostic", name:DIAGNOSTIC.name, forWho:"For founders who want one rigorous review before committing to anything ongoing.",
-                  fig:`US$${DIAGNOSTIC.usd}`, per:"once", alt:"Credited in full against your first Advisory month",
-                  list:["Send twelve months of bank or accounting exports", "Receive the full analysis and a written findings memo", "A one-time payment, not a subscription"], cta:"Buy the diagnostic", featured:false },
+                  fig:`US$${DIAGNOSTIC.usd}`, per:"once", alt:"Credited in full against Advisory if you join within 30 days",
+                  list:["Send twelve months of bank or accounting exports", "Within 10 business days, a written findings memo on your cash, runway, profit, client concentration and costs", "The 3 to 5 decisions that matter most, with the money attached to each", "A 60-minute call to walk you through it", "A one-time payment, not a subscription"], cta:"Buy the diagnostic", featured:false },
               ].map(p => (
                 <article key={p.key} className={`mk-price${p.featured ? " featured" : ""}`}>
                   <h3 className="mk-price-name">{p.name}</h3>
@@ -4135,18 +4151,20 @@ function TermsPage({ onBack }) {
       <LegalTop onBack={onBack}/>
       <main className="page-wrap">
         <h1 className="page-title">Terms of Service</h1>
-        <div className="page-date">Last updated: June 2026</div>
+        <div className="page-date">Last updated: November 2026</div>
         <h2 className="page-h2">1. Acceptance</h2>
         <p className="page-p">By using Command Ledger you agree to these Terms of Service.</p>
         <h2 className="page-h2">2. Service</h2>
         <p className="page-p">Command Ledger provides AI-powered financial intelligence for founders and business owners, including analytics, capital allocation tools, and AI-generated strategic recommendations.</p>
-        <h2 className="page-h2">3. Payment</h2>
+        <h2 className="page-h2">3. Plans and support</h2>
+        <p className="page-p">Command Ledger (US$99 per month) includes the software and email support, with a reply within 2 business days. Command Advisory (US$1,500 per month) adds your data processed every month, a 60-minute call every month, a written board pack every month, a 12-month forecast refreshed every quarter, and an email line answered within 24 hours on business days. The Financial Diagnostic (US$750, one-time) is delivered within 10 business days of receiving your exports: a written findings memo and a 60-minute call to walk you through it. Prices are in US dollars, and any tax is shown before you subscribe.</p>
+        <h2 className="page-h2">4. Payment</h2>
         <p className="page-p">Subscriptions are billed via PayPal, monthly or annually depending on the term selected, and auto-renew unless cancelled at least 7 days before the renewal date. The Financial Diagnostic is a one-time charge, not a subscription.</p>
-        <h2 className="page-h2">4. Refunds</h2>
-        <p className="page-p">7-day refund on monthly subscriptions for first-time subscribers. Annual subscriptions may be refunded pro rata within 30 days. The Financial Diagnostic is non-refundable once analysis has begun; where it is credited against a first month of Command Advisory, that credit is forfeited if the subscription is refunded.</p>
-        <h2 className="page-h2">5. Disclaimer</h2>
+        <h2 className="page-h2">5. Refunds</h2>
+        <p className="page-p">7-day refund on monthly subscriptions for first-time subscribers. Annual subscriptions may be refunded pro rata within 30 days. The Financial Diagnostic is non-refundable once analysis has begun; its credit against Command Advisory applies if you subscribe within 30 days of buying it, and is forfeited if that subscription is refunded.</p>
+        <h2 className="page-h2">6. Disclaimer</h2>
         <p className="page-p">Command Ledger is for informational purposes only. This is not financial advice. Consult a qualified professional before major business decisions.</p>
-        <h2 className="page-h2">6. Contact</h2>
+        <h2 className="page-h2">7. Contact</h2>
         <p className="page-p">commandledger@gmail.com</p>
       </main>
     </div>
@@ -4210,7 +4228,7 @@ function PaywallGate({ user, activating, onSelectPlan, onLogout }) {
                     <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:22, color:C.text }}>
                       US${pl.usd.toLocaleString()} <span style={{ fontSize:12, color:C.text3 }}>{pl.period}</span>
                     </div>
-                    {pl.intro && <div style={{ fontSize:12.5, color:C.text2, marginTop:2 }}>{introTerms(pl)}</div>}
+                    {(pl.intro || pl.tax) && <div style={{ fontSize:12.5, color:C.text2, marginTop:2 }}>{pl.intro ? introTerms(pl) : taxTerms(pl)}</div>}
                   </div>
                   <button className={`btn ${p.hot ? "btn-primary" : "btn-outline"}`} style={{ padding:"10px 22px", fontSize:11, whiteSpace:"nowrap" }} onClick={() => onSelectPlan(p.key)}
                     disabled={activating} title={activating ? "A payment is being activated for this account" : undefined}>
