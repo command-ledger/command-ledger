@@ -31,7 +31,10 @@ const PLANS = {
     ],
   },
   advisory: {
-    name:"Command Advisory", usd:3000, interval:"MONTH", period:"per month", seats:6,
+    // `intro` is the first month PayPal bills before the regular price. It is
+    // shown wherever the price is, and checkoutBlockReason() opens checkout
+    // only while PayPal's trial cycle matches it exactly.
+    name:"Command Advisory", usd:3000, interval:"MONTH", period:"per month", seats:6, intro:{ usd:1950, months:1 },
     tagline:"The system, plus the person who reads it with you.",
     features:[
       "Everything in Command Ledger",
@@ -43,6 +46,12 @@ const PLANS = {
     ],
   },
 };
+
+// A plan's introductory terms in one sentence, or null when it has none:
+// "US$1,950 for your first month, then US$3,000 per month."
+const introTerms = plan => plan?.intro
+  ? `US$${plan.intro.usd.toLocaleString()} for your ${plan.intro.months === 1 ? "first month" : `first ${plan.intro.months} months`}, then US$${plan.usd.toLocaleString()} ${plan.period}.`
+  : null;
 
 // Bought through DiagnosticModal. The price shown here is display only: the
 // charge is set on the server by the diagnostic-order Edge Function, from
@@ -1200,8 +1209,17 @@ function PayModal({ planKey, currentPlanKey, userEmail, userId, onClose, onSucce
         <div className="modal-body">
           <div className="plan-badge">
             <div className="plan-badge-name">{plan.name}</div>
-            <div className="plan-badge-price">US${plan.usd.toLocaleString()} <span style={{ fontSize:14, color:C.text3 }}>{plan.period}</span></div>
-            <div className="plan-badge-sub">Billed monthly via PayPal. Cancel anytime.</div>
+            {plan.intro ? (
+              <>
+                <div className="plan-badge-price">US${plan.intro.usd.toLocaleString()} <span style={{ fontSize:14, color:C.text3 }}>{plan.intro.months === 1 ? "first month" : `per month for ${plan.intro.months} months`}</span></div>
+                <div className="plan-badge-sub">Then US${plan.usd.toLocaleString()} {plan.period}. Billed monthly via PayPal. Cancel anytime.</div>
+              </>
+            ) : (
+              <>
+                <div className="plan-badge-price">US${plan.usd.toLocaleString()} <span style={{ fontSize:14, color:C.text3 }}>{plan.period}</span></div>
+                <div className="plan-badge-sub">Billed monthly via PayPal. Cancel anytime.</div>
+              </>
+            )}
           </div>
           {replaces && !done && (
             <div className="d-alert info" style={{ marginBottom:16 }}>
@@ -1215,7 +1233,7 @@ function PayModal({ planKey, currentPlanKey, userEmail, userId, onClose, onSucce
                 {plan.name} is now active
               </div>
               <div style={{ fontSize:13, color:C.text2, fontFamily:"'Cormorant Garamond',serif", lineHeight:1.7, marginBottom:24 }}>
-                Subscription confirmed. You will be billed US${plan.usd}/month. A receipt was sent to {userEmail}.
+                Subscription confirmed. {plan.intro ? `You will be billed ${introTerms(plan)}` : `You will be billed US$${plan.usd.toLocaleString()}/month.`} A receipt was sent to {userEmail}.
               </div>
               <button className="btn btn-full btn-primary" onClick={onClose}>Enter Dashboard</button>
             </div>
@@ -4012,7 +4030,7 @@ function MarketingSite({ onLogin, onPlanSelect, onTerms, onPrivacy }) {
                   fig:`US$${PLANS.software.usd}`, per:"per month", alt:`or US$${PLANS.software.annualUsd.toLocaleString()} a year, arranged by email`,
                   list:PLANS.software.features, cta:"Get started", featured:false },
                 { key:"advisory", name:PLANS.advisory.name, forWho:"For founders who want an advisor reading the numbers with them every month.",
-                  fig:`US$${PLANS.advisory.usd.toLocaleString()}`, per:"per month", alt:`${PLANS.advisory.seats} seats in total`,
+                  fig:`US$${PLANS.advisory.usd.toLocaleString()}`, per:"per month", alt:`First month US$${PLANS.advisory.intro.usd.toLocaleString()}. ${PLANS.advisory.seats} seats in total.`,
                   list:PLANS.advisory.features, cta:"Request a seat", featured:true },
                 { key:"diagnostic", name:DIAGNOSTIC.name, forWho:"For founders who want one rigorous review before committing to anything ongoing.",
                   fig:`US$${DIAGNOSTIC.usd}`, per:"once", alt:"Credited in full against your first Advisory month",
@@ -4192,6 +4210,7 @@ function PaywallGate({ user, activating, onSelectPlan, onLogout }) {
                     <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:22, color:C.text }}>
                       US${pl.usd.toLocaleString()} <span style={{ fontSize:12, color:C.text3 }}>{pl.period}</span>
                     </div>
+                    {pl.intro && <div style={{ fontSize:12.5, color:C.text2, marginTop:2 }}>{introTerms(pl)}</div>}
                   </div>
                   <button className={`btn ${p.hot ? "btn-primary" : "btn-outline"}`} style={{ padding:"10px 22px", fontSize:11, whiteSpace:"nowrap" }} onClick={() => onSelectPlan(p.key)}
                     disabled={activating} title={activating ? "A payment is being activated for this account" : undefined}>

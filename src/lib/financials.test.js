@@ -1812,7 +1812,9 @@ describe("Excel upload contract (sheet_to_csv output)", () => {
 // plan summaries plan-pricing returned from live PayPal on 2026-09-13.
 describe("checkoutBlockReason", () => {
   const software = { usd: 99, interval: "MONTH" };
-  const advisory = { usd: 3000, interval: "MONTH" };
+  // The page discloses Advisory's introductory first month (PLANS in App.jsx).
+  const advisory = { usd: 3000, interval: "MONTH", intro: { usd: 1950, months: 1 } };
+  const advisoryNoIntro = { usd: 3000, interval: "MONTH" };
   const LIVE_SOFTWARE = { planKey:"software", planId:"P-8CD25808KD889454JNKS7S7I", name:"Command Essentials", status:"ACTIVE", amount:99, currency:"USD", intervalUnit:"MONTH", intervalCount:1, hasTrial:false, trials:[], setupFee:0 };
   const LIVE_ADVISORY = { planKey:"advisory", planId:"P-7M170334YK027974RNITP7NY", name:"Command Pro", status:"ACTIVE", amount:3000, currency:"USD", intervalUnit:"MONTH", intervalCount:1, hasTrial:true, trials:[{ amount:1950, currency:"USD", intervalUnit:"MONTH", intervalCount:1, totalCycles:1 }], setupFee:0 };
   const clean = over => ({ ...LIVE_SOFTWARE, ...over });
@@ -1821,12 +1823,36 @@ describe("checkoutBlockReason", () => {
     expect(checkoutBlockReason(software, LIVE_SOFTWARE)).toBeNull();
   });
 
-  it("keeps the live advisory plan closed: its $1,950 trial month means the first charge is not the $3,000 shown", () => {
-    expect(checkoutBlockReason(advisory, LIVE_ADVISORY)).toBe("first_charge_differs");
+  it("opens the live advisory plan: PayPal bills exactly the disclosed US$1,950 first month, then US$3,000", () => {
+    expect(checkoutBlockReason(advisory, LIVE_ADVISORY)).toBeNull();
   });
 
-  it("opens advisory as soon as the trial is removed in PayPal, with no code change", () => {
-    expect(checkoutBlockReason(advisory, { ...LIVE_ADVISORY, hasTrial:false, trials:[] })).toBeNull();
+  it("keeps advisory closed when the page does not disclose PayPal's trial month", () => {
+    expect(checkoutBlockReason(advisoryNoIntro, LIVE_ADVISORY)).toBe("first_charge_differs");
+  });
+
+  it("blocks a disclosed intro that PayPal no longer bills, since the page would promise a price nobody is charged", () => {
+    expect(checkoutBlockReason(advisory, { ...LIVE_ADVISORY, hasTrial:false, trials:[] })).toBe("first_charge_differs");
+  });
+
+  it("opens advisory without an intro once both the trial and the page's intro are removed", () => {
+    expect(checkoutBlockReason(advisoryNoIntro, { ...LIVE_ADVISORY, hasTrial:false, trials:[] })).toBeNull();
+  });
+
+  it("blocks any intro PayPal bills differently from the one the page states", () => {
+    const trial = over => ({ ...LIVE_ADVISORY, trials:[{ ...LIVE_ADVISORY.trials[0], ...over }] });
+    expect(checkoutBlockReason(advisory, trial({ amount: 1500 }))).toBe("first_charge_differs");
+    expect(checkoutBlockReason(advisory, trial({ amount: 0 }))).toBe("first_charge_differs");
+    expect(checkoutBlockReason(advisory, trial({ totalCycles: 2 }))).toBe("first_charge_differs");
+    expect(checkoutBlockReason(advisory, trial({ currency: "ZAR" }))).toBe("first_charge_differs");
+    expect(checkoutBlockReason(advisory, trial({ intervalUnit: "YEAR" }))).toBe("first_charge_differs");
+    expect(checkoutBlockReason(advisory, trial({ intervalCount: 3 }))).toBe("first_charge_differs");
+    expect(checkoutBlockReason(advisory, { ...LIVE_ADVISORY, trials:[LIVE_ADVISORY.trials[0], LIVE_ADVISORY.trials[0]] })).toBe("first_charge_differs");
+    expect(checkoutBlockReason(advisory, { ...LIVE_ADVISORY, trials:[] })).toBe("first_charge_differs");
+  });
+
+  it("still blocks a setup fee on a plan with a disclosed intro", () => {
+    expect(checkoutBlockReason(advisory, { ...LIVE_ADVISORY, setupFee: 100 })).toBe("first_charge_differs");
   });
 
   it("blocks when PayPal bills a different recurring price than displayed", () => {

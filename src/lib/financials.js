@@ -2051,10 +2051,14 @@ export function describeDirectiveOutcome(directive, currency = "USD") {
 // which could go stale the moment someone edits the plan in PayPal.
 //
 // The rule: checkout opens only when every charge, starting with the first,
-// equals the price on the page. A trial cycle or a setup fee makes the first
-// charge differ, so either one blocks, even when it favours the customer.
-// Checks run from the most serious disagreement to the least, so a wrong
-// recurring price is reported ahead of a trial.
+// equals the price on the page. A setup fee always blocks. A trial cycle
+// blocks unless the page discloses it as the plan's `intro` ({ usd, months })
+// and PayPal bills exactly that: one trial cycle, at that amount, in USD, on
+// the plan's interval, for that many cycles. An undisclosed trial blocks even
+// when it favours the customer, and so does a disclosed intro that PayPal no
+// longer bills, because the page would then promise a price nobody is
+// charged. Checks run from the most serious disagreement to the least, so a
+// wrong recurring price is reported ahead of a trial.
 //
 // Returns null when checkout is safe, otherwise a machine-readable reason.
 export function checkoutBlockReason(plan, verified) {
@@ -2065,8 +2069,17 @@ export function checkoutBlockReason(plan, verified) {
   if (verified.intervalUnit !== (plan.interval || "MONTH") || verified.intervalCount !== 1) return "interval_mismatch";
   if (typeof verified.amount !== "number" || !Number.isFinite(verified.amount)) return "price_unverified";
   if (verified.amount !== plan.usd) return "price_mismatch";
-  const hasTrial = verified.hasTrial === true || (Array.isArray(verified.trials) && verified.trials.length > 0);
-  if (hasTrial || verified.setupFee !== 0) return "first_charge_differs";
+  if (verified.setupFee !== 0) return "first_charge_differs";
+  const trials = Array.isArray(verified.trials) ? verified.trials : [];
+  if (plan.intro) {
+    const t = trials[0];
+    const billsDisclosedIntro = trials.length === 1 && !!t
+      && t.amount === plan.intro.usd && t.currency === "USD"
+      && t.intervalUnit === (plan.interval || "MONTH") && t.intervalCount === 1
+      && t.totalCycles === plan.intro.months;
+    return billsDisclosedIntro ? null : "first_charge_differs";
+  }
+  if (verified.hasTrial === true || trials.length > 0) return "first_charge_differs";
   return null;
 }
 
