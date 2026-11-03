@@ -277,11 +277,39 @@ export function extractCounterparty(description) {
 // direction; treating its dollars as belonging to no one would silently
 // understate total revenue. It's flagged and excluded from concentration
 // math instead, with the amount still visible as its own line.
+// Names that are only ever a processor or marketplace count on their own.
+// Names that are also ordinary words or other businesses (Square, Toast,
+// Clover, Bolt, Amazon, Uber, Intuit) count only beside a payout word, so
+// "Bolt Studio" and "Times Square Ltd" stay clients.
+const PROCESSOR_NAMES = /\b(shopify|stripe|paypal|venmo|braintree|adyen|payoneer|etsy|ebay|woocommerce|squarespace|gumroad|intuit payments|quickbooks payments|payfast|yoco|ikhokha|snapscan|zapper|ozow|paystack|peach payments|payu|netcash|takealot|uber eats|mr d food|doordash|grubhub)\b/;
+const PROCESSOR_WORDS = /\b(square|toast|clover|bolt|amazon|amzn|uber|intuit)\b/;
+const PAYOUT_WORDS = /\b(payout|payouts|transfer|transfers|settlement|settlements|settle|settled|deposit|deposits|disbursement|remittance|marketplace|seller)\b/;
 export function isAggregatorCounterparty(name) {
   if (!name) return false;
   const n = name.toLowerCase();
-  return /\b(shopify|stripe|paypal)\b/.test(n) && /\b(payout|transfer)\b/.test(n);
+  return PROCESSOR_NAMES.test(n) || (PROCESSOR_WORDS.test(n) && PAYOUT_WORDS.test(n));
 }
+
+// A payer "name" that only says how money arrived ("cash deposit", "eft
+// 4471", "magtape credit", "fnb app payment") names nobody. Counting it as
+// a client made twenty cash deposits look like one client paying 100% of
+// revenue, or a run of reference numbers look like many small clients.
+// Such lines count as names that could not be read.
+const GENERIC_PAYER_WORDS = new Set([
+  "ach", "acb", "app", "atm", "auto", "bank", "banking", "bill", "branch", "card", "cash", "ccd", "chk", "check", "cheque",
+  "cr", "credit", "dd", "debit", "deposit", "digital", "dr", "eft", "electronic", "fee", "fees", "from", "funds", "ib",
+  "id", "immediate", "in", "incoming", "instant", "internet", "inv", "inward", "magtape", "mobile", "money", "no", "nr",
+  "of", "online", "pay", "payment", "payshap", "pmt", "pos", "ppd", "purchase", "received", "receipt", "ref", "reference",
+  "rtc", "the", "to", "transfer", "trf", "trsf", "transf", "web", "xfer", "tfr", "and", "zelle",
+  "fnb", "absa", "nedbank", "nedbk", "capitec", "investec", "tymebank", "sbsa", "std", "chase", "citi", "boa",
+]);
+export function isGenericCounterparty(name) {
+  const words = String(name || "").toLowerCase().replace(/[^a-z\s]/g, " ").split(/\s+/).filter(Boolean);
+  return words.every(w => w.length < 2 || GENERIC_PAYER_WORDS.has(w));
+}
+// Above this share of revenue arriving through processors, the clients
+// behind it are most of the business and cannot be seen in bank data.
+const PROCESSOR_SHARE_LIMIT = 50;
 
 function levenshteinDistance(a, b) {
   const m = a.length, n = b.length;
@@ -354,10 +382,11 @@ export function computeRevenueConcentration(transactions, rules) {
   }
 
   let extractedCount = 0;
-  const raw = {};
+  // No prototype, so a payer called "constructor" is just a name.
+  const raw = Object.create(null);
   income.forEach(t => {
     const name = extractCounterparty(t.description);
-    if (name) {
+    if (name && !isGenericCounterparty(name)) {
       extractedCount++;
       raw[name] = (raw[name] || 0) + Number(t.amount);
     }
@@ -368,13 +397,25 @@ export function computeRevenueConcentration(transactions, rules) {
   // moderate vs. high mirrors the same volume-based banding used for
   // every other metric's confidence in this engine (see computeConfidence).
   const confidenceLevel = extractionRate < 0.6 ? "low" : extractionRate < 0.85 ? "moderate" : "high";
-  const reason = `Payer names could not be reliably extracted from ${Math.round((1 - extractionRate) * 100)}% of income transactions.`;
-  const shown = confidenceLevel !== "low";
 
   const entries = Object.entries(raw).map(([name, revenue]) => ({ name, revenue }));
   const aggregatorEntries = entries.filter(e => isAggregatorCounterparty(e.name));
   const clientEntries = entries.filter(e => !isAggregatorCounterparty(e.name));
   const aggregatorRevenue = aggregatorEntries.reduce((s, e) => s + e.revenue, 0);
+  const aggregatorPct = (aggregatorRevenue / totalRevenue) * 100;
+
+  // Not shown, with the reason, when payer names can't be trusted, when
+  // processors carry most of the revenue (the clients are hidden behind
+  // them), or when no client is named at all.
+  let reason = `Payer names could not be reliably extracted from ${Math.round((1 - extractionRate) * 100)}% of income transactions.`;
+  let shown = confidenceLevel !== "low";
+  if (shown && aggregatorPct >= PROCESSOR_SHARE_LIMIT) {
+    shown = false;
+    reason = `${Math.round(aggregatorPct)}% of revenue arrives through payment processors or marketplaces, which pay out many customers in one deposit, so client concentration cannot be measured from bank data.`;
+  } else if (shown && clientEntries.length === 0) {
+    shown = false;
+    reason = "No client names could be read from your income descriptions.";
+  }
 
   const grouped = shown ? groupCounterparties(clientEntries) : [];
   const payers = grouped.map(c => ({ name: c.name, revenue: c.revenue, pct: (c.revenue / totalRevenue) * 100 }));
@@ -390,7 +431,9 @@ export function computeRevenueConcentration(transactions, rules) {
 
   let severity = null;
   if (shown) {
-    if (distinctPayers < 3) severity = "warn";
+    // Fewer than three named clients means fewer than three clients only
+    // when no money arrives through a processor, which hides its customers.
+    if (distinctPayers < 3 && aggregatorRevenue === 0) severity = "warn";
     if (largestPct > 40) severity = "warn";
     if (largestPct > 60) severity = "critical";
   }
@@ -398,7 +441,7 @@ export function computeRevenueConcentration(transactions, rules) {
   return {
     shown, confidenceLevel, reason,
     extractionRate, totalRevenue,
-    payers, aggregatorRevenue, aggregatorPct: (aggregatorRevenue / totalRevenue) * 100,
+    payers, aggregatorRevenue, aggregatorPct,
     largestPct, top3Pct, hhi, distinctPayers, severity,
   };
 }
@@ -600,7 +643,8 @@ export function detectRecurringObligations(transactions, options = {}) {
   const allDates = expenses.map(t => new Date(t.txn_date).getTime());
   const dataSpanDays = allDates.length > 1 ? Math.round((Math.max(...allDates) - Math.min(...allDates)) / 86400000) : 0;
 
-  const exactGroups = {};
+  // No prototype, so a bill described "constructor" is just a key.
+  const exactGroups = Object.create(null);
   expenses.forEach(t => {
     const key = normalizeDescription(t.description);
     if (!key) return;
@@ -610,8 +654,8 @@ export function detectRecurringObligations(transactions, options = {}) {
   // Descriptions that repeat exactly keep their exact key, so obligations
   // stored before the second pass existed keep the same normalized_key and
   // are not duplicated. Only the rest are regrouped with digits removed.
-  const groups = {};
-  const looseGroups = {};
+  const groups = Object.create(null);
+  const looseGroups = Object.create(null);
   Object.entries(exactGroups).forEach(([key, txns]) => {
     if (txns.length >= 3) { groups[key] = txns; return; }
     txns.forEach(t => {
@@ -1418,20 +1462,60 @@ export async function computeDedupeHash(txn) {
 // is the founder's rule index). Revenue is money from customers less refunds
 // paid to them; expenses are costs less refunds received. Loans, owner money
 // and transfers are kept in their own totals and added to neither.
+//
+// A month is `partial` when it is not over yet (it is this month, by
+// `options.today`), or when the data starts or stops more than a week
+// inside it (only the first and last months can be cut short). Its money is
+// real and counts in period totals, but it is not a month's worth: on the
+// 4th, a month holds four days of sales, and comparing that with a full
+// month read as revenue collapsing. Monthly summaries date every row on the
+// 1st, so a last month whose transactions all fall on the 1st, after a
+// month that did the same, is a summary and complete unless it is this
+// month. After ordinary daily data, a last month that stops on the 1st is
+// one day of a month: partial.
 const CATEGORY_BUCKETS = new Set(["payroll", "marketing", "cogs", "rent", "software"]);
+const PARTIAL_GAP_DAYS = 7;
+function daysInMonthOf(key) {
+  const [y, m] = key.split("-").map(Number);
+  return new Date(Date.UTC(y, m, 0)).getUTCDate();
+}
+const onlyOnThe1st = b => b.lastDate.slice(8, 10) === "01";
+function monthIsPartial(key, b, prev, isFirst, isLast, today) {
+  if (key >= today.slice(0, 7)) return true;
+  if (isFirst && Number(b.firstDate.slice(8, 10)) - 1 > PARTIAL_GAP_DAYS) return true;
+  if (isLast && !(onlyOnThe1st(b) && (!prev || onlyOnThe1st(prev)))
+    && daysInMonthOf(key) - Number(b.lastDate.slice(8, 10)) > PARTIAL_GAP_DAYS) return true;
+  return false;
+}
+
+// The first day of the month `months` calendar months before today's
+// month, so "the last 3 months" in November is August, September and
+// October in full (plus November so far), never a cut that starts on the
+// 4th and leaves the first month partial.
+export function periodStartDate(months, today = new Date().toISOString().slice(0, 10)) {
+  const m = Number(months);
+  if (!Number.isFinite(m) || m <= 0) return null;
+  const index = Number(today.slice(0, 4)) * 12 + Number(today.slice(5, 7)) - 1 - Math.floor(m);
+  return `${Math.floor(index / 12)}-${String((index % 12) + 1).padStart(2, "0")}-01`;
+}
 // Rounded to whole units, without a negative zero ("-$0").
 const wholeUnits = v => { const r = Math.round(v); return r === 0 ? 0 : r; };
 
 export function aggregateTransactionsByMonth(transactions, options = {}) {
   const rules = asRuleIndex(options.rules);
+  const today = options.today || new Date().toISOString().slice(0, 10);
   const buckets = {};
   (transactions || []).forEach(t => {
-    const key = String(t.txn_date).slice(0, 7);
+    const date = String(t.txn_date).slice(0, 10);
+    const key = date.slice(0, 7);
     if (!buckets[key]) buckets[key] = {
       revenue:0, expenses:0, payroll:0, marketing:0, cogs:0, rent:0, software:0,
       financingIn:0, financingOut:0, transferIn:0, transferOut:0, refundsIn:0, refundsOut:0,
+      firstDate: date, lastDate: date,
     };
     const b = buckets[key];
+    if (date < b.firstDate) b.firstDate = date;
+    if (date > b.lastDate) b.lastDate = date;
     const amt = Number(t.amount) || 0;
     if (amt === 0) return;
     const abs = Math.abs(amt);
@@ -1460,7 +1544,8 @@ export function aggregateTransactionsByMonth(transactions, options = {}) {
     }
   });
 
-  return Object.keys(buckets).sort().map(key => {
+  const keys = Object.keys(buckets).sort();
+  return keys.map((key, i) => {
     const b = buckets[key];
     // A refund larger than the month's spend in its category leaves the
     // category at zero, not below it; the expense total keeps the full amount.
@@ -1468,6 +1553,8 @@ export function aggregateTransactionsByMonth(transactions, options = {}) {
     return {
       period_month: `${key}-01`,
       month: new Date(`${key}-01T00:00:00Z`).toLocaleDateString("en-US", { month:"short", year:"2-digit" }),
+      partial: monthIsPartial(key, b, i > 0 ? buckets[keys[i - 1]] : null, i === 0, i === keys.length - 1, today),
+      coveredFrom: b.firstDate, coveredTo: b.lastDate,
       revenue: wholeUnits(b.revenue), expenses: wholeUnits(b.expenses), cash: 0,
       payroll: category("payroll"), marketing: category("marketing"), cogs: category("cogs"),
       rent: category("rent"), software: category("software"),
@@ -1498,12 +1585,16 @@ export function trailingGrowthRate(rows, singlePeriodVel) {
 }
 
 // Growth Score (0-100): rewards a sustained, consistent growth rate over a
-// noisy single-month spike. 70% of the score is the trailing growth rate
-// (same smoothing used for the 90-day projection), rescaled so 0% growth
-// sits at the midpoint of the "Flat" band rather than reading as "good";
-// 30% is how many of the recent month-over-month changes were positive, so
-// three steadily-growing months outscore one great month sandwiched
-// between two down months at the same average rate.
+// noisy single-month spike. The trailing growth rate (same smoothing used
+// for the 90-day projection) sets the direction and size: 50 + 3 points per
+// percent a month, so 0% sits at 50, the middle of the "Flat" band. How
+// consistently the recent month-over-month changes moved that way scales
+// the distance from 50, between 60% (none did) and 100% (all did), so three
+// steadily-growing months outscore one great month sandwiched between two
+// down months at the same average rate, and a steady decline reads worse
+// than a noisy one. Flat revenue is always 50. The previous formula added
+// 30 points for consistency separately, so perfectly flat revenue (no
+// positive changes) scored 35 and read as "Declining".
 // `seasonalRate` (optional): when the latest month matches a detected
 // seasonal pattern (detectCurrentMonthSeasonality, 13+ months of history),
 // the caller passes a year-over-year rate here instead of letting this
@@ -1522,6 +1613,8 @@ export function computeGrowthScore(rows, singlePeriodVel, seasonalRate = null) {
   // deltas) when a seasonal rate is in play — the trailing month-over-month
   // consistency check doesn't apply cleanly to a month whose normal
   // comparison point is a year ago, not last month.
+  // `consistency`: the share of the last three changes that moved the same
+  // way as the rate (up for growth, down for decline).
   let consistency = 0.5;
   if (!usingSeasonalRate && rows && rows.length >= 3) {
     const deltas = [];
@@ -1529,10 +1622,10 @@ export function computeGrowthScore(rows, singlePeriodVel, seasonalRate = null) {
       if (rows[i - 1].revenue > 0) deltas.push(rows[i].revenue - rows[i - 1].revenue);
     }
     const lastFew = deltas.slice(-3);
-    if (lastFew.length > 0) consistency = lastFew.filter(d => d > 0).length / lastFew.length;
+    if (lastFew.length > 0) consistency = lastFew.filter(d => (rate < 0 ? d < 0 : d > 0)).length / lastFew.length;
   }
 
-  const score = Math.min(100, Math.max(0, rateScore * 0.7 + consistency * 100 * 0.3));
+  const score = Math.min(100, Math.max(0, 50 + (rateScore - 50) * (0.6 + 0.4 * consistency)));
   const label = score >= 80 ? "Accelerating" : score >= 60 ? "Growing" : score >= 40 ? "Flat" : "Declining";
   return { score, label, rate, consistency, seasonallyAdjusted: usingSeasonalRate };
 }
@@ -1740,10 +1833,18 @@ export function computeMetrics(rows, manual, mode, context = {}) {
   const tr = mode === "safe" ? 0.30 : 0.25;
   const sr = mode === "safe" ? 0.20 : 0.10;
 
-  const latest   = rows ? rows[rows.length - 1] : { revenue:mRev, expenses:mExp };
-  const prev     = rows && rows.length > 1 ? rows[rows.length - 2] : latest;
-  const totRev   = rows ? rows.reduce((s,d) => s + d.revenue, 0)  : mRev;
-  const totExp   = rows ? rows.reduce((s,d) => s + d.expenses, 0) : mExp;
+  // Partial months (see aggregateTransactionsByMonth) count toward the
+  // period's totals, but not toward anything that treats a row as a whole
+  // month: the averages behind burn, runway and hiring capacity, the latest
+  // month, growth, trends, seasonality and the projection. Until one month
+  // is complete, the partial months are all there is, and they are used.
+  const complete = rows ? rows.filter(r => !r.partial) : null;
+  const basis    = rows ? (complete.length > 0 ? complete : rows) : null;
+  const latest   = basis ? basis[basis.length - 1] : { revenue:mRev, expenses:mExp };
+  const prev     = basis && basis.length > 1 ? basis[basis.length - 2] : latest;
+  const sumRows  = (list, f) => list.reduce((s, d) => s + (Number(d[f]) || 0), 0);
+  const totRev   = rows ? sumRows(rows, "revenue")  : mRev;
+  const totExp   = rows ? sumRows(rows, "expenses") : mExp;
   const totCogs  = rows ? rows.reduce((s,d) => s + (d.cogs||0), 0) : 0;
   const totMkt   = rows ? rows.reduce((s,d) => s + (d.marketing||0), 0) : 0;
   const totL     = rows ? rows.reduce((s,d) => s + (d.leads||0), 0) : mLeads;
@@ -1755,11 +1856,15 @@ export function computeMetrics(rows, manual, mode, context = {}) {
   const totFinOut = rows ? sumOf("financingOut") : (Number(mFinOut) || 0);
   const totTrIn   = sumOf("transferIn"),  totTrOut  = sumOf("transferOut");
   const totRefIn  = sumOf("refundsIn"),   totRefOut = sumOf("refundsOut");
-  const activeCash = rows ? (latest.cash || mCash) : mCash;
+  // A balance belongs to the newest row, complete or not.
+  const activeCash = rows ? (rows[rows.length - 1].cash || mCash) : mCash;
   const activeCac  = rows ? (latest.cac  || mCac)  : mCac;
   const activeLtv  = rows ? (latest.ltv  || mLtv)  : mLtv;
 
-  const n = rows?.length || 1;
+  // Months behind the averages: complete months, or the partial ones when
+  // nothing is complete yet.
+  const n = basis?.length || 1;
+  const partialMonths = rows ? rows.length - complete.length : 0;
   const hasData  = rows !== null || mRev > 0;
   const totPro   = totRev - totExp;
   const margin   = totRev > 0 ? (totPro / totRev) * 100 : 0;
@@ -1768,8 +1873,8 @@ export function computeMetrics(rows, manual, mode, context = {}) {
   // output) can be checked for real calendar seasonality — a CSV parsed for
   // this session only carries a display-string month label, not a date.
   const hasPeriodMonth = !!(rows && rows.length > 0 && rows[0].period_month);
-  const seasonalPattern = hasPeriodMonth ? detectCurrentMonthSeasonality(rows) : null;
-  const seasonalAdjustedVel = seasonalPattern ? computeSeasonallyAdjustedVelocity(rows) : null;
+  const seasonalPattern = hasPeriodMonth ? detectCurrentMonthSeasonality(basis) : null;
+  const seasonalAdjustedVel = seasonalPattern ? computeSeasonallyAdjustedVelocity(basis) : null;
   const conv     = totL > 0 ? (totC / totL) * 100 : 0;
   const hasConversionData = totL > 0;
   const ltvcac   = activeCac > 0 ? activeLtv / activeCac : 0;
@@ -1790,9 +1895,9 @@ export function computeMetrics(rows, manual, mode, context = {}) {
   const taxV      = Math.max(0, totPro) * tr;
   const safV      = Math.max(0, totPro) * sr;
   const free      = totPro - taxV - safV;
-  const avgExp     = totExp / Math.max(n, 1);
-  const avgRev     = totRev / Math.max(n, 1);
-  const avgFinOut  = totFinOut / Math.max(n, 1);
+  const avgExp     = (rows ? sumRows(basis, "expenses") : mExp) / Math.max(n, 1);
+  const avgRev     = (rows ? sumRows(basis, "revenue") : mRev) / Math.max(n, 1);
+  const avgFinOut  = (rows ? sumRows(basis, "financingOut") : (Number(mFinOut) || 0)) / Math.max(n, 1);
   // Everything that leaves the bank in an average month: costs, plus loan
   // repayments and money the owner takes out.
   const avgCashOut = avgExp + avgFinOut;
@@ -1842,21 +1947,21 @@ export function computeMetrics(rows, manual, mode, context = {}) {
   // orders of magnitude. ±50%/month is a heuristic guard, not a precise
   // model: no realistic sustained growth rate for an established revenue
   // base exceeds that for three consecutive months.
-  const proj90GrowthRate = Math.max(-50, Math.min(50, trailingGrowthRate(rows, vel)));
+  const proj90GrowthRate = Math.max(-50, Math.min(50, trailingGrowthRate(basis, vel)));
   const proj90     = latest.revenue * Math.pow(1 + proj90GrowthRate / 100, 3);
   // "low"    — a single manually-typed snapshot, no transaction history.
   // "medium" — real uploaded data, but under 3 months of it.
   // "high"   — real uploaded data with 3+ months of history.
   const dataConfidence = !rows ? "low" : n >= 3 ? "high" : "medium";
 
-  const growth = computeGrowthScore(rows, vel, seasonalAdjustedVel);
-  const trends = detectTrends(rows, seasonalPattern, currency);
+  const growth = computeGrowthScore(basis, vel, seasonalAdjustedVel);
+  const trends = detectTrends(basis, seasonalPattern, currency);
   const risk = computeRiskScore({ cashFlowPositive, burnMonths, runwayKnown: activeCash > 0, concentration, concentrationReliable, ltvcac, margin, trends, growthScore: growth.score });
 
   // Long-run trajectory, seasonality, and a plain-language narrative —
   // same 13+/2+ month floors as the functions themselves. Every field
   // here is null (not fabricated) until there's real history behind it.
-  const trajectory = hasPeriodMonth && rows.length >= 2 ? computeHistoricalTrajectory(rows) : null;
+  const trajectory = hasPeriodMonth && basis.length >= 2 ? computeHistoricalTrajectory(basis) : null;
   const historicalConfidence = hasPeriodMonth ? computeHistoricalConfidence(n) : null;
   const founderNarrative = hasPeriodMonth ? buildFounderNarrative(trajectory, margin) : null;
 
@@ -1881,7 +1986,7 @@ export function computeMetrics(rows, manual, mode, context = {}) {
   return {
     tr, sr, latest, prev, totRev, totExp, totCogs, totMkt, totL, totC,
     hasConversionData, avgRev, netBurn, cashFlowPositive, dataConfidence,
-    totFinIn, totFinOut, totTrIn, totTrOut, totRefIn, totRefOut, avgFinOut, avgCashOut,
+    totFinIn, totFinOut, totTrIn, totTrOut, totRefIn, totRefOut, avgFinOut, avgCashOut, partialMonths,
     activeCash, activeCac, activeLtv, n, totPro, margin, vel, conv, ltvcac,
     cogsRatio, mktRatio, sov, sovLbl, taxV, safV, free, avgExp, burnMonths,
     hiringCapacity, concentration, concentrationReliable, revenueConcentration,

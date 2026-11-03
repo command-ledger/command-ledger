@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { fmt, pc, safe, detectExpenseCategory, parseAnyCSV, computeMetrics, trailingGrowthRate, computeGrowthScore, computeRiskScore, detectTrends, applyScenario, runScenario, computeHistoricalTrajectory, detectSeasonality, computeHistoricalConfidence, buildFounderNarrative, parseTransactions, normalizeDescription, dedupeHashInput, computeDedupeHash, aggregateTransactionsByMonth, computeConfidence, capSeverityForVolume, extractCounterparty, isAggregatorCounterparty, nameSimilarity, groupCounterparties, computeRevenueConcentration, classifyCadence, obligationConfidence, detectRecurringObligations, projectForwardCalendar, summarizeCalendarByWeek, computeForwardRunway, checkAffordability, detectMissedObligations, computeDirective, getDirectiveMetricValue, describeDirectiveOutcome, detectCurrentMonthSeasonality, computeSeasonallyAdjustedVelocity, checkoutBlockReason, classifyTwiceMonthly } from "./financials.js";
+import { fmt, pc, safe, detectExpenseCategory, parseAnyCSV, computeMetrics, trailingGrowthRate, computeGrowthScore, computeRiskScore, detectTrends, applyScenario, runScenario, computeHistoricalTrajectory, detectSeasonality, computeHistoricalConfidence, buildFounderNarrative, parseTransactions, normalizeDescription, dedupeHashInput, computeDedupeHash, aggregateTransactionsByMonth, computeConfidence, capSeverityForVolume, extractCounterparty, isAggregatorCounterparty, isGenericCounterparty, nameSimilarity, groupCounterparties, computeRevenueConcentration, classifyCadence, obligationConfidence, detectRecurringObligations, projectForwardCalendar, summarizeCalendarByWeek, computeForwardRunway, checkAffordability, detectMissedObligations, computeDirective, getDirectiveMetricValue, describeDirectiveOutcome, detectCurrentMonthSeasonality, computeSeasonallyAdjustedVelocity, checkoutBlockReason, classifyTwiceMonthly } from "./financials.js";
 
 describe("fmt / pc / safe", () => {
   it("formats currency and percentages", () => {
@@ -281,9 +281,38 @@ describe("computeGrowthScore", () => {
   it("rates a steady month-over-month decline as Declining", () => {
     const rows = [{ revenue: 20000 }, { revenue: 18000 }, { revenue: 16000 }];
     const g = computeGrowthScore(rows, -11.111111);
-    expect(g.consistency).toBe(0); // both transitions were negative
+    expect(g.consistency).toBe(1); // both transitions moved the way the rate did: down
     expect(g.rate).toBeCloseTo(-10.5556, 3);
+    // 50 + (rateScore - 50) x (0.6 + 0.4 x 1), rateScore = 50 - 10.5556 x 3 = 18.333
+    expect(g.score).toBeCloseTo(18.333, 2);
     expect(g.label).toBe("Declining");
+  });
+
+  it("reads perfectly flat revenue as Flat, not Declining", () => {
+    // No change is not a fall. The old formula scored this 35: "Declining".
+    const g = computeGrowthScore([{ revenue: 10000 }, { revenue: 10000 }, { revenue: 10000 }, { revenue: 10000 }], 0);
+    expect(g.score).toBeCloseTo(50, 6);
+    expect(g.label).toBe("Flat");
+  });
+
+  it("scores steady growth above one spike at the same average rate", () => {
+    // Both average 8% a month, so rateScore = 50 + 8 x 3 = 74.
+    const steady = computeGrowthScore([{ revenue: 10000 }, { revenue: 10800 }, { revenue: 11664 }, { revenue: 12597.12 }], 8);
+    const spike  = computeGrowthScore([{ revenue: 10000 }, { revenue: 9000 }, { revenue: 12060 }, { revenue: 12060 }], 0); // -10%, +34%, 0%
+    expect(steady.score).toBeCloseTo(74, 6);   // 50 + 24 x (0.6 + 0.4 x 1)
+    expect(spike.score).toBeCloseTo(67.6, 6);  // 50 + 24 x (0.6 + 0.4 x 1/3)
+    expect(steady.label).toBe("Growing");
+    expect(spike.label).toBe("Growing");
+  });
+
+  it("reads a steady decline as worse than a noisy one at the same rate", () => {
+    // Both average -8% a month, so rateScore = 50 - 8 x 3 = 26.
+    const steady = computeGrowthScore([{ revenue: 10000 }, { revenue: 9200 }, { revenue: 8464 }, { revenue: 7786.88 }], -8);
+    const noisy  = computeGrowthScore([{ revenue: 10000 }, { revenue: 11000 }, { revenue: 7260 }, { revenue: 7260 }], 0); // +10%, -34%, 0%
+    expect(steady.score).toBeCloseTo(26, 6);   // 50 - 24 x (0.6 + 0.4 x 1)
+    expect(noisy.score).toBeCloseTo(32.4, 6);  // 50 - 24 x (0.6 + 0.4 x 1/3)
+    expect(steady.label).toBe("Declining");
+    expect(noisy.label).toBe("Declining");
   });
 });
 
@@ -855,6 +884,28 @@ describe("isAggregatorCounterparty", () => {
     expect(isAggregatorCounterparty("coastal retail group")).toBe(false);
     expect(isAggregatorCounterparty("northgate distributors")).toBe(false);
   });
+
+  it("flags South African and other processors and marketplaces", () => {
+    ["yoco settlement", "payfast payout", "ikhokha", "ozow", "paystack settlement", "takealot", "square payout", "uber eats", "amazon marketplace"]
+      .forEach(n => expect(isAggregatorCounterparty(n), n).toBe(true));
+  });
+
+  it("needs a payout word for names that are also ordinary businesses", () => {
+    ["bolt studio project", "times square ltd", "square foot properties", "toast catering", "amazon web services"]
+      .forEach(n => expect(isAggregatorCounterparty(n), n).toBe(false));
+  });
+});
+
+describe("isGenericCounterparty", () => {
+  it("treats names that only say how money arrived as no name at all", () => {
+    ["cash deposit", "eft 4471", "magtape credit", "acb credit", "12345", "fnb app payment", "atm deposit", ""]
+      .forEach(n => expect(isGenericCounterparty(n), n).toBe(true));
+  });
+
+  it("keeps anything that names someone", () => {
+    ["acme corp", "payment j smith", "coastal retail group", "standard plumbing"]
+      .forEach(n => expect(isGenericCounterparty(n), n).toBe(false));
+  });
 });
 
 describe("nameSimilarity / groupCounterparties", () => {
@@ -939,18 +990,73 @@ describe("computeRevenueConcentration", () => {
 
   it("excludes payment processors from concentration risk while still reporting their revenue", () => {
     const txns = [
+      { amount: 3000, description: "Direct Sales - Shopify Payout" },
+      { amount: 3500, description: "Client Payment - Acme Corp" },
+      { amount: 3500, description: "Client Payment - Beta Industries" },
+    ];
+    const r = computeRevenueConcentration(txns);
+    expect(r.shown).toBe(true);
+    expect(r.payers.map(p => p.name)).not.toContain("shopify payout");
+    expect(r.aggregatorRevenue).toBe(3000);
+    expect(r.aggregatorPct).toBeCloseTo(30, 5);
+    // Concentration is judged against total revenue, not just the
+    // identified-client slice, so a processor's share doesn't inflate
+    // the apparent client concentration among the two real clients.
+    expect(r.largestPct).toBeCloseTo(35, 5); // 3500/10000
+    // Two named clients, but the processor's customers are more: no
+    // "fewer than three clients" warning.
+    expect(r.distinctPayers).toBe(2);
+    expect(r.severity).toBeNull();
+  });
+
+  it("does not measure concentration when processors carry most of the revenue", () => {
+    const txns = [
       { amount: 7000, description: "Direct Sales - Shopify Payout" },
       { amount: 1500, description: "Client Payment - Acme Corp" },
       { amount: 1500, description: "Client Payment - Beta Industries" },
     ];
     const r = computeRevenueConcentration(txns);
-    expect(r.payers.map(p => p.name)).not.toContain("shopify payout");
+    expect(r.shown).toBe(false);
     expect(r.aggregatorRevenue).toBe(7000);
     expect(r.aggregatorPct).toBeCloseTo(70, 5);
-    // Concentration is judged against total revenue, not just the
-    // identified-client slice, so a big processor share doesn't inflate
-    // the apparent client concentration among the two real clients.
-    expect(r.largestPct).toBeCloseTo(15, 5); // 1500/10000
+    expect(r.largestPct).toBeNull();
+    expect(r.severity).toBeNull();
+    expect(r.reason).toContain("70% of revenue arrives through payment processors");
+  });
+
+  it("does not read a run of cash deposits as one client", () => {
+    const r = computeRevenueConcentration([
+      { amount: 2000, description: "Cash deposit" },
+      { amount: 2000, description: "Cash deposit" },
+      { amount: 2000, description: "Cash deposit" },
+      { amount: 4000, description: "Client Payment - Acme Corp" },
+    ]);
+    expect(r.extractionRate).toBeCloseTo(0.25, 5); // only Acme names anyone
+    expect(r.shown).toBe(false);
+    expect(r.severity).toBeNull();
+  });
+
+  it("says so when no client is named at all", () => {
+    const r = computeRevenueConcentration([
+      { amount: 100, description: "Yoco settlement" },
+      { amount: 100, description: "Yoco settlement" },
+      { amount: 100, description: "Yoco settlement" },
+      { amount: 1000, description: "Cash deposit" },
+    ]);
+    expect(r.extractionRate).toBeCloseTo(0.75, 5);
+    expect(r.aggregatorPct).toBeCloseTo((300 / 1300) * 100, 5); // under half
+    expect(r.shown).toBe(false);
+    expect(r.reason).toBe("No client names could be read from your income descriptions.");
+  });
+
+  it("treats a payer called constructor as a name, not a built-in property", () => {
+    const r = computeRevenueConcentration([
+      { amount: 5000, description: "Client Payment - Constructor" },
+      { amount: 5000, description: "Client Payment - Beta Industries" },
+      { amount: 5000, description: "Client Payment - Gamma LLC" },
+    ]);
+    expect(r.totalRevenue).toBe(15000);
+    expect(r.payers.find(p => p.name === "constructor").revenue).toBe(5000);
   });
 
   it("flags fewer than 3 distinct payers as warn even when the split looks even", () => {
@@ -1003,6 +1109,15 @@ function addDays(base, days) {
   d.setUTCDate(d.getUTCDate() + days);
   return d.toISOString().slice(0, 10);
 }
+
+describe("detectRecurringObligations with awkward descriptions", () => {
+  it("treats a bill described constructor as a description, not a built-in property", () => {
+    const txns = ["01", "02", "03"].map(mm => ({ txn_date: `2026-${mm}-10`, description: "Constructor", amount: -500, category: null }));
+    const obs = detectRecurringObligations(txns, { asOf: "2026-03-31" });
+    expect(obs).toHaveLength(1);
+    expect(obs[0]).toMatchObject({ label: "Constructor", cadence: "monthly", typical_amount: 500 });
+  });
+});
 
 describe("classifyCadence", () => {
   it("classifies each interval band", () => {
