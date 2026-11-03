@@ -16,10 +16,10 @@ const PAYPAL_CLIENT_ID = import.meta.env.VITE_PAYPAL_CLIENT_ID;
 
 const PLANS = {
   software: {
-    // `tax` mirrors the PayPal plan, which adds 15% on top of US$99. It is shown
-    // wherever this price is, and checkoutBlockReason() opens checkout only
-    // while PayPal's tax setting matches it exactly.
-    name:"Command Ledger", usd:99, annualUsd:990, interval:"MONTH", period:"per month", tax:{ percent:15 },
+    // No tax: the PayPal plan's tax was set to 0% on 2026-11-03. To add a tax,
+    // set `tax:{ percent }` here together with the same rate in PayPal; every
+    // price display then states it, and checkoutBlockReason() blocks a mismatch.
+    name:"Command Ledger", usd:99, annualUsd:990, interval:"MONTH", period:"per month",
     tagline:"The system. Your numbers, read correctly, every week.",
     features:[
       "On-demand AI strategic brief",
@@ -4043,7 +4043,7 @@ function MarketingSite({ onLogin, onPlanSelect, onTerms, onPrivacy }) {
             <div className="mk-prices">
               {[
                 { key:"software", name:PLANS.software.name, forWho:"For founders who want the system and will read the numbers themselves.",
-                  fig:`US$${PLANS.software.usd}`, per:"per month", alt:`${taxTerms(PLANS.software)} Or US$${PLANS.software.annualUsd.toLocaleString()} a year, arranged by email.`,
+                  fig:`US$${PLANS.software.usd}`, per:"per month", alt:`${PLANS.software.tax ? `${taxTerms(PLANS.software)} Or` : "or"} US$${PLANS.software.annualUsd.toLocaleString()} a year, arranged by email${PLANS.software.tax ? "." : ""}`,
                   list:PLANS.software.features, cta:"Get started", featured:false },
                 { key:"advisory", name:PLANS.advisory.name, forWho:"For founders who want an advisor reading the numbers with them every month.",
                   fig:`US$${PLANS.advisory.usd.toLocaleString()}`, per:"per month", alt:`We take ${PLANS.advisory.clients} Advisory clients at a time.`,
