@@ -213,11 +213,11 @@ describe("messages carry the business currency", () => {
   });
   it("computeDirective", () => {
     const d = computeDirective({ margin: -5, burnMonths: 2, free: -12000, vel: 0, conv: 0, ltvcac: 0, months: 3, concentration: null, currency: "ZAR" });
-    expect(plain(d.reason)).toContain("-R 12 000");
+    expect(plain(d.reason)).toContain("a loss of R 12 000");
   });
   it("describeDirectiveOutcome", () => {
     const out = describeDirectiveOutcome({ target_metric: "free", metric_at_issue: 1000, outcome_metric: 2500 }, "ZAR");
-    expect(plain(out.message)).toBe("True Free Cash moved from R 1 000 to R 2 500.");
+    expect(plain(out.message)).toBe("Profit after reserves moved from R 1 000 to R 2 500.");
   });
   it("detectTrends uses each currency's own materiality floor", () => {
     // Net burn of 3 000 a month, then 9 000: a 6 000 move. Material in

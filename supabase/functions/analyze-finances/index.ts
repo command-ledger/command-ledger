@@ -99,7 +99,7 @@ serve(async (req: Request) => {
     const {
       monthlyRevenue, totalRevenue, totalExpenses, netProfit,
       profitMargin, velocity, conversionRate, sovereigntyScore,
-      trueFreeCash, burnRunway, cashFlowPositive, ltvCacRatio, cogsRatio, marketingRatio,
+      trueFreeCash, profitAfterReserves, burnRunway, cashFlowPositive, ltvCacRatio, cogsRatio, marketingRatio,
       hiringCapacity, breakEven, proj90,
       // Real payer-based concentration (replaces the retired single-month
       // maxRev/totRev metric). Only carries largestPct/top3Pct/hhi/etc. when
@@ -130,7 +130,21 @@ serve(async (req: Request) => {
       directiveHistory,
       // Expense breakdown if available
       payroll, rent, marketing, software, cogs,
+      // The cash balance runway was measured from ({ amount, on, source }),
+      // or null when none is known.
+      cashBalance,
+      // Money kept out of revenue and costs for the period: loans and owner
+      // money, transfers between the business's own accounts, and refunds
+      // (which were netted against revenue or costs).
+      nonOperating,
+      // Months still in progress (this month, or one the data covers only in
+      // part), counted in the period's totals but never as a whole month,
+      // and the label of the latest complete month.
+      partialMonths, latestMonth,
     } = body
+    // Renamed from trueFreeCash; a frontend deployed before the rename still
+    // sends the old name for the same figure.
+    const reservesProfit = profitAfterReserves ?? trueFreeCash
 
     // Every amount arrives in the business's own currency, chosen by the
     // founder. Only a well-formed ISO 4217 code is used; anything else is
@@ -180,7 +194,7 @@ serve(async (req: Request) => {
           `- Herfindahl Index: ${rc.hhi} (0 = perfectly diversified, 1 = a single client)`,
           `- Distinct Paying Clients: ${rc.distinctPayers}`,
           `- Concentration Severity: ${rc.severity === "critical" ? "Critical — largest client above 60%" : rc.severity === "warn" ? "Warn" : "None — split is healthy"}`,
-          Number(rc.aggregatorPct) > 0.5 ? `- Note: ${rc.aggregatorPct}% of revenue arrives through a payment processor (Shopify/Stripe/PayPal) and is excluded above — it can't be attributed to one real client.` : null,
+          Number(rc.aggregatorPct) > 0.5 ? `- Note: ${rc.aggregatorPct}% of revenue arrives through payment processors or marketplaces (such as Stripe, PayPal, Shopify, Yoco or PayFast) and is excluded above — it can't be attributed to one real client.` : null,
           rc.topPayers?.length ? `- Top payers by revenue share: ${rc.topPayers.map((p) => `${p.name} (${p.pct}%)`).join(", ")}` : null,
         ].filter(Boolean).join("\n")
       : `Not available — ${rc.reason || "payer names could not be reliably extracted from enough income transactions"}`
@@ -220,6 +234,22 @@ serve(async (req: Request) => {
           return `${i + 1}. [${date}, ${String(d.severity || "").toUpperCase()}] "${d.text}" — ${action}.${noteLine} Outcome: ${d.outcome?.message || "not yet measured"}`
         }).join("\n")
       : "No prior directives on record yet — this is the first one issued."
+
+    // The balance runway was measured from, with its date and where it came from.
+    const cb = cashBalance && Number.isFinite(Number(cashBalance.amount)) ? cashBalance : null
+    const cashBalanceLine = cb
+      ? `- Cash Balance: ${fmt(cb.amount)} on ${cb.on}${cb.source === "upload" ? " (the closing balance of an uploaded bank file; one account only, unless the founder has entered a total)" : " (entered by the founder)"}${Number(cb.amount) < 0 ? " — the account is overdrawn" : ""}`
+      : "- Cash Balance: Not available — no balance entered, and no uploaded file had a Balance column"
+
+    // Money that moved but is neither revenue nor a cost.
+    const no = nonOperating || {}
+    const nonOperatingSection = [
+      Number(no.financingIn) > 0 ? `- Loans received and money the owner put in: ${fmt(no.financingIn)}` : null,
+      Number(no.financingOut) > 0 ? `- Loan repayments and money the owner took out: ${fmt(no.financingOut)} (not a cost, so not in profit or margin, but counted in burn, runway and hiring capacity)` : null,
+      Number(no.transferIn) > 0 || Number(no.transferOut) > 0 ? `- Transfers between the business's own accounts: ${fmt(no.transferIn)} in, ${fmt(no.transferOut)} out (counted in nothing)` : null,
+      Number(no.refundsOut) > 0 ? `- Refunds paid to customers: ${fmt(no.refundsOut)} (already taken off revenue)` : null,
+      Number(no.refundsIn) > 0 ? `- Refunds received from suppliers: ${fmt(no.refundsIn)} (already taken off expenses)` : null,
+    ].filter(Boolean).join("\n")
 
     // Build expense breakdown section if we have category data
     const expenseBreakdown = [
@@ -264,18 +294,21 @@ Rules:
 - Read DECISION HISTORY below and reference it directly, not generically. If the founder ignored the same or a substantially similar directive twice, say so plainly — name it. If they acted and the outcome shows improvement, confirm it worked and state the measured change. If they disagreed, treat their note as a real input to weigh, not something to override by default — their reasoning may be correct.
 - Never shame the founder for an ignored directive. State the fact and the consequence, nothing more — e.g. "You have not reduced X since the Y directive; Z has since moved from A to B," never a judgment about the founder's choice.
 - If SEASONAL CONTEXT is present below, the current month's dip or spike is an established, repeating pattern, not a new problem — never call it a decline, a red flag, or something to fix. Say plainly that it's seasonal and reference the historical pattern.
-- Write every amount in the CURRENCY stated below, formatted exactly like the figures you are given. Never write a dollar sign unless that currency is USD, and never convert between currencies.`
+- Write every amount in the CURRENCY stated below, formatted exactly like the figures you are given. Never write a dollar sign unless that currency is USD, and never convert between currencies.
+- Profit After Reserves is a profit figure, not cash. Never call it cash, money in the bank, or money available to spend; the founder's cash is the Cash Balance line alone.
+- Anything under MONEY KEPT OUT OF REVENUE AND COSTS is neither revenue nor a cost. Never call a loan or the owner's own money income, and never call a transfer between the business's own accounts spending.
+- A month still in progress is not a full month. Never compare it with full months or read its lower totals as a decline; the monthly figures below are from complete months.`
 
     const userPrompt = `Here is the complete financial position of this business. Analyze it and tell the founder exactly what is happening and what to do:
 
 ${currencyLine}
-REPORTING PERIOD: ${dataMonths} month(s) of data
+REPORTING PERIOD: ${dataMonths} month(s) of data${Number(partialMonths) > 0 ? `, plus ${partialMonths} month(s) still in progress, counted in the period totals only` : ""}
 DATA CONFIDENCE: ${dataConfidence === "low" ? "Low — a single manually-entered snapshot, no transaction history" : dataConfidence === "medium" ? "Medium — real uploaded data, but under 3 months of history" : "High — real uploaded data with 3+ months of history"}
 ALLOCATION MODE: ${mode === "growth" ? "Aggressive (Growth)" : "Conservative (Safe)"}
 PLAN TIER: ${plan}
 
 CORE METRICS:
-- Current Monthly Revenue: ${fmt(monthlyRevenue)}
+- Latest Complete Month's Revenue${latestMonth ? ` (${latestMonth})` : ""}: ${fmt(monthlyRevenue)}
 - Total Revenue (period): ${fmt(totalRevenue)}
 - Total Expenses (period): ${fmt(totalExpenses)}
 - Net Profit (period): ${fmt(netProfit)}
@@ -285,8 +318,9 @@ CORE METRICS:
 - Sovereignty Score: ${sovereigntyScore}/100
 
 CASH POSITION:
-- True Free Cash (after tax vault + safety buffer): ${fmt(trueFreeCash)}
-- Burn Runway: ${cashFlowPositive ? "Cash flow positive — revenue currently exceeds expenses, so there is no cash burn to report" : describeMetric(burnRunway, conf.runway, (v) => `${v} months`)}
+- Profit After Reserves (net profit for the period less the tax and safety reserves; a profit figure, not a cash balance): ${fmt(reservesProfit)}
+${cashBalanceLine}
+- Burn Runway: ${cashFlowPositive ? "Cash flow positive — revenue currently covers costs, loan repayments and owner withdrawals, so there is no cash burn to report" : describeMetric(burnRunway, conf.runway, (v) => `${v} months`)}
 - Break-Even Revenue Required: ${describeMetric(breakEven, conf.breakEven, fmt)}
 - 90-Day Revenue Projection: ${describeMetric(proj90, conf.proj90, fmt)}
 
@@ -296,7 +330,10 @@ UNIT ECONOMICS:
 - Marketing Spend as % of Revenue: ${pct(marketingRatio)}
 
 OPERATIONAL FLAGS:
-- Hiring Capacity: ${describeMetric(hiringCapacity, conf.hiringCapacity, (v) => Number(v) > 0 ? `${fmt(v)}/month — the largest fully-loaded monthly cost average profit covers after the safety buffer; it is not a recommendation to hire` : "None — average costs exceed revenue, so any hire would be funded from cash")}
+- Hiring Capacity: ${describeMetric(hiringCapacity, conf.hiringCapacity, (v) => Number(v) > 0 ? `${fmt(v)}/month — the largest fully-loaded monthly cost average profit covers after loan repayments, owner withdrawals and the safety buffer; it is not a recommendation to hire` : "None — average costs exceed revenue, so any hire would be funded from cash")}
+
+MONEY KEPT OUT OF REVENUE AND COSTS (this period):
+${nonOperatingSection || "None — every transaction in the period was revenue or a cost."}
 
 REVENUE CONCENTRATION (by real paying client, extracted from transaction descriptions):
 ${concentrationSection}

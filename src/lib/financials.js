@@ -69,6 +69,36 @@ export function currencySymbol(currency) {
 }
 export const currencyName = code => CURRENCY_BY_CODE[code]?.name || code || "No currency chosen";
 
+// ─── CASH BALANCE ───────────────────────────────────────────────
+// Runway needs the cash in the bank, and it comes from two saved places: a
+// balance the founder enters (on the profile, with the date it was true)
+// and the closing balance of an uploaded file with a Balance column (on the
+// upload). The newest is used; on the same date the founder's own figure
+// wins, then the most recent upload. Only a balance in the business
+// currency counts, because nothing is ever converted. An overdraft is a
+// real balance below zero, not a missing one. A file's balance is one
+// account's; the founder's entered figure is how a business with several
+// accounts gives the total.
+const finiteOrNull = v => (v === null || v === undefined || v === "" || !Number.isFinite(Number(v)) ? null : Number(v));
+export function effectiveCashBalance({ profile, batches, baseCurrency }) {
+  if (!baseCurrency) return null;
+  const found = [];
+  const entered = finiteOrNull(profile?.cash_balance);
+  if (entered !== null && profile.cash_balance_on && profile.cash_balance_currency === baseCurrency) {
+    found.push({ amount: entered, on: String(profile.cash_balance_on).slice(0, 10), source: "entered", filename: null, rank: 1, at: "" });
+  }
+  (batches || []).forEach(b => {
+    const closing = finiteOrNull(b?.closing_balance);
+    if (closing !== null && b.closing_balance_on && b.currency === baseCurrency) {
+      found.push({ amount: closing, on: String(b.closing_balance_on).slice(0, 10), source: "upload", filename: b.filename || null, rank: 0, at: String(b.uploaded_at || "") });
+    }
+  });
+  if (found.length === 0) return null;
+  found.sort((a, b) => b.on.localeCompare(a.on) || b.rank - a.rank || b.at.localeCompare(a.at));
+  const { amount, on, source, filename } = found[0];
+  return { amount, on, source, filename, currency: baseCurrency };
+}
+
 // Splits stored transactions into those in the base currency, which every
 // metric is computed from, and those in any other currency, which are kept
 // and listed but never added in. A row with no currency is not assumed to
@@ -864,14 +894,15 @@ export function computeForwardRunway({ currentCash, avgRev, avgExp, avgFinOut = 
 // forward calendar (real obligations on their real dates), not against a
 // flat current-cash check. Layers a synthetic monthly obligation onto the
 // existing ones and re-runs the same simulation over a 12-month horizon.
-export function checkAffordability({ currentCash, avgRev, avgExp, avgFinOut = 0, obligations, monthlyCost, fromDate, currency = "USD" }) {
-  // No cash balance on file (0 is how "not entered" arrives) leaves nothing
-  // to simulate from: the run would start at $0 and call every cost
-  // unaffordable on day one, even for a profitable business. Answer from
-  // monthly profit instead and say what is missing. A real negative
-  // balance (an overdraft) is data, and still runs the full simulation.
+export function checkAffordability({ currentCash, cashKnown = Boolean(Number(currentCash)), avgRev, avgExp, avgFinOut = 0, obligations, monthlyCost, fromDate, currency = "USD" }) {
+  // No cash balance on file leaves nothing to simulate from: the run would
+  // start at $0 and call every cost unaffordable on day one, even for a
+  // profitable business. Answer from monthly profit instead and say what is
+  // missing. `cashKnown` says a balance is on file; without it, 0 is how
+  // "not entered" arrives. A known balance of zero or an overdraft is data,
+  // and runs the full simulation.
   const finOut = Number(avgFinOut) || 0;
-  if (!Number(currentCash)) {
+  if (!cashKnown) {
     const monthlyProfit = (Number(avgRev) || 0) - (Number(avgExp) || 0) - finOut;
     const covered = monthlyProfit >= (Number(monthlyCost) || 0);
     const basis = finOut > 0 ? "average monthly profit after loan repayments and owner withdrawals" : "average monthly profit";
@@ -880,6 +911,18 @@ export function checkAffordability({ currentCash, avgRev, avgExp, avgFinOut = 0,
       message: covered
         ? `Your ${basis} (${fmt(monthlyProfit, currency)}) covers this. Add a cash balance to also test it against your bills on their real dates.`
         : `This is more than your ${basis} (${fmt(Math.max(0, monthlyProfit), currency)}) covers, and with no cash balance entered there is nothing to fund the gap. Add a cash balance to see how long it would last.`,
+    };
+  }
+  // Already at or below zero, a new cost has no cash to come from, whatever
+  // profit does: a simulation would only say it "breaks" on day one.
+  if (Number(currentCash) <= 0) {
+    const monthlyProfit = (Number(avgRev) || 0) - (Number(avgExp) || 0) - finOut;
+    const basis = finOut > 0 ? "average monthly profit after loan repayments and owner withdrawals" : "average monthly profit";
+    return {
+      affordable: false, overdrawn: true,
+      message: monthlyProfit >= (Number(monthlyCost) || 0)
+        ? `Your ${basis} (${fmt(monthlyProfit, currency)}) covers this, but your cash balance is ${fmt(currentCash, currency)}, so until profit rebuilds it this would be paid from an overdraft or borrowing.`
+        : `Your cash balance is ${fmt(currentCash, currency)} and your ${basis} (${fmt(Math.max(0, monthlyProfit), currency)}) does not cover this, so it would deepen the shortfall every month.`,
     };
   }
   const horizonDays = 365;
@@ -1404,7 +1447,7 @@ export const parseAnyCSV = (text, options = {}) => {
   if (rows.length === 0) return null;
   // The file's own closing balance, when it is in this currency.
   const cb = parsed.closingBalance;
-  if (cb && (!currency || !cb.currency || cb.currency === currency)) rows[rows.length - 1].cash = cb.amount;
+  if (cb && (!currency || !cb.currency || cb.currency === currency)) Object.assign(rows[rows.length - 1], { cash: cb.amount, cashKnown: true });
 
   const fields = new Set(parsed.columns);
   const detectedFields = [];
@@ -1827,7 +1870,11 @@ export function capSeverityForVolume(severity, months) {
 // outside this function because it needs transaction descriptions, which
 // monthly-aggregated `rows` never carry.
 export function computeMetrics(rows, manual, mode, context = {}) {
-  const { lastTxnDate = null, revenueConcentration = null, currency = "USD" } = context;
+  // `context.cash` ({ amount, on }, from effectiveCashBalance) is a known
+  // balance: used as it is, an overdraft or zero included. Without it the
+  // older inputs stand: a file's closing balance on the newest row, or the
+  // manual figure, where 0 means "not entered".
+  const { lastTxnDate = null, revenueConcentration = null, currency = "USD", cash = null } = context;
   const { mRev, mExp, mCash, mCac, mLtv, mLeads, mClose, mFinOut = 0 } = manual;
 
   const tr = mode === "safe" ? 0.30 : 0.25;
@@ -1857,7 +1904,11 @@ export function computeMetrics(rows, manual, mode, context = {}) {
   const totTrIn   = sumOf("transferIn"),  totTrOut  = sumOf("transferOut");
   const totRefIn  = sumOf("refundsIn"),   totRefOut = sumOf("refundsOut");
   // A balance belongs to the newest row, complete or not.
-  const activeCash = rows ? (rows[rows.length - 1].cash || mCash) : mCash;
+  const lastRow    = rows ? rows[rows.length - 1] : null;
+  const knownCash  = cash && finiteOrNull(cash.amount) !== null ? Number(cash.amount)
+    : lastRow?.cashKnown ? Number(lastRow.cash) || 0 : null;
+  const cashKnown  = knownCash !== null;
+  const activeCash = cashKnown ? knownCash : rows ? (lastRow.cash || mCash) : mCash;
   const activeCac  = rows ? (latest.cac  || mCac)  : mCac;
   const activeLtv  = rows ? (latest.ltv  || mLtv)  : mLtv;
 
@@ -1890,7 +1941,7 @@ export function computeMetrics(rows, manual, mode, context = {}) {
     : Math.min(100, Math.max(0, margin));
   const sovLbl    = sov >= 75 ? "Sovereign" : sov >= 50 ? "Stabilizing" : sov >= 30 ? "Defensive" : "Critical";
   // Reserves are set aside out of profit. A loss owes no tax and funds no
-  // buffer, so both are zero then and True Free Cash is the full loss —
+  // buffer, so both are zero then and profit after reserves is the full loss —
   // reserving a negative amount used to report only half of it.
   const taxV      = Math.max(0, totPro) * tr;
   const safV      = Math.max(0, totPro) * sr;
@@ -1914,7 +1965,9 @@ export function computeMetrics(rows, manual, mode, context = {}) {
   // be taken from the whole period's loss, so the same cash and burn read
   // as a shorter runway the longer the selected history — and went negative
   // ("---", maximum risk) on a long enough one.
-  const burnMonths = netBurn > 0 ? (activeCash - netBurn * sr) / netBurn : 0;
+  // Never below zero: cash that does not cover the safety share, or an
+  // overdraft, is no runway, not negative runway.
+  const burnMonths = netBurn > 0 ? Math.max(0, (activeCash - netBurn * sr) / netBurn) : 0;
   // Hiring capacity: the largest new fully-loaded monthly cost (salary,
   // payroll tax, benefits) the business's own average monthly profit can
   // carry without drawing down cash, after holding back the mode's safety
@@ -1956,7 +2009,7 @@ export function computeMetrics(rows, manual, mode, context = {}) {
 
   const growth = computeGrowthScore(basis, vel, seasonalAdjustedVel);
   const trends = detectTrends(basis, seasonalPattern, currency);
-  const risk = computeRiskScore({ cashFlowPositive, burnMonths, runwayKnown: activeCash > 0, concentration, concentrationReliable, ltvcac, margin, trends, growthScore: growth.score });
+  const risk = computeRiskScore({ cashFlowPositive, burnMonths, runwayKnown: cashKnown || activeCash > 0, concentration, concentrationReliable, ltvcac, margin, trends, growthScore: growth.score });
 
   // Long-run trajectory, seasonality, and a plain-language narrative —
   // same 13+/2+ month floors as the functions themselves. Every field
@@ -1969,14 +2022,24 @@ export function computeMetrics(rows, manual, mode, context = {}) {
   // having been entered (manual inputs all default to 0), so — consistent
   // with how this engine already treats missing CAC/lead data elsewhere —
   // "present" means "greater than zero," not "not undefined."
-  const hasCashData = activeCash > 0;
+  const hasCashData = cashKnown || activeCash > 0;
   const hasUnitEconomicsData = activeCac > 0 && activeLtv > 0;
 
-  const runwayConfidence = metricConfidence(
+  const runwayBase = metricConfidence(
     cashFlowPositive || hasCashData,
     "no cash balance entered. Add it under Transactions to calculate runway",
     n, lastTxnDate
   );
+  // A balance from weeks ago says little about today's runway: one level
+  // lower, and the reason says how old it is.
+  const cashAgeDays = cash?.on ? Math.floor(((context.today ? Date.parse(context.today) : Date.now()) - Date.parse(cash.on)) / 86400000) : null;
+  const runwayConfidence = runwayBase.shown && !cashFlowPositive && cashAgeDays !== null && cashAgeDays > CONFIDENCE_RECENCY_DAYS
+    ? {
+        ...runwayBase,
+        level: runwayBase.level === "high" ? "moderate" : "low",
+        reason: `${runwayBase.reason}, and a cash balance from ${cash.on}, ${cashAgeDays} days ago`,
+      }
+    : runwayBase;
   const breakEvenConfidence = metricConfidence(hasData, "no revenue/expense data yet", n, lastTxnDate);
   const proj90Confidence    = metricConfidence(hasData, "no revenue/expense data yet", n, lastTxnDate);
   const hiringCapacityConfidence = metricConfidence(hasData, "no revenue/expense data yet", n, lastTxnDate);
@@ -1992,7 +2055,7 @@ export function computeMetrics(rows, manual, mode, context = {}) {
     hiringCapacity, concentration, concentrationReliable, revenueConcentration,
     breakEven, proj90, proj90GrowthRate, hasData,
     growth, risk, trends, seasonalPattern, trajectory, historicalConfidence, founderNarrative,
-    hasCashData, hasUnitEconomicsData,
+    hasCashData, hasUnitEconomicsData, cashKnown, cashOn: cash?.on ?? null,
     runwayConfidence, breakEvenConfidence, proj90Confidence,
     hiringCapacityConfidence, ltvcacConfidence, growthConfidence,
   };
@@ -2025,12 +2088,17 @@ export function applyScenario(baseline, adjustments = {}) {
 // Runs a scenario through computeMetrics and returns it alongside the
 // baseline (unadjusted) result, so the caller can show a before/after
 // comparison without computing the baseline twice.
-export function runScenario(baseline, adjustments, mode) {
+// `options.cashKnown`: the baseline's cash is a known balance, passed as it
+// is (an overdraft included), where a typed figure is floored at zero.
+export function runScenario(baseline, adjustments, mode, options = {}) {
   const baselineManual = applyScenario(baseline, {});
   const scenarioManual = applyScenario(baseline, adjustments);
+  const known = delta => options.cashKnown
+    ? { cash: { amount: (Number(baseline.cash) || 0) + (Number(delta) || 0) } }
+    : {};
   return {
-    before: computeMetrics(null, baselineManual, mode),
-    after: computeMetrics(null, scenarioManual, mode),
+    before: computeMetrics(null, baselineManual, mode, known(0)),
+    after: computeMetrics(null, scenarioManual, mode, known(adjustments?.cashDelta)),
   };
 }
 
@@ -2211,16 +2279,24 @@ export function buildFounderNarrative(trajectory, currentMargin) {
 // carries a stable `rule` id and a `targetMetric` naming which field of
 // the metrics object this call is trying to move, so an outcome can be
 // measured against the same value later without guessing.
-export function computeDirective({ margin, burnMonths, free, vel, conv, ltvcac, months, concentration, currency = "USD" }) {
+// `runwayKnown` (a cash balance is known) and `cashFlowPositive` tell a
+// runway of 0 months (no cash left to burn) from one that was never
+// measured; without them, 0 is read as unmeasured, as before.
+export function computeDirective({ margin, burnMonths, free, vel, conv, ltvcac, months, concentration, currency = "USD", runwayKnown = false, cashFlowPositive = false }) {
   const raw = (() => {
+    // Reserves come out of profit only, so this is a loss for the period.
+    // The rule keeps its stored name.
     if (safe(free) < 0) return {
       text: "Cut all non-essential spend before end of this week.",
-      reason: `Your True Free Cash is ${fmt(free, currency)}. After tax obligations and safety buffer, you owe more than you earn. Every day of inaction erodes your position further.`,
+      reason: `The business made a loss of ${fmt(Math.abs(free), currency)} in this period: costs are higher than revenue, so there is nothing to set aside for tax or a safety buffer. Each month at this rate is paid for from cash or borrowing.`,
       severity: "critical", rule: "negative_free_cash", targetMetric: "free",
     };
-    if (safe(burnMonths) > 0 && safe(burnMonths) < 3) return {
+    const outOfRunway = runwayKnown && !cashFlowPositive && safe(burnMonths) <= 0;
+    if ((safe(burnMonths) > 0 && safe(burnMonths) < 3) || outOfRunway) return {
       text: "Protect your runway. You have less than 3 months.",
-      reason: `At current burn rate you have ${safe(burnMonths).toFixed(1)} months before the business runs dry. Suspend all non-revenue-generating spend immediately.`,
+      reason: outOfRunway
+        ? "Your cash balance no longer covers a month of net burn after the safety share. Suspend all non-revenue-generating spend immediately."
+        : `At current burn rate you have ${safe(burnMonths).toFixed(1)} months before the business runs dry. Suspend all non-revenue-generating spend immediately.`,
       severity: "critical", rule: "low_runway", targetMetric: "burnMonths",
     };
     // Only from real, confidently-extracted payer names — never from a
@@ -2290,7 +2366,7 @@ export function getDirectiveMetricValue(targetMetric, metrics, concentration) {
 }
 
 const DIRECTIVE_METRIC_LABELS = {
-  free: { label: "True Free Cash", fmt: (v, currency) => fmt(v, currency), higherIsBetter: true },
+  free: { label: "Profit after reserves", fmt: (v, currency) => fmt(v, currency), higherIsBetter: true },
   burnMonths: { label: "Burn Runway", fmt: (v) => `${v.toFixed(1)} months`, higherIsBetter: true },
   concentration: { label: "Revenue concentration in your largest client", fmt: (v) => `${v.toFixed(1)}%`, higherIsBetter: false },
   ltvcac: { label: "LTV:CAC ratio", fmt: (v) => `${v.toFixed(1)}x`, higherIsBetter: true },

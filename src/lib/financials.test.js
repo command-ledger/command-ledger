@@ -113,7 +113,7 @@ describe("computeMetrics — manual entry", () => {
     expect(twentyFour).toBeCloseTo(three, 5);
   });
 
-  it("reserves nothing out of a loss, so True Free Cash is the whole loss", () => {
+  it("reserves nothing out of a loss, so profit after reserves is the whole loss", () => {
     const burning = { mRev: 30000, mExp: 40000, mCash: 100000, mCac: 0, mLtv: 0, mLeads: 0, mClose: 0 };
     const m = computeMetrics(null, burning, "safe");
     expect(m.taxV).toBe(0);
@@ -1561,7 +1561,7 @@ describe("computeDirective", () => {
     expect(d.severity).toBe("critical");
   });
 
-  it("issues low_runway as critical when runway is under 3 months and free cash is still positive", () => {
+  it("issues low_runway as critical when runway is under 3 months and profit after reserves is still positive", () => {
     const d = computeDirective({ ...healthy, burnMonths: 2 });
     expect(d.rule).toBe("low_runway");
     expect(d.targetMetric).toBe("burnMonths");
@@ -1602,7 +1602,7 @@ describe("computeDirective", () => {
     expect(d.severity).toBe("go");
   });
 
-  it("never tells a founder to hire, however much free cash there is", () => {
+  it("never tells a founder to hire, however much profit there is", () => {
     const d = computeDirective({ ...healthy, margin: 20, conv: 15, free: 10_000_000 });
     expect(d.rule).not.toBe("hire_ready");
   });

@@ -101,7 +101,7 @@ describe("buildReportCsv", () => {
   const csv = buildReportCsv({
     periodLabel: "Last 3 months", generatedAt: "2026-10-31",
     rows: [{ month: "Jan 26", revenue: 10000, expenses: 6000 }, { month: "Feb 26", revenue: 0, expenses: 500 }],
-    summary: [["Runway", "No burn"], ["Note", 'Said "hi", then left'], ["Formula", "=HYPERLINK(1)"], ["Free cash", "-$5,000"], ["Sneaky", "-1+cmd"]],
+    summary: [["Runway", "No burn"], ["Note", 'Said "hi", then left'], ["Formula", "=HYPERLINK(1)"], ["Profit after reserves", "-$5,000"], ["Sneaky", "-1+cmd"]],
   });
   const lines = csv.split("\r\n");
   it("writes the monthly table with net, margin and a totals row", () => {
@@ -115,7 +115,7 @@ describe("buildReportCsv", () => {
     expect(lines).toContain("Sneaky,'-1+cmd");
   });
   it("leaves negative money readable", () => {
-    expect(lines).toContain('Free cash,"-$5,000"');
+    expect(lines).toContain('Profit after reserves,"-$5,000"');
   });
 });
 
