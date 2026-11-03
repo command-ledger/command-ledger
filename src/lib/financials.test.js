@@ -613,11 +613,13 @@ describe("parseTransactions", () => {
     expect(result.transactions[1].counterparty).toBeNull(); // expense row — not in scope
   });
 
-  it("nets named Revenue/Expenses columns into one signed amount per row", () => {
+  it("keeps named Revenue/Expenses columns as two records, so neither is lost", () => {
+    // Netting them into one amount saved R10 000 revenue and R6 000 costs as
+    // R4 000 revenue at a 100% margin.
     const csv = "Date,Revenue,Expenses\n2026-01-01,10000,6000\n";
     const result = parseTransactions(csv);
     expect(result.mode).toBe("named");
-    expect(result.transactions[0].amount).toBe(4000); // net of the two columns on that row
+    expect(result.transactions.map(t => t.amount)).toEqual([10000, -6000]);
   });
 
   it("parses day-before-month for ambiguous DD/MM/YYYY dates, matching parseAnyCSV's convention", () => {

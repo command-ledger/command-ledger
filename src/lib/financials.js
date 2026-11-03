@@ -882,376 +882,358 @@ function rowDeclaredCurrency(row, currencyCol, amountCols) {
   return null;
 }
 
-export const parseAnyCSV = (text, options = {}) => {
-  // ── Detect delimiter ─────────────────────────────────────────
-  const firstLine = text.trim().split(/\r?\n/)[0] || "";
-  const delimiter = firstLine.includes("\t") ? "\t" : firstLine.includes(";") ? ";" : ",";
+// ─── FILE READING ───────────────────────────────────────────────
+// One reader serves both parsers, so a file is understood the same way for
+// the session preview and for the saved history. It accepts comma,
+// semicolon, tab or pipe delimited text; a header row anywhere in the first
+// 25 lines (bank exports often open with an account summary); quoted fields
+// holding delimiters, doubled quotes or line breaks; and UTF-8 or UTF-16
+// text (decodeTextFile). Headers are matched by whole name or whole word,
+// never by substring: "Value Date" is a date, not an amount, and an empty
+// header from a trailing comma matches nothing.
 
-  // ── Parse rows ───────────────────────────────────────────────
-  const parseRow = (line) => {
-    const cols = []; let cur = ""; let inQ = false;
-    for (const ch of line) {
-      if (ch === '"') { inQ = !inQ; }
-      else if (ch === delimiter && !inQ) { cols.push(cur.trim()); cur = ""; }
-      else cur += ch;
-    }
-    cols.push(cur.trim());
-    return cols.map(c => c.replace(/^"|"$/g, "").trim());
-  };
+// Uploaded bytes to text. Excel's "Unicode Text" export is UTF-16; most
+// other exports are UTF-8, sometimes with a byte-order mark.
+export function decodeTextFile(input) {
+  const b = input instanceof Uint8Array ? input : new Uint8Array(input);
+  if (b.length >= 2 && b[0] === 0xff && b[1] === 0xfe) return new TextDecoder("utf-16le").decode(b.subarray(2));
+  if (b.length >= 2 && b[0] === 0xfe && b[1] === 0xff) return new TextDecoder("utf-16be").decode(b.subarray(2));
+  const start = b.length >= 3 && b[0] === 0xef && b[1] === 0xbb && b[2] === 0xbf ? 3 : 0;
+  // UTF-16 without a byte-order mark: plain text then has a zero byte in
+  // every other position.
+  const sample = b.subarray(start, Math.min(b.length, start + 400));
+  let evenZeros = 0, oddZeros = 0;
+  for (let i = 0; i < sample.length; i++) if (sample[i] === 0) { if (i % 2) oddZeros++; else evenZeros++; }
+  if (sample.length >= 4 && (evenZeros + oddZeros) / sample.length > 0.3) {
+    return new TextDecoder(oddZeros >= evenZeros ? "utf-16le" : "utf-16be").decode(b.subarray(start));
+  }
+  return new TextDecoder("utf-8").decode(b.subarray(start));
+}
 
-  const allRows = text.trim().split(/\r?\n/)
-    .map(parseRow)
-    .filter(r => r.some(c => c.length > 0));
+const DELIMITERS = [",", ";", "\t", "|"];
+const MAX_HEADER_SCAN = 25;
 
-  if (allRows.length < 2) return null;
+function countOutsideQuotes(line, d) {
+  let n = 0, quoted = false;
+  for (const ch of line) { if (ch === '"') quoted = !quoted; else if (ch === d && !quoted) n++; }
+  return n;
+}
 
-  // ── Find header row (may not always be row 0 in bank exports) ─
-  let headerRowIdx = 0;
-  for (let i = 0; i < Math.min(5, allRows.length); i++) {
-    const row = allRows[i];
-    const rowStr = row.join(" ").toLowerCase();
-    if (rowStr.includes("date") || rowStr.includes("amount") || rowStr.includes("description")
-      || rowStr.includes("revenue") || rowStr.includes("debit") || rowStr.includes("credit")) {
-      headerRowIdx = i;
-      break;
+// The delimiter that splits the most lines into the same number of fields.
+function detectDelimiter(lines) {
+  let best = ",", bestScore = 0;
+  for (const d of DELIMITERS) {
+    const freq = {};
+    lines.forEach(l => { const c = countOutsideQuotes(l, d); if (c > 0) freq[c] = (freq[c] || 0) + 1; });
+    for (const [count, agree] of Object.entries(freq)) {
+      const score = agree * 100 + Number(count);
+      if (score > bestScore) { best = d; bestScore = score; }
     }
   }
+  return best;
+}
 
-  const headers = allRows[headerRowIdx].map(h => h.toLowerCase().replace(/[_\-\s]+/g, " ").trim());
-  const dataRows = allRows.slice(headerRowIdx + 1);
-
-  // ── Find columns by name ──────────────────────────────────────
-  const findCol = (patterns) => {
-    for (const p of patterns) {
-      const idx = headers.findIndex(h => h.includes(p) || p.includes(h));
-      if (idx !== -1) return idx;
-    }
-    return -1;
-  };
-
-  const dateCol    = findCol(["date","period","month","transaction date","posting date","value date","trans date"]);
-  const descCol    = findCol(["description","narrative","details","reference","memo","particulars","transaction","name","payee"]);
-  const amountCol  = findCol(["amount","value","net amount","total"]);
-  const debitCol   = findCol(["debit","debit amount","payment","out","withdrawals","charges"]);
-  const creditCol  = findCol(["credit","credit amount","deposit","in","receipts","money in"]);
-  const balanceCol = findCol(["balance","running balance","closing balance","available"]);
-  const revenueCol = findCol(["revenue","income","sales","turnover","gross sales","total income","receipts earned"]);
-  const expenseCol = findCol(["expenses","expense","costs","total expenses","expenditure","overheads","total costs"]);
-  const currencyCol = headers.findIndex(h => CURRENCY_HEADERS.includes(h));
-  const directionCol = headers.findIndex(h => DIRECTION_HEADERS.includes(h));
-
-  // ── Amounts, and the one currency these monthly totals are in ─
-  // Monthly buckets add rows together, so they may only hold one currency:
-  // the one the caller names, else the one most rows declare. Rows that
-  // declare another are left out and counted, never added in.
-  const readAmount = columnAmountReader(dataRows);
-  let unreadable = 0;
-  const toNum = (row, col) => {
-    const a = readAmount(row, col);
-    if (!a.ok) unreadable++;
-    return a.value;
-  };
-  const amountCols = [revenueCol, expenseCol, debitCol, creditCol, amountCol];
-  let currency = options.currency || null;
-  if (!currency) {
-    const counts = {};
-    dataRows.forEach(r => { const c = rowDeclaredCurrency(r, currencyCol, amountCols); if (c) counts[c] = (counts[c] || 0) + 1; });
-    currency = Object.keys(counts).sort((a, b) => counts[b] - counts[a])[0] || null;
+// RFC 4180: a field that starts with a quote may hold delimiters, doubled
+// quotes and line breaks. A quote inside an unquoted field is just a character.
+function tokenize(text, d) {
+  const rows = [];
+  let row = [], cell = "", quoted = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (quoted) {
+      if (ch === '"') { if (text[i + 1] === '"') { cell += '"'; i++; } else quoted = false; }
+      else cell += ch;
+    } else if (ch === '"' && cell.trim() === "") { quoted = true; cell = ""; }
+    else if (ch === d) { row.push(cell); cell = ""; }
+    else if (ch === "\n" || ch === "\r") {
+      if (ch === "\r" && text[i + 1] === "\n") i++;
+      row.push(cell); rows.push(row); row = []; cell = "";
+    } else cell += ch;
   }
-  const excludedCounts = {};
+  if (cell !== "" || row.length) { row.push(cell); rows.push(row); }
+  return rows.map(r => r.map(c => c.trim())).filter(r => r.some(c => c !== ""));
+}
 
-  // ── Parse a date and return YYYY-MM ──────────────────────────
-  const toMonthKey = (val) => {
-    if (!val) return null;
-    const s = String(val).trim();
+const HEADER_CURRENCY_SUFFIX = /\s+(zar|usd|eur|gbp|aud|cad|nzd|chf|r|\$)$/;
+function normalizeHeader(h) {
+  return String(h ?? "").replace(/^﻿/, "").toLowerCase()
+    .replace(/\(([^)]*)\)/g, " $1 ")        // "Amount (ZAR)" -> "amount zar"
+    .replace(/[_\-\s.:#]+/g, " ").trim()
+    .replace(HEADER_CURRENCY_SUFFIX, "").trim(); // "debit usd" -> "debit"
+}
 
-    // Already a month name or period
-    if (/^(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/i.test(s)) {
-      return s.substring(0, 3).toLowerCase();
-    }
-
-    // Try various date formats
-    const patterns = [
-      /(\d{4})[\/\-](\d{1,2})/,        // 2024-01, 2024/01
-      /(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/, // 01/05/2024
-      /(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2})$/, // 01/05/24
-      /(\d{1,2})\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\s+(\d{4})/i, // 5 Jan 2024
-    ];
-
-    const monthNames = ["jan","feb","mar","apr","may","jun","jul","aug","sep","oct","nov","dec"];
-
-    for (const pat of patterns) {
-      const m = s.match(pat);
-      if (m) {
-        // 2024-01 format
-        if (m[0].match(/^\d{4}/)) {
-          const yr = m[1]; const mo = m[2].padStart(2,"0");
-          return `${yr}-${mo}`;
-        }
-        // DD/MM/YYYY or similar
-        if (m[3] && m[3].length === 4) {
-          const yr = m[3]; const mo = m[2].padStart(2,"0");
-          return `${yr}-${mo}`;
-        }
-        if (m[3] && m[3].length === 2) {
-          const yr = `20${m[3]}`; const mo = m[2].padStart(2,"0");
-          return `${yr}-${mo}`;
-        }
-        // 5 Jan 2024
-        if (isNaN(m[2])) {
-          const moIdx = monthNames.indexOf(m[2].toLowerCase());
-          if (moIdx !== -1) return `${m[3]}-${String(moIdx+1).padStart(2,"0")}`;
-        }
-      }
-    }
-
-    // Fallback: just use the raw value trimmed
-    return s.substring(0, 7);
-  };
-
-  // ── Determine parsing mode ───────────────────────────────────
-  // Mode A: Named columns (Revenue / Expenses) — structured export
-  // Mode B: Amount column (positive = in, negative = out) — bank statement
-  // Mode C: Debit + Credit split columns — some bank formats
-
-  const isNamedMode  = revenueCol !== -1 && expenseCol !== -1;
-  const isSplitMode  = debitCol !== -1 && creditCol !== -1 && amountCol === -1;
-  const isBankMode   = amountCol !== -1 && !isNamedMode;
-
-  // ── Process each row ─────────────────────────────────────────
-  const monthBuckets = {}; // { "2024-01": { revenue, expenses, cash, categories } }
-
-  dataRows.forEach((row) => {
-    if (row.every(c => c === "")) return; // skip blank rows
-
-    let revenue = 0;
-    let expenses = 0;
-    let cash = 0;
-    const desc = descCol !== -1 ? row[descCol] || "" : "";
-    const monthKey = toMonthKey(dateCol !== -1 ? row[dateCol] : null) || "Unknown";
-    const category = detectExpenseCategory(desc);
-
-    if (isNamedMode) {
-      // Structured export — named columns
-      revenue  = Math.abs(toNum(row, revenueCol));
-      expenses = Math.abs(toNum(row, expenseCol));
-
-    } else if (isSplitMode) {
-      // Debit/Credit columns
-      const debit  = Math.abs(toNum(row, debitCol));
-      const credit = Math.abs(toNum(row, creditCol));
-      expenses = debit;
-      revenue  = credit;
-
-    } else if (isBankMode) {
-      // Single amount column — positive = in, negative = out
-      const amt = withDirection(toNum(row, amountCol), row, directionCol);
-      if (amt > 0) {
-        // Money in — classify as revenue unless description says otherwise
-        revenue = amt;
-      } else if (amt < 0) {
-        // Money out — classify as expense
-        expenses = Math.abs(amt);
-      }
-    }
-    if (balanceCol !== -1) cash = readAmount(row, balanceCol).value;
-
-    // Skip rows with no financial data
-    if (revenue === 0 && expenses === 0) return;
-
-    const rowCurrency = rowDeclaredCurrency(row, currencyCol, amountCols);
-    if (currency && rowCurrency && rowCurrency !== currency) {
-      excludedCounts[rowCurrency] = (excludedCounts[rowCurrency] || 0) + 1;
-      return;
-    }
-
-    // Bucket by month
-    if (!monthBuckets[monthKey]) {
-      monthBuckets[monthKey] = {
-        revenue: 0, expenses: 0, cash: 0,
-        categories: {},
-        transactions: 0,
-      };
-    }
-    monthBuckets[monthKey].revenue    += revenue;
-    monthBuckets[monthKey].expenses   += expenses;
-    monthBuckets[monthKey].cash        = cash || monthBuckets[monthKey].cash;
-    monthBuckets[monthKey].transactions++;
-
-    // Track expense categories
-    if (expenses > 0 && category !== "other") {
-      monthBuckets[monthKey].categories[category] =
-        (monthBuckets[monthKey].categories[category] || 0) + expenses;
-    }
-  });
-
-  // ── Convert buckets to rows ───────────────────────────────────
-  const sortedKeys = Object.keys(monthBuckets).sort();
-  if (sortedKeys.length === 0) return null;
-
-  const rows = sortedKeys.map((key) => {
-    const b = monthBuckets[key];
-    // Format month key for display
-    const display = key.match(/^\d{4}-(\d{2})$/)
-      ? new Date(key + "-01").toLocaleDateString("en-US", { month:"short", year:"2-digit" })
-      : key;
-    return {
-      month:      display,
-      revenue:    Math.round(b.revenue),
-      expenses:   Math.round(b.expenses),
-      cash:       Math.round(b.cash),
-      payroll:    Math.round(b.categories.payroll   || 0),
-      marketing:  Math.round(b.categories.marketing || 0),
-      cogs:       Math.round(b.categories.cogs      || 0),
-      rent:       Math.round(b.categories.rent      || 0),
-      software:   Math.round(b.categories.software  || 0),
-      leads:      0,
-      closures:   0,
-      cac:        0,
-      ltv:        0,
-    };
-  }).filter(r => r.revenue > 0 || r.expenses > 0);
-
-  if (rows.length === 0) return null;
-
-  const detectedFields = [];
-  if (isNamedMode)  detectedFields.push("Revenue", "Expenses");
-  if (isBankMode)   detectedFields.push("Transactions", "Income", "Outflows");
-  if (isSplitMode)  detectedFields.push("Debits", "Credits");
-  if (dateCol !== -1)  detectedFields.push("Dates");
-  if (descCol !== -1)  detectedFields.push("Categories");
-  if (balanceCol !== -1) detectedFields.push("Balance");
-
-  const excluded = Object.entries(excludedCounts).map(([code, count]) => ({ currency: code, count }));
-  return { rows, detectedFields, mode: isNamedMode?"named":isSplitMode?"split":"bank", currency, excluded, unreadable };
+// Exact header names for each column role, in order of preference.
+const HEADER_ROLES = {
+  date:        ["date", "transaction date", "trans date", "txn date", "posting date", "post date", "posted date", "date posted", "booking date", "effective date", "statement date", "value date", "period", "month"],
+  description: ["description", "narrative", "details", "transaction details", "transaction description", "reference", "memo", "particulars", "payee", "payer", "name", "merchant", "counterparty", "beneficiary", "transaction", "notes", "description 1"],
+  amount:      ["amount", "transaction amount", "net amount", "value", "amt", "net"],
+  debit:       ["debit", "debits", "debit amount", "money out", "paid out", "withdrawal", "withdrawals", "payment", "payments", "out", "dr", "outflow", "spent", "charges"],
+  credit:      ["credit", "credits", "credit amount", "money in", "paid in", "deposit", "deposits", "in", "cr", "inflow", "received", "receipts"],
+  balance:     ["balance", "running balance", "closing balance", "available balance", "ledger balance", "current balance", "account balance"],
+  revenue:     ["revenue", "income", "sales", "turnover", "gross sales", "total income", "total revenue", "receipts earned"],
+  expense:     ["expenses", "expense", "costs", "cost", "total expenses", "total expense", "expenditure", "overheads", "total costs"],
+  currency:    CURRENCY_HEADERS,
+  direction:   [...DIRECTION_HEADERS, "type", "transaction type", "dr cr indicator", "debit credit indicator"],
+};
+// Without an exact match, a whole word in the header can still say what it holds.
+const HEADER_WORDS = {
+  date: ["date"], amount: ["amount"], balance: ["balance"],
+  description: ["description", "narrative", "details", "memo", "reference", "payee"],
+  debit: ["debit", "withdrawal", "withdrawals"], credit: ["credit", "deposit", "deposits"],
+  revenue: ["revenue", "income", "sales"], expense: ["expense", "expenses", "costs"],
 };
 
-// ─── TRANSACTION EVENT PARSER ───────────────────────────────────
-// Sibling to parseAnyCSV, but emits one signed record per source row
-// instead of pre-aggregating into monthly buckets. This is what feeds the
-// transaction event store — the DB is the source of truth, and monthly
-// aggregation happens as a read-time derivation (aggregateTransactionsByMonth),
-// never as something stored.
-export const parseTransactions = (text, options = {}) => {
-  const firstLine = text.trim().split(/\r?\n/)[0] || "";
-  const delimiter = firstLine.includes("\t") ? "\t" : firstLine.includes(";") ? ";" : ",";
-
-  const parseRow = (line) => {
-    const cols = []; let cur = ""; let inQ = false;
-    for (const ch of line) {
-      if (ch === '"') { inQ = !inQ; }
-      else if (ch === delimiter && !inQ) { cols.push(cur.trim()); cur = ""; }
-      else cur += ch;
-    }
-    cols.push(cur.trim());
-    return cols.map(c => c.replace(/^"|"$/g, "").trim());
-  };
-
-  const allRows = text.trim().split(/\r?\n/).map(parseRow).filter(r => r.some(c => c.length > 0));
-  if (allRows.length < 2) return null;
-
-  let headerRowIdx = 0;
-  for (let i = 0; i < Math.min(5, allRows.length); i++) {
-    const rowStr = allRows[i].join(" ").toLowerCase();
-    if (rowStr.includes("date") || rowStr.includes("amount") || rowStr.includes("description")
-      || rowStr.includes("revenue") || rowStr.includes("debit") || rowStr.includes("credit")) {
-      headerRowIdx = i;
-      break;
+function mapColumns(rawHeaders) {
+  const headers = rawHeaders.map(normalizeHeader);
+  const roles = {};
+  const used = new Set();
+  for (const [role, names] of Object.entries(HEADER_ROLES)) {
+    for (const name of names) {
+      const idx = headers.findIndex((h, i) => h === name && !used.has(i));
+      if (idx !== -1) { roles[role] = idx; used.add(idx); break; }
     }
   }
-  const headers = allRows[headerRowIdx].map(h => h.toLowerCase().replace(/[_\-\s]+/g, " ").trim());
-  const dataRows = allRows.slice(headerRowIdx + 1);
+  for (const [role, words] of Object.entries(HEADER_WORDS)) {
+    if (roles[role] !== undefined) continue;
+    const idx = headers.findIndex((h, i) => h && !used.has(i) && h.split(/[^a-z]+/).some(w => words.includes(w)));
+    if (idx !== -1) { roles[role] = idx; used.add(idx); }
+  }
+  return roles;
+}
 
-  const findCol = (patterns) => {
-    for (const p of patterns) {
-      const idx = headers.findIndex(h => h.includes(p) || p.includes(h));
-      if (idx !== -1) return idx;
-    }
-    return -1;
-  };
+const hasMoneyColumns = r => r.amount !== undefined || (r.debit !== undefined && r.credit !== undefined) || (r.revenue !== undefined && r.expense !== undefined);
 
-  const dateCol    = findCol(["date","period","month","transaction date","posting date","value date","trans date"]);
-  const descCol    = findCol(["description","narrative","details","reference","memo","particulars","transaction","name","payee"]);
-  const amountCol  = findCol(["amount","value","net amount","total"]);
-  const debitCol   = findCol(["debit","debit amount","payment","out","withdrawals","charges"]);
-  const creditCol  = findCol(["credit","credit amount","deposit","in","receipts","money in"]);
-  const revenueCol = findCol(["revenue","income","sales","turnover","gross sales","total income","receipts earned"]);
-  const expenseCol = findCol(["expenses","expense","costs","total expenses","expenditure","overheads","total costs"]);
-  const currencyCol = headers.findIndex(h => CURRENCY_HEADERS.includes(h));
-  const directionCol = headers.findIndex(h => DIRECTION_HEADERS.includes(h));
+// The first row in the scan window that names a date and money columns.
+function findHeaderRow(rows) {
+  for (let i = 0; i < Math.min(MAX_HEADER_SCAN, rows.length); i++) {
+    const roles = mapColumns(rows[i]);
+    if (roles.date !== undefined && hasMoneyColumns(roles)) return { index: i, roles };
+  }
+  return null;
+}
 
-  // Each transaction keeps the currency it arrived in: the one its row
-  // declares, else the one the founder said the file is in, else null.
-  // Nothing is converted.
+// ─── DATES ──────────────────────────────────────────────────────
+// A numeric date such as 05/03/2026 is 5 March (day first) or 3 May (month
+// first). The order is decided once per column from every value in it: a
+// first part above 12 can only be a day, a second part above 12 can only be
+// a day. A column that never settles it is read day first, the South
+// African and most of the world's convention; the upload message says how
+// dates were read so a founder can spot a US file read the wrong way. Every
+// date is checked against the calendar: 31/02/2026 is not a date, and an
+// impossible date never reaches the database.
+const MONTH_NAMES_SHORT = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+const ISO_DATE = /^(\d{4})[\/\-.](\d{1,2})[\/\-.](\d{1,2})(?:[ T].*)?$/;
+const NUMERIC_DATE = /^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2}|\d{4})(?:[ T].*)?$/;
+
+function validYmd(y, m, d) {
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  return y >= 1900 && dt.getUTCFullYear() === y && dt.getUTCMonth() === m - 1 && dt.getUTCDate() === d;
+}
+const ymd = (y, m, d) => `${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+const fullYear = y => { const n = Number(y); return n < 100 ? 2000 + n : n; };
+const monthIndex = name => MONTH_NAMES_SHORT.indexOf(String(name).slice(0, 3).toLowerCase()) + 1;
+
+export function detectDateOrder(values) {
+  let dayFirst = 0, monthFirst = 0;
+  (values || []).forEach(v => {
+    const m = String(v ?? "").trim().match(NUMERIC_DATE);
+    if (!m) return;
+    const a = Number(m[1]), b = Number(m[2]);
+    if (a > 12 && b <= 12) dayFirst++;
+    else if (b > 12 && a <= 12) monthFirst++;
+  });
+  return { order: monthFirst > dayFirst ? "mdy" : "dmy", resolved: dayFirst + monthFirst > 0, conflicting: dayFirst > 0 && monthFirst > 0 };
+}
+
+// One date as YYYY-MM-DD, or null when it is not a real calendar date.
+export function parseDateValue(value, order = "dmy") {
+  const s = String(value ?? "").trim();
+  if (!s) return null;
+  let m = s.match(ISO_DATE);
+  if (m) { const y = +m[1], mo = +m[2], d = +m[3]; return validYmd(y, mo, d) ? ymd(y, mo, d) : null; }
+  m = s.match(NUMERIC_DATE);
+  if (m) {
+    const a = +m[1], b = +m[2], y = fullYear(m[3]);
+    const [d, mo] = order === "mdy" ? [b, a] : [a, b];
+    return validYmd(y, mo, d) ? ymd(y, mo, d) : null;
+  }
+  m = s.match(/^(\d{4})(\d{2})(\d{2})$/); // 20261005
+  if (m) { const y = +m[1], mo = +m[2], d = +m[3]; return validYmd(y, mo, d) ? ymd(y, mo, d) : null; }
+  m = s.match(/^(\d{1,2})(?:st|nd|rd|th)?[\s\-\/]+([a-z]{3,9})\.?[\s\-\/,]+(\d{2}|\d{4})\b/i); // 5 Jan 2026, 05-Jan-26
+  if (m) { const mo = monthIndex(m[2]), y = fullYear(m[3]); return mo > 0 && validYmd(y, mo, +m[1]) ? ymd(y, mo, +m[1]) : null; }
+  m = s.match(/^([a-z]{3,9})\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(\d{4})\b/i); // Jan 5, 2026
+  if (m) { const mo = monthIndex(m[1]), y = +m[3]; return mo > 0 && validYmd(y, mo, +m[2]) ? ymd(y, mo, +m[2]) : null; }
+  return null;
+}
+
+// A month on its own, for monthly summaries: 2026-07, 07/2026, Jul 2026, July-26.
+export function parseMonthValue(value) {
+  const s = String(value ?? "").trim();
+  let m = s.match(/^(\d{4})[\/\-.](\d{1,2})$/);
+  if (m && +m[2] >= 1 && +m[2] <= 12) return `${m[1]}-${String(+m[2]).padStart(2, "0")}`;
+  m = s.match(/^(\d{1,2})[\/\-.](\d{4})$/);
+  if (m && +m[1] >= 1 && +m[1] <= 12) return `${m[2]}-${String(+m[1]).padStart(2, "0")}`;
+  m = s.match(/^([a-z]{3,9})\.?[\s\-\/,']+(\d{2}|\d{4})$/i);
+  if (m) { const mo = monthIndex(m[1]); if (mo > 0) return `${fullYear(m[2])}-${String(mo).padStart(2, "0")}`; }
+  return null;
+}
+
+// ─── TRANSACTION EVENT PARSER ───────────────────────────────────
+// Emits one signed record per source row; the DB is the source of truth,
+// and monthly aggregation happens at read time (aggregateTransactionsByMonth),
+// never as something stored.
+//
+// Each transaction keeps the currency it arrived in: the one its row
+// declares, else the one the founder said the file is in, else null.
+// Nothing is converted.
+//
+// A monthly summary (Revenue and Expenses columns) becomes two records per
+// month, one for each column, dated the first of the month when the file
+// gives only a month. Netting them into one amount, as this parser once did,
+// saved R10 000 revenue and R6 000 costs as R4 000 revenue at a 100% margin.
+//
+// Identical rows in one file (two R50 card sales on the same day) are
+// separate events. Each repeat carries its position (`occurrence`), so its
+// duplicate-upload hash differs from the first while a re-upload of the
+// same file still matches row for row.
+export const parseTransactions = (text, options = {}) => {
+  const source = String(text ?? "").replace(/^﻿/, "");
+  const lines = source.split(/\r?\n/).filter(l => l.trim() !== "").slice(0, MAX_HEADER_SCAN + 30);
+  if (lines.length < 2) return null;
+  const allRows = tokenize(source, detectDelimiter(lines));
+  const header = findHeaderRow(allRows);
+  if (!header) return null;
+  const { roles } = header;
+  const dataRows = allRows.slice(header.index + 1);
+  const col = role => roles[role] ?? -1;
+
+  const mode = roles.revenue !== undefined && roles.expense !== undefined ? "named"
+    : roles.amount !== undefined ? "bank"
+    : roles.debit !== undefined && roles.credit !== undefined ? "split"
+    : null;
+  if (!mode) return null;
+
   const readAmount = columnAmountReader(dataRows);
   let unreadable = 0;
-  const toNum = (row, col) => {
-    const a = readAmount(row, col);
+  const toNum = (row, c) => {
+    const a = readAmount(row, c);
     if (!a.ok) unreadable++;
     return a.value;
   };
-  const amountCols = [revenueCol, expenseCol, debitCol, creditCol, amountCol];
+  const amountCols = [col("revenue"), col("expense"), col("debit"), col("credit"), col("amount")];
 
-  // Full date (YYYY-MM-DD), unlike parseAnyCSV's month-only key — a real
-  // event store needs the actual day, both for display and because it's
-  // part of the dedupe hash. Day-before-month for ambiguous DD/MM/YYYY
-  // formats, matching the convention parseAnyCSV already uses.
-  const toFullDate = (val) => {
-    if (!val) return null;
-    const s = String(val).trim();
-    const monthNames = ["jan","feb","mar","apr","may","jun","jul","aug","sep","oct","nov","dec"];
-
-    let m = s.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/);
-    if (m) return `${m[1]}-${m[2].padStart(2,"0")}-${m[3].padStart(2,"0")}`;
-
-    m = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
-    if (m) return `${m[3]}-${m[2].padStart(2,"0")}-${m[1].padStart(2,"0")}`;
-
-    m = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2})$/);
-    if (m) return `20${m[3]}-${m[2].padStart(2,"0")}-${m[1].padStart(2,"0")}`;
-
-    m = s.match(/(\d{1,2})\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*\s+(\d{4})/i);
-    if (m) { const mi = monthNames.indexOf(m[2].toLowerCase().slice(0,3)); if (mi !== -1) return `${m[3]}-${String(mi+1).padStart(2,"0")}-${m[1].padStart(2,"0")}`; }
-
-    m = s.match(/(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*\s+(\d{1,2}),?\s+(\d{4})/i);
-    if (m) { const mi = monthNames.indexOf(m[1].toLowerCase().slice(0,3)); if (mi !== -1) return `${m[3]}-${String(mi+1).padStart(2,"0")}-${m[2].padStart(2,"0")}`; }
-
-    return null; // couldn't parse a real date — the caller skips this row rather than guessing one
+  const dateValues = dataRows.map(r => r[col("date")]);
+  const dateOrder = detectDateOrder(dateValues);
+  const monthOnly = dateValues.some(v => parseMonthValue(v) !== null)
+    && dateValues.every(v => !String(v ?? "").trim() || (parseDateValue(v, dateOrder.order) === null && parseMonthValue(v) !== null));
+  const dateOf = v => {
+    const full = parseDateValue(v, dateOrder.order);
+    if (full) return full;
+    const month = monthOnly ? parseMonthValue(v) : null;
+    return month ? `${month}-01` : null;
   };
 
-  const isNamedMode = revenueCol !== -1 && expenseCol !== -1;
-  const isSplitMode = debitCol !== -1 && creditCol !== -1 && amountCol === -1;
-  const isBankMode  = amountCol !== -1 && !isNamedMode;
-
   const transactions = [];
-  dataRows.forEach(row => {
-    if (row.every(c => c === "")) return;
-    const desc = descCol !== -1 ? (row[descCol] || "Transaction") : "Transaction";
-    const txnDate = toFullDate(dateCol !== -1 ? row[dateCol] : null);
-    if (!txnDate) return; // no reliable date — can't place this in the timeline honestly
-
-    let amount = 0;
-    if (isNamedMode) {
-      amount = Math.abs(toNum(row, revenueCol)) - Math.abs(toNum(row, expenseCol));
-    } else if (isSplitMode) {
-      amount = Math.abs(toNum(row, creditCol)) - Math.abs(toNum(row, debitCol));
-    } else if (isBankMode) {
-      amount = withDirection(toNum(row, amountCol), row, directionCol);
-    }
-    if (amount === 0) return;
-
+  const seen = {};
+  let skippedDates = 0;
+  const datedRows = []; // [rowIndex, date] for the closing balance
+  const push = (txnDate, description, amount, currency) => {
+    const rounded = Math.round(amount * 100) / 100;
+    const key = `${txnDate}|${normalizeDescription(description)}|${rounded.toFixed(2)}`;
+    const occurrence = (seen[key] = (seen[key] || 0) + 1);
     transactions.push({
       txn_date: txnDate,
-      description: desc,
-      amount: Math.round(amount * 100) / 100,
-      currency: rowDeclaredCurrency(row, currencyCol, amountCols) || options.currency || null,
-      category: amount < 0 ? detectExpenseCategory(desc) : null,
-      counterparty: amount > 0 ? extractCounterparty(desc) : null,
+      description,
+      amount: rounded,
+      category: rounded < 0 ? detectExpenseCategory(description) : null,
+      counterparty: rounded > 0 ? extractCounterparty(description) : null,
+      currency,
+      ...(occurrence > 1 ? { occurrence } : {}),
     });
+  };
+
+  dataRows.forEach((row, i) => {
+    if (row.every(c => c === "")) return;
+    const rawDesc = roles.description !== undefined ? (row[roles.description] || "") : "";
+    const currency = rowDeclaredCurrency(row, col("currency"), amountCols) || options.currency || null;
+    let parts;
+    if (mode === "named") {
+      const revenue = Math.abs(toNum(row, col("revenue")));
+      const expenses = Math.abs(toNum(row, col("expense")));
+      parts = [[revenue, rawDesc || "Revenue"], [-expenses, rawDesc || "Expenses"]];
+    } else if (mode === "split") {
+      parts = [[Math.abs(toNum(row, col("credit"))) - Math.abs(toNum(row, col("debit"))), rawDesc || "Transaction"]];
+    } else {
+      parts = [[withDirection(toNum(row, col("amount")), row, col("direction")), rawDesc || "Transaction"]];
+    }
+    parts = parts.filter(([amount]) => amount !== 0);
+    if (parts.length === 0) return;
+    const txnDate = dateOf(row[col("date")]);
+    if (!txnDate) { skippedDates++; return; } // no reliable date: can't place it in the timeline honestly
+    datedRows.push([i, txnDate, currency]);
+    parts.forEach(([amount, description]) => push(txnDate, description, amount, currency));
   });
 
   if (transactions.length === 0) return null;
-  return { transactions, mode: isNamedMode ? "named" : isSplitMode ? "split" : "bank", unreadable };
+
+  // The balance after the most recent transaction. Exports run newest first
+  // or oldest first; on the last day, the final balance is the first such
+  // row in a newest-first file and the last in an oldest-first one.
+  let closingBalance = null;
+  if (roles.balance !== undefined && datedRows.length > 0) {
+    const newestFirst = datedRows[0][1] > datedRows[datedRows.length - 1][1];
+    const lastDate = datedRows.reduce((m, r) => (r[1] > m ? r[1] : m), datedRows[0][1]);
+    const onLastDay = datedRows.filter(r => r[1] === lastDate);
+    const [rowIndex, date, currency] = newestFirst ? onLastDay[0] : onLastDay[onLastDay.length - 1];
+    const bal = readAmount(dataRows[rowIndex], roles.balance);
+    if (bal.ok && String(dataRows[rowIndex][roles.balance] ?? "").trim() !== "") {
+      closingBalance = { amount: Math.round(bal.value * 100) / 100, date, currency: bal.currency || currency };
+    }
+  }
+
+  return {
+    transactions, mode, unreadable, skippedDates, closingBalance,
+    dateOrder: { ...dateOrder, monthOnly, numeric: dateValues.some(v => NUMERIC_DATE.test(String(v ?? "").trim())) },
+    columns: Object.keys(roles),
+  };
+};
+
+// Monthly totals for the session preview and the public demo, from the same
+// records parseTransactions saves. Monthly buckets add rows together, so
+// they hold one currency: the one the caller names, else the one most rows
+// declare. Rows in another currency are left out and counted, never added in.
+export const parseAnyCSV = (text, options = {}) => {
+  const parsed = parseTransactions(text, options);
+  if (!parsed) return null;
+  const declared = {};
+  parsed.transactions.forEach(t => { if (t.currency) declared[t.currency] = (declared[t.currency] || 0) + 1; });
+  const currency = options.currency || Object.keys(declared).sort((a, b) => declared[b] - declared[a])[0] || null;
+  const excludedCounts = {};
+  const included = parsed.transactions.filter(t => {
+    if (!currency || !t.currency || t.currency === currency) return true;
+    excludedCounts[t.currency] = (excludedCounts[t.currency] || 0) + 1;
+    return false;
+  });
+  const rows = aggregateTransactionsByMonth(included, { today: options.today, rules: options.rules });
+  if (rows.length === 0) return null;
+  // The file's own closing balance, when it is in this currency.
+  const cb = parsed.closingBalance;
+  if (cb && (!currency || !cb.currency || cb.currency === currency)) rows[rows.length - 1].cash = cb.amount;
+
+  const fields = new Set(parsed.columns);
+  const detectedFields = [];
+  if (parsed.mode === "named") detectedFields.push("Revenue", "Expenses");
+  if (parsed.mode === "bank") detectedFields.push("Transactions", "Income", "Outflows");
+  if (parsed.mode === "split") detectedFields.push("Debits", "Credits");
+  if (fields.has("date")) detectedFields.push("Dates");
+  if (fields.has("description")) detectedFields.push("Categories");
+  if (fields.has("balance")) detectedFields.push("Balance");
+  const excluded = Object.entries(excludedCounts).map(([code, count]) => ({ currency: code, count }));
+  return {
+    rows, detectedFields, mode: parsed.mode, currency, excluded,
+    unreadable: parsed.unreadable, skippedDates: parsed.skippedDates, dateOrder: parsed.dateOrder,
+    closingBalance: cb,
+  };
 };
 
 // ─── DEDUPLICATION ──────────────────────────────────────────────
@@ -1267,8 +1249,13 @@ export function normalizeDescription(desc) {
     .trim();
 }
 
+// A repeat of an identical row in the same file (`occurrence` 2, 3, ...)
+// gets its own hash, so two genuine R50 sales on one day are both kept. The
+// first occurrence keeps the original form, so hashes already stored still
+// match.
 export function dedupeHashInput(txn) {
-  return `${txn.txn_date}|${normalizeDescription(txn.description)}|${Number(txn.amount).toFixed(2)}`;
+  const base = `${txn.txn_date}|${normalizeDescription(txn.description)}|${Number(txn.amount).toFixed(2)}`;
+  return txn.occurrence > 1 ? `${base}|#${txn.occurrence}` : base;
 }
 
 export async function computeDedupeHash(txn) {

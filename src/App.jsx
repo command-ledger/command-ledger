@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { createClient } from "@supabase/supabase-js";
-import { fmt, pc, safe, parseAnyCSV, computeMetrics, runScenario, parseTransactions, computeDedupeHash, aggregateTransactionsByMonth, computeRevenueConcentration, detectRecurringObligations, computeForwardRunway, checkAffordability, detectMissedObligations, projectForwardCalendar, summarizeCalendarByWeek, computeDirective, getDirectiveMetricValue, describeDirectiveOutcome, checkoutBlockReason, computeConfidence, fmtCompact, filterTransactions, searchWorkspace, buildAlerts, buildReportCsv, SUPPORTED_CURRENCIES, isSupportedCurrency, currencySymbol, currencyName, partitionByCurrency } from "./lib/financials.js";
+import { fmt, pc, safe, parseAnyCSV, computeMetrics, runScenario, parseTransactions, computeDedupeHash, aggregateTransactionsByMonth, computeRevenueConcentration, detectRecurringObligations, computeForwardRunway, checkAffordability, detectMissedObligations, projectForwardCalendar, summarizeCalendarByWeek, computeDirective, getDirectiveMetricValue, describeDirectiveOutcome, checkoutBlockReason, computeConfidence, fmtCompact, filterTransactions, searchWorkspace, buildAlerts, buildReportCsv, SUPPORTED_CURRENCIES, isSupportedCurrency, currencySymbol, currencyName, partitionByCurrency, decodeTextFile } from "./lib/financials.js";
 
 const supabase = createClient(
   import.meta.env.VITE_SUPABASE_URL,
@@ -970,8 +970,35 @@ function CurrencyNotice({ cur, excluded, onReview }) {
   );
 }
 
+// How numeric dates such as 05/03/2026 were read, for the upload message.
+function dateOrderNote(d) {
+  if (!d?.numeric) return "";
+  if (d.conflicting) return "Some dates in this file put the day first and others the month first; check the months look right.";
+  if (d.order === "mdy") return "Dates were read month first, so 03/15/2026 is 15 March 2026.";
+  if (d.resolved) return "Dates were read day first, so 15/03/2026 is 15 March 2026.";
+  return "Every date in this file could be read either way, so they were read day first (05/03/2026 is 5 March). If your file puts the month first, export the dates as YYYY-MM-DD and upload it again.";
+}
+
 // A form label with the business currency's symbol: "Cash balance (R)".
 const withSymbol = (label, cur) => cur ? `${label} (${currencySymbol(cur)})` : label;
+
+// Excel stores a date as a day count and shows it through a number format.
+// sheet_to_csv writes the standard short-date format as m/d/yy whatever the
+// author's locale, so 5 March and 3 May look alike. Date cells are written
+// out as YYYY-MM-DD instead, decoded from the day count itself so no time
+// zone can move them. Dates typed as text are left for the parser, which
+// works out their order from the whole column.
+function excelSheetToCsv(XLSX, ws) {
+  for (const addr of Object.keys(ws)) {
+    if (addr[0] === "!") continue;
+    const c = ws[addr];
+    if (c.t === "n" && c.z && XLSX.SSF.is_date(c.z)) {
+      const d = XLSX.SSF.parse_date_code(c.v);
+      if (d && d.y > 1900) c.w = `${d.y}-${String(d.m).padStart(2, "0")}-${String(d.d).padStart(2, "0")}`;
+    }
+  }
+  return XLSX.utils.sheet_to_csv(ws);
+}
 
 // ─── DATA UPLOAD ──────────────────────────────────────────────
 function DataUpload({ onDataLoaded, hasData, currency }) {
@@ -1008,18 +1035,16 @@ function DataUpload({ onDataLoaded, hasData, currency }) {
     setErr(""); setParsing(true);
     const ext = file.name.split(".").pop().toLowerCase();
     try {
-      if (ext === "csv") {
-        const text = await file.text();
-        processCSVText(text, file.name);
+      if (ext === "csv" || ext === "txt") {
+        // Bytes, not file.text(): Excel's "Unicode Text" export is UTF-16.
+        processCSVText(decodeTextFile(await file.arrayBuffer()), file.name);
       } else if (["xlsx","xls"].includes(ext)) {
         const XLSX = await import("xlsx");
         const buf = await file.arrayBuffer();
-        const wb  = XLSX.read(buf, { type:"array" });
-        const ws  = wb.Sheets[wb.SheetNames[0]];
-        const csv = XLSX.utils.sheet_to_csv(ws);
-        processCSVText(csv, file.name);
+        const wb  = XLSX.read(buf, { type:"array", cellNF:true });
+        processCSVText(excelSheetToCsv(XLSX, wb.Sheets[wb.SheetNames[0]]), file.name);
       } else {
-        setErr("Only CSV and Excel (.xlsx, .xls) files are accepted.");
+        setErr("Only CSV, text and Excel (.xlsx, .xls) files are accepted.");
       }
     } catch (e) {
       setErr("Could not read this file. Check it is not password-protected.");
@@ -1062,7 +1087,7 @@ function DataUpload({ onDataLoaded, hasData, currency }) {
         onDrop={e => { e.preventDefault(); setDrag(false); handleFile(e.dataTransfer.files[0]); }}
         {...clickableProps(() => fileRef.current?.click(), { label:"Choose a financial file to upload" })}
       >
-        <input ref={fileRef} type="file" accept=".csv,.xlsx,.xls" style={{ display:"none" }} onChange={e => handleFile(e.target.files[0])}/>
+        <input ref={fileRef} type="file" accept=".csv,.txt,.xlsx,.xls" style={{ display:"none" }} onChange={e => handleFile(e.target.files[0])}/>
         <div className="drop-zone-title">{parsing ? "Reading your file..." : "Drop your financial file here"}</div>
         <div className="drop-zone-sub">
           Accepts Excel (.xlsx) or CSV from QuickBooks, Xero, Wave, or any spreadsheet.<br/>
@@ -2215,8 +2240,12 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
       }).select().single();
       if (batchErr) throw batchErr;
 
+      // Only real columns go to the database. `occurrence` (a repeat of an
+      // identical row) exists to make the hash and must not be sent.
       const hashed = await Promise.all(transactions.map(async t => ({
-        ...t, user_id: user.id, source_batch_id: batch.id, dedupe_hash: await computeDedupeHash(t),
+        txn_date: t.txn_date, description: t.description, amount: t.amount, category: t.category,
+        counterparty: t.counterparty, currency: t.currency,
+        user_id: user.id, source_batch_id: batch.id, dedupe_hash: await computeDedupeHash(t),
       })));
 
       const { data: inserted, error: insertErr } = await supabase
@@ -2243,6 +2272,8 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
         `Added ${insertedCount} new transaction${insertedCount === 1 ? "" : "s"}. ${duplicateCount} already on file.`,
         otherCurrency > 0 ? `${otherCurrency} ${otherCurrency === 1 ? "is" : "are"} in a currency other than ${base}, so ${otherCurrency === 1 ? "it is" : "they are"} stored but not added to your figures.` : "",
         parsed.unreadable > 0 ? `${parsed.unreadable} amount${parsed.unreadable === 1 ? "" : "s"} could not be read as a number and ${parsed.unreadable === 1 ? "was" : "were"} skipped.` : "",
+        parsed.skippedDates > 0 ? `${parsed.skippedDates} row${parsed.skippedDates === 1 ? " had a date that could not be read and was" : "s had dates that could not be read and were"} skipped.` : "",
+        dateOrderNote(parsed.dateOrder),
       ].filter(Boolean).join(" "));
       await loadHistory(base);
       await loadBatches();
@@ -3787,7 +3818,7 @@ function HeroDemo() {
     if (!file) return;
     if (!/\.csv$/i.test(file.name)) { setErr("Choose a .csv export from your bank or accounting software."); return; }
     try {
-      const parsed = parseAnyCSV(await file.text());
+      const parsed = parseAnyCSV(decodeTextFile(await file.arrayBuffer()));
       if (!parsed || parsed.rows.length === 0) { setErr("No revenue or expense columns were found in that file."); return; }
       setErr(""); setOwn({ rows: parsed.rows, label: file.name, currency: parsed.currency });
     } catch { setErr("That file could not be read."); }
