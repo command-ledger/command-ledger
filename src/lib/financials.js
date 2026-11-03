@@ -117,6 +117,138 @@ export const detectIncomeFromDescription = (description) => {
   return incomeSignals.some(k => d.includes(k));
 };
 
+// ─── TRANSACTION KINDS ──────────────────────────────────────────
+// Not every line on a bank statement is income or a cost. Money moved
+// between the business's own accounts, a loan received or repaid, money the
+// owner puts in or takes out, and refunds all move cash without being
+// revenue or a cost. Counting them as such overstates both: a loan read as
+// revenue turns a loss-making month into the best month on record.
+//
+// Every transaction has one kind:
+//   operating  money from customers and the costs of running the business.
+//              The default.
+//   transfer   money moved between the business's own accounts. Counted in
+//              no figure, because it is still the business's money.
+//   financing  loans received or repaid, and money the owner puts in or
+//              takes out. Never revenue or a cost, so margin and profit
+//              leave it out. Money going out still leaves the bank, so it
+//              counts toward burn and runway; money coming in does not
+//              reduce burn, because it is a one-off addition to cash.
+//   refund     money returned. A refund paid to a customer reduces revenue;
+//              one received from a supplier reduces costs.
+//
+// The kind is worked out every time figures are computed and is never
+// stored on the transaction, which is immutable. A rule the founder set
+// wins (one transaction, or every transaction described alike); otherwise
+// the description decides. The description rules match only unambiguous
+// wording, because a wrong guess removes real revenue from every figure:
+// a bare "transfer" is not enough ("Transfer from Coastal Retail" is a
+// customer paying), and anything not matched stays operating.
+export const TRANSACTION_KINDS = ["operating", "transfer", "financing", "refund"];
+export const isTransactionKind = kind => TRANSACTION_KINDS.includes(kind);
+// Outflows that are commitments: costs, and loan repayments or owner
+// withdrawals. A transfer to savings or a refund to a customer is not a bill.
+const BILL_KINDS = new Set(["operating", "financing"]);
+
+// Descriptions are matched after normalizeDescription(): lower case, no
+// punctuation, single spaces, so "A/c" arrives as "ac" and "Owner's" as
+// "owners". Bank names that contain the words below ("First Savings Bank",
+// "Sterling Savings and Loan") are taken out first, so a customer paying
+// from one is not read as a transfer or a loan.
+const BANK_NAME_WORDS = /\bsavings (and loan|loan|bank|association|institution)s?\b/g;
+// Loans, and money the owner puts in or takes out. "loan" is singular on
+// purpose: "Lakeside Loans" paying an invoice is a customer. Drawings count
+// only as the first word or after an owner word, so "Technical Drawings
+// Ltd" stays a supplier.
+const FINANCING_WORDS = /\b(loan|eidl|bond (repayment|instalment|installment)|merchant cash advance|(paypal|shopify|stripe|square) (working )?capital|capital (injection|contribution)|(owner|owners|shareholder|shareholders|director|directors|partner|partners) (contribution|capital)|(owner|owners|director|directors|member|members|partner|partners|personal) (drawings?|draws?)|dividend|dividends|lulalend|ondeck|kabbage|fundbox)\b|^drawings?\b/;
+// Interest and fees are the cost of borrowing, not the borrowing itself,
+// so "Loan interest" and "Loan admin fee" stay costs.
+const COST_OF_MONEY_WORDS = /\b(interest|fee|fees|charge|charges)\b/;
+// Money moved between the business's own accounts. A transfer word alone
+// is not enough: it needs a word naming one of the business's own accounts.
+const TRANSFER_PHRASES = /\b(own (account|accounts|acc|acct|ac)|internal (transfer|transfers|trf|tfr|xfer|trsf|funds)|inter (account|accounts|acc|acct)|interaccount|between (own |my )?accounts|(auto|automatic|cash|zba) sweep|sweep (transfer|trf|tfr|xfer|to|from))\b/;
+const TRANSFER_WORDS = /\b(transfer|transfers|transferred|trf|tfr|xfer|trsf|transf)\b/;
+// "sav" and "chk" count only before an account number ("Online Transfer to
+// SAV ...1234"), so a company called SAV Logistics is not an account.
+const OWN_ACCOUNT_WORDS = /\b(savings|saving|checking|call account|notice account|money market|fixed deposit|investment account|main account|pocket|pockets)\b|\b(sav|chk)(?= \d|$)/;
+const REFUND_WORDS = /\b(refund|refunds|refunded|reversal|reversals|reversed|chargeback|chargebacks|charge back|returned (debit|payment|item|cheque|check)|unpaid debit)\b/;
+
+// The kind a description implies on its own. Loans are checked first, so
+// "Internal transfer to loan account" is a loan repayment, not a transfer.
+export function classifyTransaction(description) {
+  const d = normalizeDescription(description).replace(BANK_NAME_WORDS, "bank");
+  if (!d) return "operating";
+  if (FINANCING_WORDS.test(d) && !COST_OF_MONEY_WORDS.test(d)) return "financing";
+  if (TRANSFER_PHRASES.test(d) || (TRANSFER_WORDS.test(d) && OWN_ACCOUNT_WORDS.test(d))) return "transfer";
+  if (REFUND_WORDS.test(d)) return "refund";
+  return "operating";
+}
+
+// A rule for "every transaction like this one" matches the description with
+// its digits removed, so "Loan repayment 0123" and "LOAN REPAYMENT #0456"
+// share one rule. A description of digits only has no key, so only a rule
+// for that single transaction can apply to it.
+export function classificationKey(description) {
+  return normalizeDescription(description).replace(/\d+/g, " ").replace(/\s+/g, " ").trim().slice(0, 200).trim();
+}
+
+// The founder's rules as stored in transaction_rules: scope "single" (one
+// transaction, matched by its dedupe_hash) or "similar" (every transaction
+// whose classificationKey matches). Maps, not objects, so a description
+// such as "constructor" can never read a built-in property.
+export function buildRuleIndex(rules) {
+  const index = { single: new Map(), similar: new Map() };
+  (rules || []).forEach(r => {
+    if (!r || !isTransactionKind(r.kind) || !r.match_key) return;
+    if (r.scope === "single") index.single.set(r.match_key, r.kind);
+    else if (r.scope === "similar") index.similar.set(r.match_key, r.kind);
+  });
+  return index;
+}
+
+function asRuleIndex(rules) {
+  if (!rules) return null;
+  if (Array.isArray(rules)) return buildRuleIndex(rules);
+  return rules.single instanceof Map && rules.similar instanceof Map ? rules : null;
+}
+
+// A transaction's kind and where it came from: "single" or "similar" (a
+// rule the founder set; one transaction beats every-transaction-like-it) or
+// "auto" (its description).
+export function resolveKind(txn, rules) {
+  const index = asRuleIndex(rules);
+  if (index) {
+    const single = txn?.dedupe_hash ? index.single.get(txn.dedupe_hash) : undefined;
+    if (single) return { kind: single, source: "single" };
+    const key = classificationKey(txn?.description);
+    const similar = key ? index.similar.get(key) : undefined;
+    if (similar) return { kind: similar, source: "similar" };
+  }
+  return { kind: classifyTransaction(txn?.description), source: "auto" };
+}
+
+export const transactionKind = (txn, rules) => resolveKind(txn, rules).kind;
+
+// How many transactions of each kind, and the money in and out of each, for
+// the upload message and the Transactions page.
+export function summarizeKinds(transactions, rules) {
+  const index = asRuleIndex(rules);
+  const out = {};
+  TRANSACTION_KINDS.forEach(k => { out[k] = { count: 0, moneyIn: 0, moneyOut: 0 }; });
+  (transactions || []).forEach(t => {
+    const amt = Number(t.amount) || 0;
+    if (!amt) return;
+    const s = out[transactionKind(t, index)];
+    s.count++;
+    if (amt > 0) s.moneyIn += amt; else s.moneyOut -= amt;
+  });
+  TRANSACTION_KINDS.forEach(k => {
+    out[k].moneyIn = Math.round(out[k].moneyIn * 100) / 100;
+    out[k].moneyOut = Math.round(out[k].moneyOut * 100) / 100;
+  });
+  return out;
+}
+
 // ─── COUNTERPARTY EXTRACTION ────────────────────────────────────
 // Pulls a payer name out of a raw bank description, e.g.
 // "Client Payment - Coastal Retail Group" -> "coastal retail group". Only
@@ -204,8 +336,11 @@ export function groupCounterparties(entries) {
 // 1-month total regardless of any real risk; this instead answers "what
 // share of revenue depends on one client," which is the actual question
 // a founder needs answered before one client leaving becomes a crisis.
-export function computeRevenueConcentration(transactions) {
-  const income = (transactions || []).filter(t => Number(t.amount) > 0);
+export function computeRevenueConcentration(transactions, rules) {
+  // Money from customers only: a loan, the owner's own money, a transfer
+  // from savings or a refund received is not a client.
+  const index = asRuleIndex(rules);
+  const income = (transactions || []).filter(t => Number(t.amount) > 0 && transactionKind(t, index) === "operating");
   const totalRevenue = income.reduce((s, t) => s + Number(t.amount), 0);
 
   if (income.length === 0 || totalRevenue <= 0) {
@@ -447,7 +582,8 @@ export function obligationConfidence(occurrences, cadence, amountVariance, dataS
   return "low";
 }
 
-// Groups negative-amount (expense) transactions by normalized description,
+// Groups outgoing costs and loan repayments (BILL_KINDS; `options.rules` is
+// the founder's rule index) by normalized description,
 // tests each group of 3+ occurrences for a consistent interval and amount
 // pattern, and returns one obligation record per group that qualifies.
 // `transactions` is the raw dated list (txn_date, amount, description,
@@ -456,7 +592,9 @@ export function obligationConfidence(occurrences, cadence, amountVariance, dataS
 // has gone quiet for too long to still call it active.
 export function detectRecurringObligations(transactions, options = {}) {
   const asOf = (options.asOf || new Date().toISOString().slice(0, 10));
-  const expenses = (transactions || []).filter(t => Number(t.amount) < 0 && t.txn_date && t.description);
+  const rules = asRuleIndex(options.rules);
+  const expenses = (transactions || []).filter(t => Number(t.amount) < 0 && t.txn_date && t.description
+    && BILL_KINDS.has(transactionKind(t, rules)));
   if (expenses.length === 0) return [];
 
   const allDates = expenses.map(t => new Date(t.txn_date).getTime());
@@ -633,7 +771,7 @@ function monthlyEquivalent(amount, cadence) {
 // soon shows up as an earlier zero-crossing than average burn would ever
 // reveal; average burn spreads that same premium evenly across the year
 // and never sees the crunch coming.
-export function computeForwardRunway({ currentCash, avgRev, avgExp, obligations, fromDate, horizonDays = 365 }) {
+export function computeForwardRunway({ currentCash, avgRev, avgExp, avgFinOut = 0, obligations, fromDate, horizonDays = 365 }) {
   const active = (obligations || []).filter(o => o.active !== false);
   // Only obligations already reflected in avgExp (i.e. real, previously-
   // detected ones) are excluded from the background rate — a hypothetical
@@ -645,8 +783,10 @@ export function computeForwardRunway({ currentCash, avgRev, avgExp, obligations,
     .reduce((s, o) => s + monthlyEquivalent(o.typical_amount, o.cadence), 0);
   // Background = everything except the known recurring obligations, which
   // get applied separately as dated events below — subtracting both would
-  // double-count them.
-  const backgroundMonthlyNet = (Number(avgRev) || 0) - ((Number(avgExp) || 0) - recurringMonthlyTotal);
+  // double-count them. Loan repayments and owner withdrawals (avgFinOut)
+  // leave the bank like any cost, and a recurring one is among the
+  // obligations, so both sides of this subtraction include them.
+  const backgroundMonthlyNet = (Number(avgRev) || 0) - ((Number(avgExp) || 0) + (Number(avgFinOut) || 0) - recurringMonthlyTotal);
   const dailyFlow = backgroundMonthlyNet / 30;
 
   const events = projectForwardCalendar(active, fromDate, horizonDays);
@@ -680,20 +820,22 @@ export function computeForwardRunway({ currentCash, avgRev, avgExp, obligations,
 // forward calendar (real obligations on their real dates), not against a
 // flat current-cash check. Layers a synthetic monthly obligation onto the
 // existing ones and re-runs the same simulation over a 12-month horizon.
-export function checkAffordability({ currentCash, avgRev, avgExp, obligations, monthlyCost, fromDate, currency = "USD" }) {
+export function checkAffordability({ currentCash, avgRev, avgExp, avgFinOut = 0, obligations, monthlyCost, fromDate, currency = "USD" }) {
   // No cash balance on file (0 is how "not entered" arrives) leaves nothing
   // to simulate from: the run would start at $0 and call every cost
   // unaffordable on day one, even for a profitable business. Answer from
   // monthly profit instead and say what is missing. A real negative
   // balance (an overdraft) is data, and still runs the full simulation.
+  const finOut = Number(avgFinOut) || 0;
   if (!Number(currentCash)) {
-    const monthlyProfit = (Number(avgRev) || 0) - (Number(avgExp) || 0);
+    const monthlyProfit = (Number(avgRev) || 0) - (Number(avgExp) || 0) - finOut;
     const covered = monthlyProfit >= (Number(monthlyCost) || 0);
+    const basis = finOut > 0 ? "average monthly profit after loan repayments and owner withdrawals" : "average monthly profit";
     return {
       affordable: covered, needsCash: true,
       message: covered
-        ? `Your average monthly profit (${fmt(monthlyProfit, currency)}) covers this. Add a cash balance to also test it against your bills on their real dates.`
-        : `This is more than your average monthly profit (${fmt(Math.max(0, monthlyProfit), currency)}) covers, and with no cash balance entered there is nothing to fund the gap. Add a cash balance to see how long it would last.`,
+        ? `Your ${basis} (${fmt(monthlyProfit, currency)}) covers this. Add a cash balance to also test it against your bills on their real dates.`
+        : `This is more than your ${basis} (${fmt(Math.max(0, monthlyProfit), currency)}) covers, and with no cash balance entered there is nothing to fund the gap. Add a cash balance to see how long it would last.`,
     };
   }
   const horizonDays = 365;
@@ -702,7 +844,7 @@ export function checkAffordability({ currentCash, avgRev, avgExp, obligations, m
     typical_amount: Number(monthlyCost) || 0, next_expected: fromDate, active: true,
     excludeFromBackground: false,
   };
-  const withNew = computeForwardRunway({ currentCash, avgRev, avgExp, obligations: [...(obligations || []), synthetic], fromDate, horizonDays });
+  const withNew = computeForwardRunway({ currentCash, avgRev, avgExp, avgFinOut: finOut, obligations: [...(obligations || []), synthetic], fromDate, horizonDays });
 
   if (!withNew.crossesZero) {
     return { affordable: true, message: "This holds for the next 12 months against your known obligations." };
@@ -1271,30 +1413,67 @@ export async function computeDedupeHash(txn) {
 // every read, never stored. `cash` is intentionally always 0 here: a
 // running balance isn't part of the transaction event schema, so current
 // cash still comes from the founder's own input, same as before.
-export function aggregateTransactionsByMonth(transactions) {
+//
+// Each transaction counts by its kind (see TRANSACTION KINDS; `options.rules`
+// is the founder's rule index). Revenue is money from customers less refunds
+// paid to them; expenses are costs less refunds received. Loans, owner money
+// and transfers are kept in their own totals and added to neither.
+const CATEGORY_BUCKETS = new Set(["payroll", "marketing", "cogs", "rent", "software"]);
+// Rounded to whole units, without a negative zero ("-$0").
+const wholeUnits = v => { const r = Math.round(v); return r === 0 ? 0 : r; };
+
+export function aggregateTransactionsByMonth(transactions, options = {}) {
+  const rules = asRuleIndex(options.rules);
   const buckets = {};
   (transactions || []).forEach(t => {
     const key = String(t.txn_date).slice(0, 7);
-    if (!buckets[key]) buckets[key] = { revenue:0, expenses:0, payroll:0, marketing:0, cogs:0, rent:0, software:0 };
+    if (!buckets[key]) buckets[key] = {
+      revenue:0, expenses:0, payroll:0, marketing:0, cogs:0, rent:0, software:0,
+      financingIn:0, financingOut:0, transferIn:0, transferOut:0, refundsIn:0, refundsOut:0,
+    };
     const b = buckets[key];
     const amt = Number(t.amount) || 0;
-    if (amt > 0) {
-      b.revenue += amt;
-    } else if (amt < 0) {
-      const abs = Math.abs(amt);
+    if (amt === 0) return;
+    const abs = Math.abs(amt);
+    const kind = transactionKind(t, rules);
+    if (kind === "transfer") {
+      if (amt > 0) b.transferIn += abs; else b.transferOut += abs;
+    } else if (kind === "financing") {
+      if (amt > 0) b.financingIn += abs; else b.financingOut += abs;
+    } else if (kind === "refund") {
+      if (amt > 0) {
+        // Money back from a supplier: a cost that did not stay a cost.
+        b.refundsIn += abs;
+        b.expenses -= abs;
+        const cat = detectExpenseCategory(t.description);
+        if (CATEGORY_BUCKETS.has(cat)) b[cat] -= abs;
+      } else {
+        // Money returned to a customer: revenue that did not stay revenue.
+        b.refundsOut += abs;
+        b.revenue -= abs;
+      }
+    } else if (amt > 0) {
+      b.revenue += abs;
+    } else {
       b.expenses += abs;
-      if (t.category && Object.prototype.hasOwnProperty.call(b, t.category)) b[t.category] += abs;
+      if (t.category && CATEGORY_BUCKETS.has(t.category)) b[t.category] += abs;
     }
   });
 
   return Object.keys(buckets).sort().map(key => {
     const b = buckets[key];
+    // A refund larger than the month's spend in its category leaves the
+    // category at zero, not below it; the expense total keeps the full amount.
+    const category = c => wholeUnits(Math.max(0, b[c]));
     return {
       period_month: `${key}-01`,
       month: new Date(`${key}-01T00:00:00Z`).toLocaleDateString("en-US", { month:"short", year:"2-digit" }),
-      revenue: Math.round(b.revenue), expenses: Math.round(b.expenses), cash: 0,
-      payroll: Math.round(b.payroll), marketing: Math.round(b.marketing), cogs: Math.round(b.cogs),
-      rent: Math.round(b.rent), software: Math.round(b.software),
+      revenue: wholeUnits(b.revenue), expenses: wholeUnits(b.expenses), cash: 0,
+      payroll: category("payroll"), marketing: category("marketing"), cogs: category("cogs"),
+      rent: category("rent"), software: category("software"),
+      financingIn: wholeUnits(b.financingIn), financingOut: wholeUnits(b.financingOut),
+      transferIn: wholeUnits(b.transferIn), transferOut: wholeUnits(b.transferOut),
+      refundsIn: wholeUnits(b.refundsIn), refundsOut: wholeUnits(b.refundsOut),
       leads: 0, closures: 0, cac: 0, ltv: 0,
     };
   });
@@ -1465,7 +1644,9 @@ export function detectTrends(rows, seasonalPattern = null, currency = "USD") {
     }
   });
 
-  const burns = rows.map(r => r.expenses - r.revenue);
+  // The same basis as netBurn in computeMetrics: loan repayments and owner
+  // withdrawals leave the bank, so they are part of burn.
+  const burns = rows.map(r => r.expenses + (r.financingOut || 0) - r.revenue);
   if (burns.length >= 3) {
     const latest = burns[burns.length - 1];
     const prior = burns.slice(0, -1);
@@ -1554,7 +1735,7 @@ export function capSeverityForVolume(severity, months) {
 // monthly-aggregated `rows` never carry.
 export function computeMetrics(rows, manual, mode, context = {}) {
   const { lastTxnDate = null, revenueConcentration = null, currency = "USD" } = context;
-  const { mRev, mExp, mCash, mCac, mLtv, mLeads, mClose } = manual;
+  const { mRev, mExp, mCash, mCac, mLtv, mLeads, mClose, mFinOut = 0 } = manual;
 
   const tr = mode === "safe" ? 0.30 : 0.25;
   const sr = mode === "safe" ? 0.20 : 0.10;
@@ -1567,6 +1748,13 @@ export function computeMetrics(rows, manual, mode, context = {}) {
   const totMkt   = rows ? rows.reduce((s,d) => s + (d.marketing||0), 0) : 0;
   const totL     = rows ? rows.reduce((s,d) => s + (d.leads||0), 0) : mLeads;
   const totC     = rows ? rows.reduce((s,d) => s + (d.closures||0), 0) : mClose;
+  // Money kept out of revenue and costs (see TRANSACTION KINDS). Only
+  // financing going out reaches a figure: it is part of burn.
+  const sumOf = f => rows ? rows.reduce((s, d) => s + (Number(d[f]) || 0), 0) : 0;
+  const totFinIn  = sumOf("financingIn");
+  const totFinOut = rows ? sumOf("financingOut") : (Number(mFinOut) || 0);
+  const totTrIn   = sumOf("transferIn"),  totTrOut  = sumOf("transferOut");
+  const totRefIn  = sumOf("refundsIn"),   totRefOut = sumOf("refundsOut");
   const activeCash = rows ? (latest.cash || mCash) : mCash;
   const activeCac  = rows ? (latest.cac  || mCac)  : mCac;
   const activeLtv  = rows ? (latest.ltv  || mLtv)  : mLtv;
@@ -1604,11 +1792,18 @@ export function computeMetrics(rows, manual, mode, context = {}) {
   const free      = totPro - taxV - safV;
   const avgExp     = totExp / Math.max(n, 1);
   const avgRev     = totRev / Math.max(n, 1);
-  // Runway must reflect net burn (expenses less revenue), not gross
+  const avgFinOut  = totFinOut / Math.max(n, 1);
+  // Everything that leaves the bank in an average month: costs, plus loan
+  // repayments and money the owner takes out.
+  const avgCashOut = avgExp + avgFinOut;
+  // Runway must reflect net burn (cash out less revenue), not gross
   // expenses — dividing cash by gross expenses tells a profitable,
   // cash-flow-positive company it's about to run out of money. When
-  // revenue already covers expenses there's no burn to measure against.
-  const netBurn        = avgExp - avgRev;
+  // revenue already covers it there's no burn to measure against. Loan
+  // repayments and owner withdrawals are not costs, but they empty the bank
+  // just the same, so they count here; a loan received does not offset
+  // burn, because it is a one-off addition to cash, not income.
+  const netBurn        = avgCashOut - avgRev;
   const cashFlowPositive = hasData && netBurn <= 0;
   // The mode's safety share is held back from one month's burn. It used to
   // be taken from the whole period's loss, so the same cash and burn read
@@ -1623,8 +1818,9 @@ export function computeMetrics(rows, manual, mode, context = {}) {
   // $5k/month business, always true for a $5M one, and different for every
   // period filter. Measured against the founder's own numbers, it scales
   // with them. Whether a specific salary also holds against cash and dated
-  // obligations is checkAffordability()'s job.
-  const hiringCapacity = Math.max(0, (avgRev - avgExp) * (1 - sr));
+  // obligations is checkAffordability()'s job. Loan repayments and owner
+  // withdrawals come out first: that money is already spoken for.
+  const hiringCapacity = Math.max(0, (avgRev - avgCashOut) * (1 - sr));
   // Real revenue concentration (by paying counterparty, not by calendar
   // month — a single highest MONTH is mechanically ~100% of a 1-month
   // total regardless of any real client-concentration risk, which is why
@@ -1685,6 +1881,7 @@ export function computeMetrics(rows, manual, mode, context = {}) {
   return {
     tr, sr, latest, prev, totRev, totExp, totCogs, totMkt, totL, totC,
     hasConversionData, avgRev, netBurn, cashFlowPositive, dataConfidence,
+    totFinIn, totFinOut, totTrIn, totTrOut, totRefIn, totRefOut, avgFinOut, avgCashOut,
     activeCash, activeCac, activeLtv, n, totPro, margin, vel, conv, ltvcac,
     cogsRatio, mktRatio, sov, sovLbl, taxV, safV, free, avgExp, burnMonths,
     hiringCapacity, concentration, concentrationReliable, revenueConcentration,
@@ -1715,6 +1912,8 @@ export function applyScenario(baseline, adjustments = {}) {
     mRev: revenue, mExp: expenses, mCash: cash,
     mCac: baseline.cac || 0, mLtv: baseline.ltv || 0,
     mLeads: baseline.leads || 0, mClose: baseline.closures || 0,
+    // Loan repayments and owner withdrawals: not costs, but part of burn.
+    mFinOut: Math.max(0, baseline.financingOut || 0),
   };
 }
 

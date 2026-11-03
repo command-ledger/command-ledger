@@ -244,8 +244,10 @@ describe("a separate Dr/Cr column", () => {
 2026-04-05,Fee,-25.00,
 2026-04-06,Refund,40.00,C`;
     expect(parseTransactions(csv, { currency: "ZAR" }).transactions.map(t => t.amount)).toEqual([1500, -800, -25, 40]);
+    // The refund is money back on a cost, so it lowers expenses instead of
+    // counting as revenue: 800 + 25 - 40.
     const monthly = parseAnyCSV(csv, { currency: "ZAR" }).rows[0];
-    expect([monthly.revenue, monthly.expenses]).toEqual([1540, 825]);
+    expect([monthly.revenue, monthly.expenses]).toEqual([1500, 785]);
   });
 
   it("reads the common header and value spellings", () => {

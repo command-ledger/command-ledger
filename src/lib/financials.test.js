@@ -418,7 +418,7 @@ describe("applyScenario", () => {
 
   it("returns the baseline unchanged when there are no adjustments", () => {
     const m = applyScenario(baseline, {});
-    expect(m).toEqual({ mRev: 50000, mExp: 40000, mCash: 100000, mCac: 200, mLtv: 800, mLeads: 0, mClose: 0 });
+    expect(m).toEqual({ mRev: 50000, mExp: 40000, mCash: 100000, mCac: 200, mLtv: 800, mLeads: 0, mClose: 0, mFinOut: 0 });
   });
 
   it("applies a revenue drop as a percentage of the baseline", () => {
