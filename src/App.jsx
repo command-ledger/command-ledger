@@ -1510,6 +1510,41 @@ const LEGAL_PATHS = { "/terms": "terms", "/privacy": "privacy" };
 const PAGE_TITLES = { terms: "Terms of Service | Command Ledger", privacy: "Privacy Policy | Command Ledger" };
 const SITE_ORIGIN = "https://www.commandledger.com";
 
+// A plan chosen before signing in, from a pricing button or a link such as
+// commandledger.com/?plan=diagnostic, is remembered on this device for a day,
+// so the buyer lands in its checkout after signing in instead of on a page
+// that has forgotten what they chose. Checkout itself is unchanged: PayModal
+// and DiagnosticModal still verify every price before PayPal opens.
+const CHECKOUT_KEYS = ["software", "advisory", "diagnostic"];
+const PENDING_PLAN = "cl.pendingPlan";
+const PENDING_PLAN_MS = 24 * 60 * 60 * 1000;
+function rememberPendingPlan(key) {
+  try { window.localStorage.setItem(PENDING_PLAN, JSON.stringify({ key, at: Date.now() })); } catch { /* storage unavailable */ }
+}
+function peekPendingPlan() {
+  try {
+    const p = JSON.parse(window.localStorage.getItem(PENDING_PLAN) || "null");
+    return p && CHECKOUT_KEYS.includes(p.key) && Date.now() - p.at < PENDING_PLAN_MS ? p.key : null;
+  } catch { return null; }
+}
+function clearPendingPlan() {
+  try { window.localStorage.removeItem(PENDING_PLAN); } catch { /* storage unavailable */ }
+}
+const checkoutName = key => key === "diagnostic" ? DIAGNOSTIC.name : PLANS[key]?.name;
+// Read once, when the app loads: a ?plan= link is remembered, then the
+// parameter is taken out of the address bar so a refresh does not repeat it.
+const PLAN_FROM_LINK = (() => {
+  const params = new URLSearchParams(window.location.search);
+  const key = params.get("plan");
+  if (!key) return null;
+  params.delete("plan");
+  const rest = params.toString();
+  window.history.replaceState(null, "", window.location.pathname + (rest ? `?${rest}` : "") + window.location.hash);
+  if (!CHECKOUT_KEYS.includes(key)) return null;
+  rememberPendingPlan(key);
+  return key;
+})();
+
 // Words the header search maps to each section, so "runway" or "export"
 // finds the page that answers it.
 const SECTION_KEYWORDS = {
@@ -3583,10 +3618,11 @@ function HelpSection({ ctx }) {
 }
 
 // ─── LOGIN PAGE ───────────────────────────────────────────────
-function LoginPage({ onBack }) {
+function LoginPage({ onBack, pendingName }) {
   const [email,    setEmail]    = useState("");
   const [password, setPassword] = useState("");
-  const [mode,     setMode]     = useState("login");
+  // Someone arriving to buy is usually new, so they start on sign-up.
+  const [mode,     setMode]     = useState(pendingName ? "register" : "login");
   const [loading,  setLoading]  = useState(false);
   const [err,      setErr]      = useState("");
   const [msg,      setMsg]      = useState("");
@@ -3633,6 +3669,7 @@ function LoginPage({ onBack }) {
         <div className="auth-h">
           <h1 className="auth-title">{mode === "login" ? "Sign in" : "Create your account"}</h1>
           <p className="auth-sub">{mode === "login" ? "Welcome back to your financial command centre." : "Start with your own exports. No bank login required."}</p>
+          {pendingName && <p className="auth-sub" style={{ marginTop:8, color:C.text }}>Next: checkout for {pendingName}.</p>}
         </div>
         <form className="auth-form" onSubmit={handleSubmit}>
           {err && <div className="a-err">{err}</div>}
@@ -4298,6 +4335,7 @@ export default function App() {
       }
       setUser(u);
       setProfile(data);
+      planLinkPending.current = false;
       if (window.location.hash) window.history.replaceState(null, "", window.location.pathname);
       setAppState(LEGAL_PATHS[window.location.pathname] || "dashboard");
     } catch (err) {
@@ -4312,9 +4350,11 @@ export default function App() {
   // Workspace paths (/dashboard, /reports ...) belong to the signed-in app.
   // A signed-out visitor on one is shown the marketing site at "/". The
   // legal pages keep their own address.
+  const planLinkPending = useRef(!!PLAN_FROM_LINK);
   const showMarketing = useCallback(() => {
     const legal = LEGAL_PATHS[window.location.pathname];
     if (legal) { setAppState(legal); return; }
+    if (planLinkPending.current) { setAppState("login"); return; }
     if (isAppPath(window.location.pathname)) window.history.replaceState(null, "", "/");
     setAppState("marketing");
   }, []);
@@ -4408,8 +4448,9 @@ export default function App() {
   useEffect(() => { if (!user) { activationRun.current++; setActivation(null); } }, [user]);
 
   const handlePlanSelect = useCallback((planKey) => {
-    if (user) setPayModal(planKey);
-    else      setAppState("login");
+    if (user) { setPayModal(planKey); return; }
+    rememberPendingPlan(planKey);
+    setAppState("login");
   }, [user]);
 
   // While a payment is activating, no new subscription checkout opens.
@@ -4417,6 +4458,16 @@ export default function App() {
     if (activation && planKey !== "diagnostic") return;
     setPayModal(planKey);
   }, [activation]);
+
+  useEffect(() => {
+    if (appState !== "dashboard" || !user || !profile) return;
+    const key = peekPendingPlan();
+    if (!key) return;
+    clearPendingPlan();
+    if (key === "diagnostic") setPayModal("diagnostic");
+    // Someone already on the plan they chose is not sent to buy it again.
+    else if (!profile.plan || resolvePlanKey(profile.plan) !== key) openSubscription(key);
+  }, [appState, user, profile, openSubscription]);
 
   if (appState === "loading") return (
     <>
@@ -4456,7 +4507,8 @@ export default function App() {
         <MarketingSite onLogin={() => setAppState("login")} onPlanSelect={handlePlanSelect} onTerms={() => openLegal("terms")} onPrivacy={() => openLegal("privacy")}/>
       )}
       {appState==="login" && (
-        <LoginPage onBack={() => setAppState("marketing")}/>
+        <LoginPage pendingName={checkoutName(peekPendingPlan())}
+          onBack={() => { planLinkPending.current = false; setAppState("marketing"); }}/>
       )}
       {appState==="dashboard" && user && profile && (
         profile.plan ? (
