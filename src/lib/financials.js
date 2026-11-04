@@ -1601,7 +1601,10 @@ export function aggregateTransactionsByMonth(transactions, options = {}) {
     const category = c => wholeUnits(Math.max(0, b[c]));
     return {
       period_month: `${key}-01`,
-      month: new Date(`${key}-01T00:00:00Z`).toLocaleDateString("en-US", { month:"short", year:"2-digit" }),
+      // In UTC, like the date it is made from: in the viewer's own time
+      // zone, midnight on 1 April UTC is still 31 March west of Greenwich,
+      // and every month was labelled one month early for US visitors.
+      month: new Date(`${key}-01T00:00:00Z`).toLocaleDateString("en-US", { month:"short", year:"2-digit", timeZone:"UTC" }),
       partial: monthIsPartial(key, b, i > 0 ? buckets[keys[i - 1]] : null, i === 0, i === keys.length - 1, today),
       coveredFrom: b.firstDate, coveredTo: b.lastDate,
       revenue: wholeUnits(b.revenue), expenses: wholeUnits(b.expenses), cash: 0,

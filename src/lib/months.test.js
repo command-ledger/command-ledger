@@ -83,6 +83,19 @@ describe("computeMetrics with a partial month", () => {
   });
 });
 
+describe("month labels", () => {
+  it("name the month whatever the viewer's time zone", () => {
+    const before = process.env.TZ;
+    try {
+      process.env.TZ = "America/New_York"; // midnight UTC on the 1st is the evening before here
+      const rows = aggregateTransactionsByMonth([txn("2026-04-03", 100), txn("2026-05-02", 100)], { today: TODAY });
+      expect(rows.map(r => r.month)).toEqual(["Apr 26", "May 26"]);
+    } finally {
+      if (before === undefined) delete process.env.TZ; else process.env.TZ = before;
+    }
+  });
+});
+
 describe("periodStartDate", () => {
   it("starts on the 1st of the month, whole months before this one", () => {
     expect(periodStartDate("12", "2026-11-04")).toBe("2025-11-01");
