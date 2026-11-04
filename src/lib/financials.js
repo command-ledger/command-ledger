@@ -437,8 +437,10 @@ export function computeRevenueConcentration(transactions, rules) {
   // Not shown, with the reason, when payer names can't be trusted, when
   // processors carry most of the revenue (the clients are hidden behind
   // them), or when no client is named at all.
-  let reason = `Payer names could not be reliably extracted from ${Math.round((1 - extractionRate) * 100)}% of income transactions.`;
   let shown = confidenceLevel !== "low";
+  let reason = shown
+    ? `Payer names read from ${Math.round(extractionRate * 100)}% of income transactions.`
+    : `Payer names could not be reliably extracted from ${Math.round((1 - extractionRate) * 100)}% of income transactions.`;
   if (shown && aggregatorPct >= PROCESSOR_SHARE_LIMIT) {
     shown = false;
     reason = `${Math.round(aggregatorPct)}% of revenue arrives through payment processors or marketplaces, which pay out many customers in one deposit, so client concentration cannot be measured from bank data.`;
@@ -1531,6 +1533,10 @@ function monthIsPartial(key, b, prev, isFirst, isLast, today) {
   return false;
 }
 
+// A month's name as every screen and the report CSV show it: a partial
+// month says it is only to date, so it is never read as a whole month.
+export const monthLabel = r => (r?.partial ? `${r.month} (to date)` : r?.month || "");
+
 // The first day of the month `months` calendar months before today's
 // month, so "the last 3 months" in November is August, September and
 // October in full (plus November so far), never a cut that starts on the
@@ -1757,7 +1763,7 @@ export function detectTrends(rows, seasonalPattern = null, currency = "USD") {
       trends.push({
         type: "margin",
         direction: delta > 0 ? "improving" : "declining",
-        message: `Margin ${delta > 0 ? "improved" : "fell"} to ${latest.toFixed(1)}% this month, vs a ${avgPrior.toFixed(1)}% average over the prior ${prior.length} month(s).`,
+        message: `Margin ${delta > 0 ? "improved" : "fell"} to ${latest.toFixed(1)}% in the latest complete month, vs a ${avgPrior.toFixed(1)}% average over the prior ${prior.length} month(s).`,
       });
     }
   }
@@ -1774,7 +1780,7 @@ export function detectTrends(rows, seasonalPattern = null, currency = "USD") {
           type: "expense_creep",
           category: cat,
           direction: "worsening",
-          message: `${cat.charAt(0).toUpperCase()}${cat.slice(1)} grew to ${latest.toFixed(0)}% of expenses this month, up from a ${avgPrior.toFixed(0)}% average.`,
+          message: `${cat.charAt(0).toUpperCase()}${cat.slice(1)} grew to ${latest.toFixed(0)}% of expenses in the latest complete month, up from a ${avgPrior.toFixed(0)}% average.`,
         });
       }
     }
@@ -1793,7 +1799,7 @@ export function detectTrends(rows, seasonalPattern = null, currency = "USD") {
       trends.push({
         type: "burn",
         direction: delta < 0 ? "improving" : "worsening",
-        message: `Net burn ${delta < 0 ? "improved" : "worsened"} to ${fmt(latest, currency)}/mo this month, vs a ${fmt(avgPrior, currency)}/mo average.`,
+        message: `Net burn ${delta < 0 ? "improved" : "worsened"} to ${fmt(latest, currency)}/mo in the latest complete month, vs a ${fmt(avgPrior, currency)}/mo average.`,
       });
     }
   }
@@ -2256,7 +2262,9 @@ export function buildFounderNarrative(trajectory, currentMargin) {
     const verb = trajectory.margin.direction === "improving" ? "improved" : trajectory.margin.direction === "declining" ? "declined" : "held steady";
     parts.push(`Margin has ${verb} for ${months} consecutive months, now at ${pc(trajectory.margin.current)}.`);
   } else {
-    parts.push(`Margin is ${pc(trajectory.margin.current)} this period.`);
+    // The trajectory's current margin is the latest complete month's, not
+    // the selected period's.
+    parts.push(`Margin was ${pc(trajectory.margin.current)} in the latest complete month.`);
   }
 
   if (trajectory.revenue.streak.length >= 2) {
@@ -2304,7 +2312,9 @@ export function computeDirective({ margin, burnMonths, free, vel, conv, ltvcac, 
     // "confidence moderate or high," by construction of computeRevenueConcentration.
     if (concentration?.shown && concentration.severity) {
       const isCritical = concentration.severity === "critical";
-      const tooFewPayers = concentration.distinctPayers < 3;
+      // Fewer than three named clients is fewer than three clients only when
+      // no money arrives through a processor, whose customers are hidden.
+      const tooFewPayers = concentration.distinctPayers < 3 && !(concentration.aggregatorRevenue > 0);
       return {
         text: isCritical
           ? "Diversify your revenue before growing it."
@@ -2312,7 +2322,7 @@ export function computeDirective({ margin, burnMonths, free, vel, conv, ltvcac, 
             ? "Land a third paying client before scaling spend."
             : "Reduce reliance on your largest client before it becomes a crisis.",
         reason: tooFewPayers
-          ? `You have ${concentration.distinctPayers} distinct paying client${concentration.distinctPayers === 1 ? "" : "s"} this period. Losing any one of them is a material hit to revenue, regardless of how the dollars split.`
+          ? `You have ${concentration.distinctPayers} distinct paying client${concentration.distinctPayers === 1 ? "" : "s"} this period. Losing any one of them is a material hit to revenue, however the revenue splits between them.`
           : `${concentration.largestPct.toFixed(0)}% of revenue comes from your single largest client. One client exit or contract loss exposes the business at this concentration, and the risk stays invisible until it is catastrophic.`,
         severity: isCritical ? "critical" : "warn", rule: "client_concentration", targetMetric: "concentration",
       };
@@ -2573,7 +2583,7 @@ export function buildReportCsv({ title = "Command Ledger financial summary", per
   (rows || []).forEach(r => {
     const net = (r.revenue || 0) - (r.expenses || 0);
     rev += r.revenue || 0; exp += r.expenses || 0;
-    lines.push([r.month, r.revenue || 0, r.expenses || 0, net, r.revenue > 0 ? (net / r.revenue) * 100 : ""]);
+    lines.push([monthLabel(r), r.revenue || 0, r.expenses || 0, net, r.revenue > 0 ? (net / r.revenue) * 100 : ""]);
   });
   lines.push(["Total", rev, exp, rev - exp, rev > 0 ? ((rev - exp) / rev) * 100 : ""]);
   lines.push([], ["Metric", "Value"]);

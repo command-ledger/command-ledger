@@ -106,6 +106,16 @@ describe("the runway directive", () => {
     expect(computeDirective({ ...base, runwayKnown: true, cashFlowPositive: true }).rule).not.toBe("low_runway");
   });
 
+  it("does not say how many clients there are when a processor pays out others", () => {
+    const concentration = { shown: true, severity: "critical", largestPct: 68, distinctPayers: 2, aggregatorRevenue: 24000 };
+    const d = computeDirective({ ...base, margin: 45, concentration });
+    expect(d.rule).toBe("client_concentration");
+    expect(d.reason).toContain("68% of revenue comes from your single largest client");
+    const named = computeDirective({ ...base, margin: 45, concentration: { ...concentration, aggregatorRevenue: 0 } });
+    expect(named.reason).toContain("You have 2 distinct paying clients");
+    expect(named.reason).not.toContain("dollars");
+  });
+
   it("names a loss as a loss", () => {
     const d = computeDirective({ ...base, free: -12000, currency: "USD" });
     expect(d.rule).toBe("negative_free_cash");

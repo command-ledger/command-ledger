@@ -21,7 +21,17 @@ a defect, however good it looks. Visual rules live in `DESIGN.md`.
 6. **History and forecast stay apart.** The cash chart shows actual
    transactions only; projections live under Forecasts.
 7. **Model output is text.** AI briefs render as React text, never as HTML.
-8. **One currency per figure, never converted.** Every figure is in the
+8. **Not everything that moves money is revenue or a cost.** Loans, the
+   owner's own money and transfers between the business's own accounts are
+   kept out of revenue, costs and margin, and refunds net against them. Every
+   transaction shows what it counts as, and the founder can change it.
+9. **A month in progress is labelled "to date"** and never stands in for a
+   whole month: it counts in period totals, never in averages, growth,
+   trends or the latest-month figures.
+10. **A known cash balance is real, even at or below zero.** An overdraft or
+    an empty account is 0 months of runway, not `---`. The balance shows its
+    date and source, and a stale one lowers runway's confidence.
+11. **One currency per figure, never converted.** Every figure is in the
    business currency chosen in Settings and carries its symbol. Transactions
    in any other currency are listed in their own currency and counted in a
    notice, never added in. Command Ledger's own prices are written "US$".

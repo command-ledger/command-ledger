@@ -135,9 +135,19 @@ figures at full size (below 1,320 px), they wrap to two rows of three.
   lead tile is chosen by severity and carries a 2 px severity bar.
 - **Directive strip:** the week's call, with a 3 px severity edge. `compact`
   hides the reasoning, for the site preview only.
-- **Cash in and cash out (`BChart`):** platinum bars for money in, pewter for
-  money out, one shared scale, period totals, labelled as actual history.
-  Forecasts are never mixed into it.
+- **Revenue and costs (`BChart`):** platinum bars for revenue, pewter for
+  costs, one shared scale, period totals, labelled as actual history. Loans,
+  owner money and own-account transfers are neither, so they are not drawn.
+  A month in progress is drawn at 45% opacity with an asterisk and a
+  "To date" legend. Forecasts are never mixed into it.
+- **Counts as (`tx-kind`, `KindEditor`):** every transaction row says what it
+  counts as, in words, with "set by you" when a rule applies, and a Change
+  link that opens an editor row beneath it (`kind-edit`): a select, the
+  effect in one line, and a choice between this transaction and every one
+  described like it.
+- **Cash balance (`CashBalancePanel`, `cash-form`):** the balance runway uses,
+  where it came from and its date, and a form to enter the total. An
+  overdraft is shown in the danger colour and named in words.
 - **AI brief:** a memo with a fixed label column; the recommended action in
   display type; risk chip plus a confidence meter of the real score.
 - **Tables:** mono numerals, right-aligned amounts, sticky uppercase headers.

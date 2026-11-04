@@ -1,6 +1,6 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo, Fragment } from "react";
 import { createClient } from "@supabase/supabase-js";
-import { fmt, pc, safe, parseAnyCSV, computeMetrics, runScenario, parseTransactions, computeDedupeHash, aggregateTransactionsByMonth, computeRevenueConcentration, detectRecurringObligations, computeForwardRunway, checkAffordability, detectMissedObligations, projectForwardCalendar, summarizeCalendarByWeek, computeDirective, getDirectiveMetricValue, describeDirectiveOutcome, checkoutBlockReason, computeConfidence, fmtCompact, filterTransactions, searchWorkspace, buildAlerts, buildReportCsv, SUPPORTED_CURRENCIES, isSupportedCurrency, currencySymbol, currencyName, partitionByCurrency, decodeTextFile } from "./lib/financials.js";
+import { fmt, pc, safe, parseAnyCSV, computeMetrics, runScenario, parseTransactions, computeDedupeHash, aggregateTransactionsByMonth, computeRevenueConcentration, detectRecurringObligations, computeForwardRunway, checkAffordability, detectMissedObligations, projectForwardCalendar, summarizeCalendarByWeek, computeDirective, getDirectiveMetricValue, describeDirectiveOutcome, checkoutBlockReason, computeConfidence, fmtCompact, filterTransactions, searchWorkspace, buildAlerts, buildReportCsv, SUPPORTED_CURRENCIES, isSupportedCurrency, currencySymbol, currencyName, partitionByCurrency, decodeTextFile, buildRuleIndex, resolveKind, classificationKey, summarizeKinds, periodStartDate, effectiveCashBalance, monthLabel, isGenericCounterparty } from "./lib/financials.js";
 
 const supabase = createClient(
   import.meta.env.VITE_SUPABASE_URL,
@@ -573,6 +573,18 @@ a{color:inherit;}
 .tbl .muted{color:var(--text-2);}
 .tx-tools{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px;}
 .tx-sum{font-family:var(--f-num);font-size:13px;color:var(--text-2);margin-left:auto;}
+.tx-kind{white-space:nowrap;color:var(--text-2);}
+.tx-kind .panel-link{margin-left:10px;font-size:12.5px;text-decoration:underline;text-underline-offset:3px;}
+.kind-edit-row td{background:var(--panel-2);}
+.kind-edit{display:flex;flex-direction:column;gap:10px;max-width:640px;padding:4px 0;}
+.kind-edit .di{max-width:440px;}
+.kind-help{font-size:13.5px;line-height:1.55;color:var(--text-2);margin:0;}
+.kind-scope{border:0;padding:0;margin:0;display:flex;flex-direction:column;gap:8px;font-size:14px;color:var(--text);}
+.kind-scope label{display:flex;gap:8px;align-items:flex-start;cursor:pointer;line-height:1.45;}
+.kind-scope input{margin-top:3px;accent-color:var(--platinum);flex-shrink:0;}
+.kind-actions{display:flex;gap:12px;align-items:center;flex-wrap:wrap;}
+.cash-form{display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-top:14px;}
+.cash-form .input-group{flex:1 1 180px;min-width:0;}
 .busy-line{display:flex;align-items:center;gap:10px;margin-top:12px;font-size:14px;color:var(--text-2);}
 .batch-list{list-style:none;display:flex;flex-direction:column;max-height:340px;overflow-y:auto;}
 .batch-list li{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:11px 0;border-bottom:1px solid var(--line);}
@@ -841,11 +853,13 @@ function Ring({ score, size = 100, sw = 6 }) {
   );
 }
 
-// ─── CASH IN AND CASH OUT ─────────────────────────────────────
-// Money received against money spent, per month, from actual transactions
-// in the business currency. Both series share one scale, so a month whose costs beat its
-// income is drawn taller, not clipped. History only: projections live
-// under Forecasts, never mixed into this chart.
+// ─── REVENUE AND COSTS ────────────────────────────────────────
+// Revenue against costs, per month, from actual transactions in the
+// business currency. Loans, owner money and transfers between the
+// business's own accounts are neither, so they are not drawn. Both series
+// share one scale, so a month whose costs beat its revenue is drawn
+// taller, not clipped. A month still in progress is faded and marked. History
+// only: projections live under Forecasts, never mixed into this chart.
 function BChart({ data, compact = false, currency }) {
   if (!data || data.length === 0) return (
     <div className="panel-copy" style={{ textAlign:"center", padding:"36px 0" }}>Connect data to see money in and out.</div>
@@ -860,28 +874,29 @@ function BChart({ data, compact = false, currency }) {
     <div>
       {!compact && (
         <div className="chart-summary">
-          <span>In<b>{fmt(totIn, currency)}</b></span>
-          <span>Out<b>{fmt(totOut, currency)}</b></span>
+          <span>Revenue<b>{fmt(totIn, currency)}</b></span>
+          <span>Costs<b>{fmt(totOut, currency)}</b></span>
           <span>Net<b style={{ color: net >= 0 ? C.positive : C.danger }}>{fmt(net, currency)}</b></span>
           <span>Peak month<b>{fmt(maxV, currency)}</b></span>
         </div>
       )}
       <div style={{ display:"flex", alignItems:"flex-end", gap: data.length > 18 ? 3 : 8, height:H + 24 }} role="img"
-        aria-label={`Money in and out by month, ${data[0].month} to ${last.month}. Total in ${fmt(totIn, currency)}, total out ${fmt(totOut, currency)}. Latest month, ${last.month}: in ${fmt(last.revenue, currency)}, out ${fmt(last.expenses, currency)}.`}>
+        aria-label={`Revenue and costs by month, ${monthLabel(data[0])} to ${monthLabel(last)}. Total revenue ${fmt(totIn, currency)}, total costs ${fmt(totOut, currency)}. Latest month, ${monthLabel(last)}: revenue ${fmt(last.revenue, currency)}, costs ${fmt(last.expenses, currency)}.`}>
         {data.map((d, i) => (
-          <div key={i} title={`${d.month}: in ${fmt(d.revenue, currency)}, out ${fmt(d.expenses, currency)}, net ${fmt((d.revenue || 0) - (d.expenses || 0), currency)}`}
+          <div key={i} title={`${monthLabel(d)}: revenue ${fmt(d.revenue, currency)}, costs ${fmt(d.expenses, currency)}, net ${fmt((d.revenue || 0) - (d.expenses || 0), currency)}`}
             style={{ flex:1, minWidth:0, display:"flex", flexDirection:"column", alignItems:"center", gap:6, height:"100%", justifyContent:"flex-end" }}>
-            <div style={{ display:"flex", gap:3, alignItems:"flex-end", height:H, width:"100%", justifyContent:"center" }}>
-              <div style={{ width:"42%", maxWidth:24, minHeight:2, height:`${(d.revenue / maxV) * H}px`, background:C.platinum, borderRadius:"2px 2px 0 0" }}/>
-              <div style={{ width:"42%", maxWidth:24, minHeight:2, height:`${(d.expenses / maxV) * H}px`, background:C.pewter, borderRadius:"2px 2px 0 0" }}/>
+            <div style={{ display:"flex", gap:3, alignItems:"flex-end", height:H, width:"100%", justifyContent:"center", opacity: d.partial ? 0.45 : 1 }}>
+              <div style={{ width:"42%", maxWidth:24, minHeight:2, height:`${(Math.max(0, d.revenue || 0) / maxV) * H}px`, background:C.platinum, borderRadius:"2px 2px 0 0" }}/>
+              <div style={{ width:"42%", maxWidth:24, minHeight:2, height:`${(Math.max(0, d.expenses || 0) / maxV) * H}px`, background:C.pewter, borderRadius:"2px 2px 0 0" }}/>
             </div>
-            <span style={{ fontSize:12, color:C.text3, fontFamily:"var(--f-num)", whiteSpace:"nowrap", overflow:"hidden", maxWidth:"100%" }}>{data.length > 12 && i % 2 ? "" : d.month}</span>
+            <span style={{ fontSize:12, color:C.text3, fontFamily:"var(--f-num)", whiteSpace:"nowrap", overflow:"hidden", maxWidth:"100%" }}>{data.length > 12 && i % 2 ? "" : `${d.month}${d.partial ? "*" : ""}`}</span>
           </div>
         ))}
       </div>
       <div className="chart-legend">
-        <span><i style={{ background:C.platinum }}/>Money in</span>
-        <span><i style={{ background:C.pewter }}/>Money out</span>
+        <span><i style={{ background:C.platinum }}/>Revenue</span>
+        <span><i style={{ background:C.pewter }}/>Costs</span>
+        {data.some(d => d.partial) && <span>* To date: month not complete</span>}
         {!compact && <span style={{ marginLeft:"auto", color:C.text3 }}>Actual history from your transactions{currency ? `, ${currency}` : ""}</span>}
       </div>
     </div>
@@ -1001,7 +1016,7 @@ function excelSheetToCsv(XLSX, ws) {
 }
 
 // ─── DATA UPLOAD ──────────────────────────────────────────────
-function DataUpload({ onDataLoaded, hasData, currency }) {
+function DataUpload({ onDataLoaded, hasData, currency, rules }) {
   const [drag,    setDrag]    = useState(false);
   const [parsing, setParsing] = useState(false);
   const [err,     setErr]     = useState("");
@@ -1015,7 +1030,7 @@ function DataUpload({ onDataLoaded, hasData, currency }) {
   const fileRef = useRef(null);
 
   const processCSVText = (text, source) => {
-    const result = parseAnyCSV(text, { currency: fileCur });
+    const result = parseAnyCSV(text, { currency: fileCur, rules });
     if (!result || result.rows.length === 0) {
       setErr(`No readable financial data in ${fileCur} found. Ensure the file has at minimum a Revenue or Amount column.`);
       return false;
@@ -1972,9 +1987,11 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
   // every load and every period-filter change. Nothing here is computed
   // client-side and stored back; `history` is raw monthly aggregates only.
   const [txns, setTxns] = useState([]);
-  const [history, setHistory] = useState([]);
-  const [lastTxnDate, setLastTxnDate] = useState(null);
-  const [concentrationData, setConcentrationData] = useState(null);
+  // The founder's own rules for what a transaction is (see TRANSACTION
+  // KINDS in financials.js). Bills are not detected until they have
+  // loaded, so the first detection already follows them.
+  const [rules, setRules] = useState([]);
+  const [rulesLoaded, setRulesLoaded] = useState(false);
   const [obligations, setObligations] = useState([]);
   const [affordInput, setAffordInput] = useState("");
   // The amount last checked. The answer is recomputed from it on every
@@ -2004,11 +2021,11 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
   // Transactions page filters; the header search sets txQuery.
   const [txQuery, setTxQuery] = useState("");
   const [txDirection, setTxDirection] = useState("all");
+  const [txKind, setTxKind] = useState("all");
   const [txLimit, setTxLimit] = useState(100);
   // Manual input state
   const [mRev,  setMRev]  = useState(0);
   const [mExp,  setMExp]  = useState(0);
-  const [mCash, setMCash] = useState(0);
   const [mCac,  setMCac]  = useState(0);
   const [mLtv,  setMLtv]  = useState(0);
   const [mLeads, setMLeads] = useState(0);
@@ -2024,7 +2041,23 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
   // The business currency. Every metric is computed from transactions in it
   // and shown in it; null until the founder chooses one.
   const cur = isSupportedCurrency(profile?.base_currency) ? profile.base_currency : null;
-  const [excludedByCurrency, setExcludedByCurrency] = useState([]);
+  const todayStr = new Date().toISOString().slice(0, 10);
+
+  // Everything below is derived from the transactions and rules on every
+  // render that changes them; nothing computed is stored. Figures come from
+  // transactions in the business currency only. The rest stay listed under
+  // Transactions and are counted in a notice; they are never added in, and
+  // never converted.
+  const ruleIndex = useMemo(() => buildRuleIndex(rules), [rules]);
+  const { included: baseTxns, excluded: excludedByCurrency } = useMemo(() => partitionByCurrency(txns, cur), [txns, cur]);
+  const history = useMemo(() => aggregateTransactionsByMonth(baseTxns, { rules: ruleIndex, today: todayStr }), [baseTxns, ruleIndex, todayStr]);
+  const concentrationData = useMemo(() => computeRevenueConcentration(baseTxns, ruleIndex), [baseTxns, ruleIndex]);
+  // Ascending order, so the last row is the most recent real transaction:
+  // what the confidence model's recency check degrades against.
+  const lastTxnDate = baseTxns.length > 0 ? baseTxns[baseTxns.length - 1].txn_date : null;
+  // The cash balance runway is measured from: the newest of the founder's
+  // own entry and the closing balances of uploaded files.
+  const cashBalance = useMemo(() => effectiveCashBalance({ profile, batches, baseCurrency: cur }), [profile, batches, cur]);
   const userName  = profile?.name || user?.user_metadata?.full_name || user?.email?.split("@")[0] || "Founder";
   const userAvatar = user?.user_metadata?.avatar_url;
 
@@ -2062,51 +2095,42 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
   useEffect(() => { if (mobileSearchOpen) searchRef.current?.focus(); }, [mobileSearchOpen]);
 
   // ── Data loading ──
-  const periodCutoff = useCallback(() => {
-    if (periodFilter === "all") return null;
-    const d = new Date();
-    d.setUTCMonth(d.getUTCMonth() - Number(periodFilter));
-    return d.toISOString().slice(0, 10);
-  }, [periodFilter]);
-
-  // `baseArg` lets an upload that has just set the business currency load
-  // with it before the profile change reaches this closure.
-  const loadHistory = useCallback(async (baseArg) => {
-    const base = baseArg || cur;
+  // The period starts on the 1st of a month, so "the last 3 months" is
+  // three whole months plus this one so far, never a first month cut short.
+  const loadHistory = useCallback(async () => {
     setHistoryLoading(true);
     try {
-      // `description` is fetched alongside the aggregates so real revenue
-      // concentration can be computed from payer names — that only exists
-      // at the transaction level, never in a monthly bucket.
-      const cutoff = periodCutoff();
+      // `description` is fetched alongside the amounts so real revenue
+      // concentration can be computed from payer names (that only exists
+      // at the transaction level, never in a monthly bucket), and
+      // `dedupe_hash` so a rule set on one transaction finds it again.
+      const cutoff = periodStartDate(periodFilter, new Date().toISOString().slice(0, 10));
       const list = await selectAll(() => {
-        let query = supabase.from("transactions").select("id, txn_date, amount, category, description, currency")
+        let query = supabase.from("transactions").select("id, txn_date, amount, category, description, currency, dedupe_hash")
           .order("txn_date", { ascending: true }).order("id", { ascending: true });
         if (cutoff) query = query.gte("txn_date", cutoff);
         return query;
       });
-      // Every figure comes from transactions in the business currency only.
-      // The rest stay listed under Transactions and are counted in a notice;
-      // they are never added in, and never converted.
-      const { included, excluded } = partitionByCurrency(list, base);
       setTxns(list);
-      setExcludedByCurrency(excluded);
-      setHistory(aggregateTransactionsByMonth(included));
-      setConcentrationData(computeRevenueConcentration(included));
-      // Ascending order, so the last row is the most recent real transaction —
-      // this is what the confidence model's recency check degrades against.
-      setLastTxnDate(included.length > 0 ? included[included.length - 1].txn_date : null);
     } catch (e) {
       console.error("Failed to load transaction history:", e);
       setTxns([]);
-      setExcludedByCurrency([]);
-      setHistory([]);
-      setConcentrationData(computeRevenueConcentration([]));
-      setLastTxnDate(null);
       setActionErr("Your transaction history could not be loaded. Refresh to try again.");
     }
     setHistoryLoading(false);
-  }, [periodCutoff, cur]);
+  }, [periodFilter]);
+
+  const loadRules = useCallback(async () => {
+    try {
+      setRules(await selectAll(() => supabase.from("transaction_rules").select("id, scope, match_key, description_key, kind").order("id", { ascending: true })));
+    } catch (e) {
+      // Figures still follow the descriptions; only the founder's own
+      // corrections are missing, and saying so beats hiding it.
+      console.error("Failed to load transaction rules:", e);
+      setActionErr("Your choices for what transactions count as could not be loaded, so loans, transfers and refunds are read from descriptions only. Refresh to try again.");
+    }
+    setRulesLoaded(true);
+  }, []);
 
   const loadBatches = useCallback(async () => {
     const { data: rows, error } = await supabase.from("upload_batches").select("*").order("uploaded_at", { ascending: false });
@@ -2121,12 +2145,14 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
   const loadObligations = useCallback(async (baseArg) => {
     const base = baseArg || cur;
     if (!base) { setObligations([]); return; }
+    if (!rulesLoaded) return;
     try {
-      const all = await selectAll(() => supabase.from("transactions").select("txn_date, amount, description, category, currency")
+      const all = await selectAll(() => supabase.from("transactions").select("txn_date, amount, description, category, currency, dedupe_hash")
         .order("txn_date", { ascending: true }).order("id", { ascending: true }));
       // Bills are detected from the business currency only, so a payment
-      // stream is never averaged across two currencies.
-      const detected = detectRecurringObligations(all.filter(t => t.currency === base));
+      // stream is never averaged across two currencies. Transfers and
+      // refunds are never bills; loan repayments are.
+      const detected = detectRecurringObligations(all.filter(t => t.currency === base), { rules: ruleIndex });
 
       // If this read fails, every obligation the founder marked as ended
       // would look unseen and be upserted back to active — so it must throw.
@@ -2150,12 +2176,16 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
 
       const { data: persisted, error: persistErr } = await supabase.from("recurring_obligations").select("*").order("typical_amount", { ascending: false });
       if (persistErr) throw persistErr;
-      setObligations((persisted || []).filter(o => o.currency === base));
+      // Only bills this detection still finds. A stored row it no longer
+      // finds (its upload deleted, or the founder said it is a transfer)
+      // keeps its record but is not projected.
+      const detectedKeys = new Set(detected.map(o => o.normalized_key));
+      setObligations((persisted || []).filter(o => o.currency === base && detectedKeys.has(o.normalized_key)));
     } catch (e) {
       console.error("Failed to detect/load recurring obligations:", e);
       setObligations([]);
     }
-  }, [user, cur]);
+  }, [user, cur, ruleIndex, rulesLoaded]);
 
   const setObligationActive = async (id, active) => {
     const { error } = await supabase.from("recurring_obligations").update({ active }).eq("id", id);
@@ -2181,6 +2211,7 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
   };
 
   useEffect(() => { loadHistory(); }, [loadHistory]);
+  useEffect(() => { loadRules(); }, [loadRules]);
   useEffect(() => { loadBatches(); }, [loadBatches]);
   useEffect(() => { loadObligations(); }, [loadObligations]);
   useEffect(() => { loadDirectives(); }, [loadDirectives]);
@@ -2192,6 +2223,55 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
       .update({ base_currency: code, updated_at: new Date().toISOString() })
       .eq("id", user.id).select().single();
     if (error) { console.error("Failed to save business currency:", error); return false; }
+    onProfileChange(saved);
+    return true;
+  };
+
+  // Saves what a transaction counts as: for this one transaction, or for
+  // every transaction described like it. A rule for all of them replaces
+  // the one-transaction rules it covers, so "every transaction" means it.
+  const saveKindRule = async (txn, kind, scope) => {
+    const key = classificationKey(txn.description);
+    const row = { user_id: user.id, kind, updated_at: new Date().toISOString() };
+    if (scope === "similar" ? !key : !txn.dedupe_hash) return false;
+    const { error } = await supabase.from("transaction_rules").upsert(
+      scope === "similar"
+        ? { ...row, scope: "similar", match_key: key, description_key: null }
+        : { ...row, scope: "single", match_key: txn.dedupe_hash, description_key: key || null },
+      { onConflict: "user_id,scope,match_key" });
+    if (error) { console.error("Failed to save transaction rule:", error); setActionErr("That change could not be saved. Nothing was changed, so try again."); return false; }
+    if (scope === "similar") {
+      const { error: clearErr } = await supabase.from("transaction_rules").delete().eq("scope", "single").eq("description_key", key);
+      if (clearErr) {
+        console.error("Failed to clear one-transaction rules:", clearErr);
+        setActionErr("Saved, but some transactions kept a choice you made for them one at a time. Save it again to apply it to all of them.");
+      }
+    }
+    await loadRules();
+    return true;
+  };
+
+  // Removes the rule a transaction follows, so its description decides
+  // again. A rule for every transaction like it is removed for all of them.
+  const clearKindRule = async (txn, source) => {
+    const q = supabase.from("transaction_rules").delete();
+    const { error } = source === "single"
+      ? await q.eq("scope", "single").eq("match_key", txn.dedupe_hash)
+      : await q.eq("scope", "similar").eq("match_key", classificationKey(txn.description));
+    if (error) { console.error("Failed to remove transaction rule:", error); setActionErr("That change could not be saved. Nothing was changed, so try again."); return false; }
+    await loadRules();
+    return true;
+  };
+
+  // Saves the founder's own cash balance and the date it was true, or
+  // removes it (null). It is the business's total, so it is also how a
+  // business with several accounts gives the whole figure.
+  const saveCashBalance = async (amount, on) => {
+    if (amount !== null && !cur) return false;
+    const { data: saved, error } = await supabase.from("profiles")
+      .update({ cash_balance: amount, cash_balance_on: amount === null ? null : on, cash_balance_currency: amount === null ? null : cur, updated_at: new Date().toISOString() })
+      .eq("id", user.id).select().single();
+    if (error) { console.error("Failed to save cash balance:", error); setActionErr("Your cash balance could not be saved. Nothing was changed, so try again."); return false; }
     onProfileChange(saved);
     return true;
   };
@@ -2233,10 +2313,14 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
       }
       const { transactions, mode: parserMode } = parsed;
       const dates = transactions.map(t => t.txn_date).sort();
+      // The file's own closing balance, when it is in this file's currency,
+      // is saved with the upload; runway uses the newest balance on file.
+      const cb = parsed.closingBalance && (!parsed.closingBalance.currency || parsed.closingBalance.currency === fileCur) ? parsed.closingBalance : null;
 
       const { data: batch, error: batchErr } = await supabase.from("upload_batches").insert({
         user_id: user.id, filename: source, row_count: transactions.length,
         period_start: dates[0], period_end: dates[dates.length - 1], parser_mode: parserMode, currency: fileCur,
+        closing_balance: cb ? cb.amount : null, closing_balance_on: cb ? cb.date : null,
       }).select().single();
       if (batchErr) throw batchErr;
 
@@ -2268,12 +2352,22 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
       if (countErr) console.error("Failed to record upload counts:", countErr);
 
       const otherCurrency = transactions.filter(t => t.currency !== base).length;
+      const kinds = summarizeKinds(transactions.filter(t => t.currency === base), ruleIndex);
+      const keptOut = [
+        kinds.financing.count ? `${kinds.financing.count} ${kinds.financing.count === 1 ? "is a loan or owner money" : "are loans or owner money"}` : "",
+        kinds.transfer.count ? `${kinds.transfer.count} ${kinds.transfer.count === 1 ? "is a transfer" : "are transfers"} between your own accounts` : "",
+        kinds.refund.count ? `${kinds.refund.count} ${kinds.refund.count === 1 ? "is a refund" : "are refunds"}` : "",
+      ].filter(Boolean);
+      const keptOutText = keptOut.length === 0 ? ""
+        : `Of this file's transactions, ${keptOut.length === 1 ? keptOut[0] : `${keptOut.slice(0, -1).join(", ")} and ${keptOut[keptOut.length - 1]}`}. ${kinds.refund.count && !kinds.financing.count && !kinds.transfer.count ? "Refunds are netted against revenue or costs" : "These are kept out of revenue and costs (refunds are netted against them)"}; check them under All transactions.`;
       setUploadStatus([
         `Added ${insertedCount} new transaction${insertedCount === 1 ? "" : "s"}. ${duplicateCount} already on file.`,
         otherCurrency > 0 ? `${otherCurrency} ${otherCurrency === 1 ? "is" : "are"} in a currency other than ${base}, so ${otherCurrency === 1 ? "it is" : "they are"} stored but not added to your figures.` : "",
         parsed.unreadable > 0 ? `${parsed.unreadable} amount${parsed.unreadable === 1 ? "" : "s"} could not be read as a number and ${parsed.unreadable === 1 ? "was" : "were"} skipped.` : "",
         parsed.skippedDates > 0 ? `${parsed.skippedDates} row${parsed.skippedDates === 1 ? " had a date that could not be read and was" : "s had dates that could not be read and were"} skipped.` : "",
         dateOrderNote(parsed.dateOrder),
+        keptOutText,
+        cb && fileCur === base ? `The file's closing balance, ${fmt(cb.amount, base)} on ${cb.date}, is saved. Runway uses the newest balance on file; on the same date, one you entered yourself comes first.` : "",
       ].filter(Boolean).join(" "));
       await loadHistory(base);
       await loadBatches();
@@ -2297,8 +2391,9 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
   // until loadHistory() catches up. Manual entry never touches either.
   const rows = history.length > 0 ? history : (data && data.length > 0 ? data : null);
   const m = computeMetrics(
-    rows, { mRev, mExp, mCash, mCac, mLtv, mLeads, mClose }, mode,
-    { lastTxnDate: history.length > 0 ? lastTxnDate : null, revenueConcentration: concentrationData, currency: cur }
+    rows, { mRev, mExp, mCash: 0, mCac, mLtv, mLeads, mClose }, mode,
+    { lastTxnDate: history.length > 0 ? lastTxnDate : null, revenueConcentration: concentrationData, currency: cur,
+      cash: cashBalance ? { amount: cashBalance.amount, on: cashBalance.on } : null, today: todayStr }
   );
   const {
     tr, sr, latest, totRev, totExp, totCogs, activeCash, activeCac, activeLtv, n, totPro, margin, vel, conv, ltvcac,
@@ -2306,10 +2401,10 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
     concentration, concentrationReliable, breakEven, proj90, hasData, hasConversionData, cashFlowPositive,
     dataConfidence, growth, risk, trends, hasCashData, runwayConfidence, breakEvenConfidence, proj90Confidence,
     hiringCapacityConfidence, ltvcacConfidence, growthConfidence, seasonalPattern, historicalConfidence, founderNarrative,
+    avgFinOut, partialMonths, totFinIn, totFinOut, totTrIn, totTrOut, totRefIn, totRefOut,
   } = m;
   const metrics = { margin, vel, conv, sov, free, burnMonths, concentration, concentrationReliable, ltvcac, cashFlowPositive, n };
 
-  const todayStr = new Date().toISOString().slice(0, 10);
   const activeObligations = obligations.filter(o => o.active !== false);
   const missedObligations = detectMissedObligations(activeObligations, todayStr);
   const upcoming = projectForwardCalendar(activeObligations, todayStr, 90);
@@ -2318,8 +2413,10 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
   // instead of a single flat average-burn rate — only meaningful once
   // there's a cash balance and at least one detected obligation to
   // project against.
-  const forwardRunway = (hasCashData && activeObligations.length > 0)
-    ? computeForwardRunway({ currentCash: activeCash, avgRev, avgExp, obligations: activeObligations, fromDate: todayStr, horizonDays: 365 })
+  // Counted down from a positive balance only: an account already at or
+  // below zero has no runway left to count, whatever the bills.
+  const forwardRunway = (hasCashData && activeCash > 0 && activeObligations.length > 0)
+    ? computeForwardRunway({ currentCash: activeCash, avgRev, avgExp, avgFinOut, obligations: activeObligations, fromDate: todayStr, horizonDays: 365 })
     : null;
   // Surfaced only when it tells the founder something average burn
   // doesn't — a lumpy bill landing soon that a flat monthly rate, smoothing
@@ -2333,13 +2430,14 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
     setAffordAmount(monthlyCost > 0 ? monthlyCost : null);
   };
   const affordResult = affordAmount
-    ? checkAffordability({ currentCash: activeCash, avgRev, avgExp, obligations: activeObligations, monthlyCost: affordAmount, fromDate: todayStr, currency: cur })
+    ? checkAffordability({ currentCash: activeCash, cashKnown: hasCashData, avgRev, avgExp, avgFinOut, obligations: activeObligations, monthlyCost: affordAmount, fromDate: todayStr, currency: cur })
     : null;
 
   const scenario = runScenario(
-    { revenue: latest.revenue, expenses: latest.expenses, cash: activeCash, cac: activeCac, ltv: activeLtv, leads: 0, closures: 0 },
+    { revenue: latest.revenue, expenses: latest.expenses, cash: activeCash, cac: activeCac, ltv: activeLtv, leads: 0, closures: 0,
+      financingOut: latest.financingOut || 0 },
     { revenuePct: scRevPct, expensePct: scExpPct, expenseDelta: scHire, cashDelta: scCash },
-    mode
+    mode, { cashKnown: hasCashData }
   );
   // A scenario with no cash balance has no runway to state; printing its
   // burnMonths showed a negative number of months.
@@ -2350,7 +2448,8 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
   // same directive the strip renders, so what's persisted and what's shown
   // can never disagree.
   const currentDirective = hasData
-    ? computeDirective({ margin, burnMonths, free, vel, conv, ltvcac, months: n, concentration: concentrationData, currency: cur })
+    ? computeDirective({ margin, burnMonths, free, vel, conv, ltvcac, months: n, concentration: concentrationData, currency: cur,
+        runwayKnown: hasCashData, cashFlowPositive })
     : null;
 
   // Persist a directive only when it genuinely differs from the most
@@ -2441,7 +2540,7 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
           velocity:       vel.toFixed(1),
           conversionRate: conv.toFixed(1),
           sovereigntyScore: sov.toFixed(0),
-          trueFreeCash:   free,
+          profitAfterReserves: free,
           // null out any metric whose required inputs aren't present —
           // the model must never be handed a fabricated number to narrate.
           burnRunway:     (!cashFlowPositive && !runwayConfidence.shown) ? null : burnMonths.toFixed(1),
@@ -2450,6 +2549,15 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
           cogsRatio:      cogsRatio.toFixed(1),
           marketingRatio: mktRatio.toFixed(1),
           hiringCapacity: hiringCapacityConfidence.shown ? Math.round(hiringCapacity) : null,
+          // The balance runway was measured from, its date and where it
+          // came from; null when no balance is known.
+          cashBalance: cashBalance ? { amount: Math.round(cashBalance.amount), on: cashBalance.on, source: cashBalance.source }
+            : hasCashData ? { amount: Math.round(activeCash), on: "the last date in the uploaded file", source: "upload" } : null,
+          // Money kept out of revenue and costs in the period.
+          nonOperating: { financingIn: Math.round(totFinIn), financingOut: Math.round(totFinOut), transferIn: Math.round(totTrIn),
+            transferOut: Math.round(totTrOut), refundsIn: Math.round(totRefIn), refundsOut: Math.round(totRefOut) },
+          partialMonths,
+          latestMonth: rows ? latest.month || null : null,
           // Real payer-based concentration — null when extraction confidence
           // is low, so the model never narrates a percentage the parser
           // itself isn't confident in.
@@ -2558,20 +2666,24 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
         `${capitalize(dataConfidence)} confidence`,
       ].filter(Boolean).join(" · ");
 
-  const runwayText = cashFlowPositive ? "No burn" : (runwayConfidence.shown && burnMonths > 0) ? `${safe(burnMonths).toFixed(1)} mo` : "---";
+  // With a known balance, runway is a number even at zero: an overdraft or an
+  // empty account is no runway, not a missing figure.
+  const runwayText = cashFlowPositive ? "No burn" : runwayConfidence.shown ? `${safe(burnMonths).toFixed(1)} mo` : "---";
 
-  // KPI tiles. The first tile is chosen by severity, not fixed by position —
-  // when free cash or runway turns critical, that is what leads the row.
+  // KPI tiles. The first tile is chosen by severity, not fixed by position:
+  // when a loss or runway turns critical, that is what leads the row.
+  // Monthly figures are from the latest complete month, named in the tile.
   const tiles = {
     revenue: { key:"revenue", lbl:"Monthly revenue", val:fmtCompact(latest.revenue, cur), title:fmt(latest.revenue, cur),
-      sub:`${vel >= 0 ? "+" : ""}${pc(vel)} vs prior month`, col:C.text },
+      sub:`${latest.month ? `${monthLabel(latest)}, ` : ""}${vel >= 0 ? "+" : ""}${pc(vel)} vs prior month`, col:C.text },
     margin:  { key:"margin", lbl:"Profit margin", val:pc(margin), col: margin > 0 ? C.positive : C.danger,
       sub:`${fmtCompact(totPro, cur)} net in period` },
-    free:    { key:"free", lbl:"True free cash", val:fmtCompact(free, cur), title:fmt(free, cur), col: free >= 0 ? C.platinum : C.danger,
-      sub:"After tax and safety reserves" },
+    free:    { key:"free", lbl:"Profit after reserves", val:fmtCompact(free, cur), title:fmt(free, cur), col: free >= 0 ? C.platinum : C.danger,
+      sub:"Profit less tax and safety reserves" },
     runway:  { key:"runway", lbl:"Runway", val:runwayText, conf:runwayConfidence,
       col: cashFlowPositive || burnMonths >= 6 ? C.positive : burnMonths >= 3 ? C.warning : runwayText === "---" ? C.text3 : C.danger,
-      sub: cashFlowPositive ? "Revenue covers costs" : !runwayConfidence.shown ? "Add a cash balance to calculate" : burnMonths >= 6 ? "Above the 6-month threshold" : burnMonths >= 3 ? "Build toward 6 months" : "Below 3 months" },
+      sub: cashFlowPositive ? (avgFinOut > 0 ? "Revenue covers costs and repayments" : "Revenue covers costs") : !runwayConfidence.shown ? "Add a cash balance to calculate"
+        : activeCash < 0 ? "Overdrawn" : burnMonths <= 0 ? "Cash does not cover a month of burn" : burnMonths >= 6 ? "Above the 6-month threshold" : burnMonths >= 3 ? "Build toward 6 months" : "Below 3 months" },
     risk:    { key:"risk", lbl:"Risk score", val:risk.score.toFixed(0), unit:"/100",
       col: risk.label === "Low" ? C.positive : risk.label === "Watch" ? C.platinum : risk.label === "Elevated" ? C.warning : C.danger,
       sub:`${risk.label}. Weighted from runway, margin and trend` },
@@ -2579,23 +2691,26 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
       val: !hiringCapacityConfidence.shown ? "---" : hiringCapacity > 0 ? fmtCompact(hiringCapacity, cur) : "None",
       unit: hiringCapacityConfidence.shown && hiringCapacity > 0 ? "/mo" : null, title: fmt(hiringCapacity, cur),
       col: hiringCapacity > 0 ? C.positive : C.warning,
-      sub: hiringCapacity > 0 ? "Fully-loaded cost profit covers" : "Costs exceed revenue on average" },
+      sub: hiringCapacity > 0 ? "Fully-loaded cost profit covers" : avgFinOut > 0 ? "Costs and repayments use up revenue" : "Costs exceed revenue on average" },
   };
   const hero = safe(free) < 0
-    ? { ...tiles.free, sev:"critical", sub:"Overhead exceeds liquidity after reserves. Act on this first." }
-    : (!cashFlowPositive && runwayConfidence.shown && safe(burnMonths) > 0 && safe(burnMonths) < 3)
+    ? { ...tiles.free, sev:"critical", sub:"A loss for the period: costs are higher than revenue. Act on this first." }
+    : (!cashFlowPositive && runwayConfidence.shown && safe(burnMonths) < 3)
       ? { ...tiles.runway, sev:"critical", sub:"Below the 3-month danger line. Protect cash now." }
-      : (!cashFlowPositive && runwayConfidence.shown && safe(burnMonths) > 0 && safe(burnMonths) < 6)
+      : (!cashFlowPositive && runwayConfidence.shown && safe(burnMonths) < 6)
         ? { ...tiles.runway, sev:"warning", sub:"Below the 6-month safety line. Build it back." }
-        : { ...tiles.revenue, sev:"positive", sub:`${vel >= 0 ? "+" : ""}${pc(vel)} vs prior month. Stable enough to grow, not defend.` };
+        : { ...tiles.revenue, sev:"positive", sub:`${latest.month ? `${monthLabel(latest)}: ` : ""}${vel >= 0 ? "+" : ""}${pc(vel)} vs prior month. Stable enough to grow, not defend.` };
   const supporting = ["revenue","margin","free","runway","risk","hiring"].filter(k => k !== hero.key).map(k => tiles[k]);
 
   const reportSummary = [
-    ["Latest month revenue", fmt(latest.revenue, cur)],
+    [latest.month ? `Latest month revenue, ${monthLabel(latest)}` : "Latest month revenue", fmt(latest.revenue, cur)],
     ["Profit margin", pc(margin)],
     ["Net profit", fmt(totPro, cur)],
-    ["True free cash", fmt(free, cur)],
-    ["Runway", cashFlowPositive ? "No burn" : runwayConfidence.shown && burnMonths > 0 ? `${safe(burnMonths).toFixed(1)} months` : "Not enough data"],
+    ["Profit after reserves", fmt(free, cur)],
+    ["Cash balance", cashBalance ? `${fmt(cashBalance.amount, cur)} on ${cashBalance.on}` : "Not entered"],
+    ["Runway", cashFlowPositive ? "No burn" : runwayConfidence.shown ? `${safe(burnMonths).toFixed(1)} months` : "Not enough data"],
+    ...(totFinIn > 0 ? [["Loans and owner money in", fmt(totFinIn, cur)]] : []),
+    ...(totFinOut > 0 ? [["Loan repayments and owner withdrawals", fmt(totFinOut, cur)]] : []),
     ["Break-even monthly revenue", breakEvenConfidence.shown && breakEven > 0 ? fmt(breakEven, cur) : "Not enough data"],
     ["90-day revenue projection", proj90Confidence.shown && proj90 > 0 ? fmt(proj90, cur) : "Not enough data"],
     ["Hiring capacity", hiringCapacityConfidence.shown ? (hiringCapacity > 0 ? `${fmt(hiringCapacity, cur)}/month` : "None from profit") : "Not enough data"],
@@ -2615,9 +2730,10 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
     ackNote, setAckNote, acknowledgeDirective, setObligationActive,
     affordInput, setAffordInput, setAffordAmount, affordResult, checkAfford,
     scenario, scenarioRunway, scRevPct, setScRevPct, scExpPct, setScExpPct, scHire, setScHire, scCash, setScCash,
-    manual: { mRev, setMRev, mExp, setMExp, mCash, setMCash, mCac, setMCac, mLtv, setMLtv, mLeads, setMLeads, mClose, setMClose },
+    manual: { mRev, setMRev, mExp, setMExp, mCac, setMCac, mLtv, setMLtv, mLeads, setMLeads, mClose, setMClose },
     handleDataLoaded, uploadBusy, uploadStatus, uploadErr, deleteBatch,
-    txQuery, setTxQuery, txDirection, setTxDirection, txLimit, setTxLimit,
+    txQuery, setTxQuery, txDirection, setTxDirection, txKind, setTxKind, txLimit, setTxLimit,
+    ruleIndex, saveKindRule, clearKindRule, cashBalance, saveCashBalance,
     aiRec, aiError, aiLoad, runAI, reportSummary,
     tr, sr, taxV, safV, hasConversionData, sov, sovLbl, activeCac, activeLtv, cogsRatio, mktRatio,
     seasonalPattern, historicalConfidence, founderNarrative, growth, growthConfidence, risk, trends,
@@ -2751,7 +2867,7 @@ function DashboardHome({ ctx }) {
       </div>
 
       <div className="row row-21">
-        <Panel title="Cash in and cash out" action={<PanelLink to="financials" onNavigate={go}>Monthly detail</PanelLink>}>
+        <Panel title="Revenue and costs" action={<PanelLink to="financials" onNavigate={go}>Monthly detail</PanelLink>}>
           <BChart data={rows} currency={cur}/>
         </Panel>
         <Panel title="Trajectory" action={<PanelLink to="financials" onNavigate={go}>History</PanelLink>}>
@@ -2796,8 +2912,8 @@ function DashboardHome({ ctx }) {
         <Panel title="Revenue concentration" action={<PanelLink to="financials" onNavigate={go}>All clients</PanelLink>}>
           {!concentrationData?.shown ? (
             <p className="panel-copy">
-              {concentrationData?.confidenceLevel === "low"
-                ? `Not enough payer names could be read reliably to show this safely. ${concentrationData.reason}`
+              {concentrationData?.totalRevenue > 0
+                ? concentrationData.confidenceLevel === "low" ? `Not enough payer names could be read reliably to show this safely. ${concentrationData.reason}` : concentrationData.reason
                 : "Upload transaction history to see how concentrated your revenue is in your largest clients."}
             </p>
           ) : (
@@ -2849,16 +2965,149 @@ function DashboardHome({ ctx }) {
 }
 
 // ─── SECTION: TRANSACTIONS ────────────────────────────────────
+// What a transaction can count as, in the founder's words (see TRANSACTION
+// KINDS in financials.js).
+const KIND_OPTIONS = [
+  ["operating", "Revenue or a cost of the business"],
+  ["transfer", "A transfer between the business's own accounts"],
+  ["financing", "A loan, or the owner's own money"],
+  ["refund", "A refund"],
+];
+const KIND_HELP = {
+  operating: "Money in counts as revenue, and money out as a cost.",
+  transfer: "Still the business's money, so it counts in no figure.",
+  financing: "Not revenue or a cost, so profit and margin leave it out. Money going out, a repayment or money the owner takes, still counts toward burn and runway. If a repayment includes interest you want counted as a cost, keep it as a cost.",
+  refund: "Money returned. A refund you pay reduces revenue; one you receive reduces costs.",
+};
+const kindLabel = (kind, amount) => kind === "transfer" ? "Own transfer"
+  : kind === "financing" ? "Loan or owner money"
+  : kind === "refund" ? (amount > 0 ? "Refund received" : "Refund paid")
+  : amount > 0 ? "Revenue" : "Cost";
+
+// Changes what one transaction counts as, for it alone or for every
+// transaction described like it. A table row under the transaction it edits.
+function KindEditor({ txn, kind, source, txns, onSave, onReset, onClose }) {
+  const key = classificationKey(txn.description);
+  const canSingle = !!txn.dedupe_hash;
+  const canSimilar = !!key;
+  const alike = useMemo(() => key ? txns.filter(t => classificationKey(t.description) === key).length : 0, [key, txns]);
+  const [draft, setDraft] = useState(kind);
+  // Every transaction like it, unless the description is too generic to
+  // say anything ("EFT", "Cash deposit"): then only this one.
+  const [scope, setScope] = useState(canSimilar && (!canSingle || !isGenericCounterparty(key)) ? "similar" : "single");
+  const [busy, setBusy] = useState(false);
+  const id = `kind-${txn.id}`;
+  const save = async () => { setBusy(true); const ok = await onSave(txn, draft, scope); setBusy(false); if (ok) onClose(); };
+  const reset = async () => { setBusy(true); const ok = await onReset(txn, source); setBusy(false); if (ok) onClose(); };
+  return (
+    <tr className="kind-edit-row">
+      <td colSpan={5}>
+        <div className="kind-edit">
+          <label className="di-lbl" htmlFor={id}>What is "{txn.description || "this transaction"}"?</label>
+          <select id={id} className="di" value={draft} onChange={e => setDraft(e.target.value)}>
+            {KIND_OPTIONS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+          </select>
+          <p className="kind-help">{KIND_HELP[draft]}</p>
+          {canSingle && canSimilar && (
+            <fieldset className="kind-scope">
+              <legend className="sr-only">Apply this to</legend>
+              <label><input type="radio" name={`${id}-scope`} checked={scope === "similar"} onChange={() => setScope("similar")}/>
+                Every transaction described like this, now and in future uploads ({alike.toLocaleString()} in this period)</label>
+              <label><input type="radio" name={`${id}-scope`} checked={scope === "single"} onChange={() => setScope("single")}/>
+                Only this one</label>
+            </fieldset>
+          )}
+          <div className="kind-actions">
+            <button className="btn btn-primary btn-md" disabled={busy || (scope === "similar" ? !canSimilar : !canSingle)} onClick={save}>Save</button>
+            <button className="btn btn-outline btn-md" disabled={busy} onClick={onClose}>Cancel</button>
+            {source !== "auto" && (
+              <button className="btn-link" disabled={busy} onClick={reset}>
+                {source === "similar" ? "Read every transaction like this from its description again" : "Read it from its description again"}
+              </button>
+            )}
+          </div>
+        </div>
+      </td>
+    </tr>
+  );
+}
+
+// The cash runway is measured from: the founder's own figure, or the
+// closing balance of an uploaded file with a Balance column. Saved, with
+// the date it was true.
+function CashBalancePanel({ cur, cashBalance, profile, onSave, todayStr, cashFlowPositive }) {
+  const [amount, setAmount] = useState("");
+  const [on, setOn] = useState(todayStr);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+  const value = amount.trim() === "" ? NaN : Number(amount);
+  const valid = !!cur && Number.isFinite(value) && Math.abs(value) < 1e12 && /^\d{4}-\d{2}-\d{2}$/.test(on) && on <= todayStr;
+  const days = cashBalance ? Math.floor((Date.parse(todayStr) - Date.parse(cashBalance.on)) / 86400000) : null;
+  const hasEntered = profile?.cash_balance !== null && profile?.cash_balance !== undefined;
+  const save = async () => {
+    if (!valid) return;
+    setBusy(true); setMsg("");
+    const ok = await onSave(Math.round(value * 100) / 100, on);
+    setBusy(false);
+    if (ok) { setAmount(""); setMsg("Saved. Runway now uses it."); }
+  };
+  const clear = async () => {
+    if (!window.confirm("Remove the cash balance you entered? Runway will use the closing balance of an uploaded file with a Balance column, and shows --- if there is none.")) return;
+    setBusy(true); setMsg("");
+    const ok = await onSave(null, null);
+    setBusy(false);
+    if (ok) setMsg("Removed.");
+  };
+  return (
+    <Panel title="Cash balance">
+      {cashBalance ? (
+        <>
+          <div className="big-num" style={{ color: cashBalance.amount < 0 ? C.danger : C.text }}>{fmt(cashBalance.amount, cur)}</div>
+          <p className="panel-copy">
+            {cashBalance.source === "entered"
+              ? `Entered by you, true on ${cashBalance.on}.`
+              : `The closing balance of ${cashBalance.filename || "an uploaded file"} on ${cashBalance.on}. That is one account: if the business has others, enter the total below.`}
+            {cashBalance.amount < 0 ? (cashFlowPositive ? " The account is overdrawn." : " The account is overdrawn, so runway is 0 months.") : ""}
+            {days > 45 ? ` It is ${days} days old, so runway is less certain until you update it.` : ""}
+          </p>
+        </>
+      ) : (
+        <p className="panel-copy">No cash balance yet, so runway cannot be measured. Enter the total in your business accounts below, or upload a bank statement that has a Balance column.</p>
+      )}
+      <div className="cash-form">
+        <div className="input-group">
+          <label className="di-lbl" htmlFor="cash-amount">{withSymbol("Total cash in your business accounts", cur)}</label>
+          <input id="cash-amount" className="di" type="number" step="0.01" inputMode="decimal" placeholder="An overdraft is a negative number"
+            value={amount} onChange={e => { setAmount(e.target.value); setMsg(""); }} onKeyDown={e => e.key === "Enter" && save()}/>
+        </div>
+        <div className="input-group" style={{ flex:"0 1 180px" }}>
+          <label className="di-lbl" htmlFor="cash-on">True on</label>
+          <input id="cash-on" className="di" type="date" max={todayStr} value={on} onChange={e => { setOn(e.target.value); setMsg(""); }}/>
+        </div>
+        <button className="btn btn-primary btn-md" disabled={!valid || busy} onClick={save}>Save balance</button>
+        {hasEntered && <button className="btn-link" disabled={busy} onClick={clear}>Remove the balance I entered</button>}
+      </div>
+      {!cur && <p className="panel-copy" style={{ marginTop:10 }}>Choose your business currency first.</p>}
+      {msg && <p className="panel-copy" role="status" style={{ marginTop:10 }}>{msg}</p>}
+    </Panel>
+  );
+}
+
 function TransactionsSection({ ctx }) {
   const { txns, history, historyLoading, batches, handleDataLoaded, uploadBusy, uploadStatus, uploadErr, deleteBatch,
-    txQuery, setTxQuery, txDirection, setTxDirection, txLimit, setTxLimit, periodLabel, manual, go, m, cur, relabelBatch } = ctx;
+    txQuery, setTxQuery, txDirection, setTxDirection, txKind, setTxKind, txLimit, setTxLimit, periodLabel, manual, go, m, cur, relabelBatch,
+    ruleIndex, saveKindRule, clearKindRule, cashBalance, saveCashBalance, profile, todayStr } = ctx;
+  const [editing, setEditing] = useState(null);
 
+  // What each transaction counts as, worked out once per change of rules.
+  const resolved = useMemo(() => new Map(txns.map(t => [t, resolveKind(t, ruleIndex)])), [txns, ruleIndex]);
   const filtered = useMemo(() => {
     let list = filterTransactions(txns, txQuery);
     if (txDirection === "in") list = list.filter(t => Number(t.amount) > 0);
     else if (txDirection === "out") list = list.filter(t => Number(t.amount) < 0);
+    if (txKind !== "all") list = list.filter(t => resolved.get(t)?.kind === txKind);
     return list.slice().sort((a, b) => String(b.txn_date).localeCompare(String(a.txn_date)));
-  }, [txns, txQuery, txDirection]);
+  }, [txns, txQuery, txDirection, txKind, resolved]);
   // Totals add the business currency only; other rows are listed, not summed.
   const inBase = filtered.filter(t => t.currency === cur);
   const otherCount = filtered.length - inBase.length;
@@ -2869,7 +3118,6 @@ function TransactionsSection({ ctx }) {
   const manualFields = [
     { lbl:withSymbol("Monthly revenue", cur),           v:manual.mRev,   s:manual.setMRev },
     { lbl:withSymbol("Monthly expenses", cur),          v:manual.mExp,   s:manual.setMExp },
-    { lbl:withSymbol("Cash balance", cur),              v:manual.mCash,  s:manual.setMCash },
     { lbl:withSymbol("Customer acquisition cost", cur), v:manual.mCac,   s:manual.setMCac },
     { lbl:withSymbol("Customer lifetime value", cur),   v:manual.mLtv,   s:manual.setMLtv },
     { lbl:"Leads this month",              v:manual.mLeads, s:manual.setMLeads },
@@ -2882,7 +3130,7 @@ function TransactionsSection({ ctx }) {
 
       <div className="row row-21">
         <Panel title="Upload a file or sync a sheet">
-          <DataUpload hasData={m.hasData} onDataLoaded={handleDataLoaded} currency={cur}/>
+          <DataUpload hasData={m.hasData} onDataLoaded={handleDataLoaded} currency={cur} rules={ruleIndex}/>
           {uploadBusy && (
             <div className="busy-line"><span className="spinner"/>Saving to your transaction history...</div>
           )}
@@ -2924,7 +3172,10 @@ function TransactionsSection({ ctx }) {
         </Panel>
       </div>
 
+      <CashBalancePanel cur={cur} cashBalance={cashBalance} profile={profile} onSave={saveCashBalance} todayStr={todayStr} cashFlowPositive={m.cashFlowPositive}/>
+
       <Panel title="All transactions">
+        <p className="panel-copy" style={{ marginBottom:12 }}>Each transaction counts as revenue or a cost unless its description shows it is a loan or the owner's own money, a transfer between your own accounts, or a refund. Those are kept out of revenue and costs. Use Change on any row to correct one.</p>
         <div className="tx-tools">
           <input className="di" type="search" placeholder="Filter by description, category, date or amount" aria-label="Filter transactions"
             value={txQuery} onChange={e => { setTxQuery(e.target.value); setTxLimit(100); }} style={{ flex:"1 1 260px" }}/>
@@ -2932,6 +3183,13 @@ function TransactionsSection({ ctx }) {
             <option value="all">In and out</option>
             <option value="in">Money in</option>
             <option value="out">Money out</option>
+          </select>
+          <select className="di" aria-label="What transactions count as" value={txKind} onChange={e => { setTxKind(e.target.value); setTxLimit(100); }} style={{ flex:"0 0 200px" }}>
+            <option value="all">Every kind</option>
+            <option value="operating">Revenue and costs</option>
+            <option value="financing">Loans and owner money</option>
+            <option value="transfer">Own transfers</option>
+            <option value="refund">Refunds</option>
           </select>
           <div className="tx-sum">
             {filtered.length.toLocaleString()} shown · <span style={{ color:C.positive }}>{fmt(totIn, cur)} in</span> · <span>{fmt(totOut, cur)} out</span>
@@ -2948,16 +3206,34 @@ function TransactionsSection({ ctx }) {
           <>
             <div className="tbl-wrap">
               <table className="tbl">
-                <thead><tr><th scope="col">Date</th><th scope="col">Description</th><th scope="col">Category</th><th scope="col" className="num">Amount</th></tr></thead>
+                <thead><tr><th scope="col">Date</th><th scope="col">Description</th><th scope="col">Category</th><th scope="col">Counts as</th><th scope="col" className="num">Amount</th></tr></thead>
                 <tbody>
-                  {shown.map((t, i) => (
-                    <tr key={t.id ?? i}>
-                      <td className="mono">{t.txn_date}</td>
-                      <td>{t.description || <span className="muted">No description</span>}</td>
-                      <td className="muted">{t.category ? capitalize(t.category) : "Uncategorised"}{t.currency !== cur ? ` · ${t.currency}, not in your figures` : ""}</td>
-                      <td className="num" style={{ color: t.currency !== cur ? C.text3 : Number(t.amount) >= 0 ? C.positive : C.text }}>{fmt(t.amount, t.currency)}</td>
-                    </tr>
-                  ))}
+                  {shown.map((t, i) => {
+                    const k = resolved.get(t) || { kind: "operating", source: "auto" };
+                    const rowKey = t.id ?? i;
+                    return (
+                      <Fragment key={rowKey}>
+                        <tr>
+                          <td className="mono">{t.txn_date}</td>
+                          <td>{t.description || <span className="muted">No description</span>}</td>
+                          <td className="muted">{t.category ? capitalize(t.category) : "Uncategorised"}{t.currency !== cur ? ` · ${t.currency}, not in your figures` : ""}</td>
+                          <td className="tx-kind">
+                            {kindLabel(k.kind, Number(t.amount))}{k.source !== "auto" ? " · set by you" : ""}
+                            {t.id && (
+                              <button className="panel-link" aria-expanded={editing === rowKey}
+                                aria-label={`Change what ${t.description || "this transaction"} counts as`}
+                                onClick={() => setEditing(e => e === rowKey ? null : rowKey)}>Change</button>
+                            )}
+                          </td>
+                          <td className="num" style={{ color: t.currency !== cur ? C.text3 : Number(t.amount) >= 0 ? C.positive : C.text }}>{fmt(t.amount, t.currency)}</td>
+                        </tr>
+                        {editing === rowKey && (
+                          <KindEditor txn={t} kind={k.kind} source={k.source} txns={txns}
+                            onSave={saveKindRule} onReset={clearKindRule} onClose={() => setEditing(null)}/>
+                        )}
+                      </Fragment>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -2972,7 +3248,7 @@ function TransactionsSection({ ctx }) {
 
       <Panel title="Enter numbers manually">
         <details open={!m.hasData}>
-          <summary className="details-summary">No file ready? Enter this month's figures. They are used for this session only and are not saved.</summary>
+          <summary className="details-summary">No file ready? Enter this month's figures. They are used for this session only and are not saved; your cash balance is entered above and is saved.</summary>
           <div className="input-grid input-grid-4" style={{ marginTop:14 }}>
             {manualFields.map((f, i) => (
               <div key={i} className="input-group">
@@ -3015,7 +3291,7 @@ function FinancialsSection({ ctx }) {
                   const net = (r.revenue || 0) - (r.expenses || 0);
                   return (
                     <tr key={i}>
-                      <td>{r.month}</td>
+                      <td>{monthLabel(r)}</td>
                       <td className="num">{fmt(r.revenue, cur)}</td>
                       <td className="num">{fmt(r.expenses, cur)}</td>
                       <td className="num" style={{ color: net >= 0 ? C.positive : C.danger }}>{fmt(net, cur)}</td>
@@ -3037,7 +3313,7 @@ function FinancialsSection({ ctx }) {
           {[
             { name:"Tax vault",      pct:tr * 100, amt:taxV, col:C.danger },
             { name:"Safety buffer",  pct:sr * 100, amt:safV, col:C.silver },
-            { name:"True free cash", pct:totPro > 0 ? Math.max(0, (free / totPro) * 100) : 0, amt:free, col:free >= 0 ? C.platinum : C.danger },
+            { name:"Profit after reserves", pct:totPro > 0 ? Math.max(0, (free / totPro) * 100) : 0, amt:free, col:free >= 0 ? C.platinum : C.danger },
           ].map((a, i) => (
             <div className="alloc-row" key={i}>
               <div className="alloc-meta">
@@ -3049,10 +3325,23 @@ function FinancialsSection({ ctx }) {
             </div>
           ))}
           <p className="panel-copy" style={{ marginTop:10 }}>
-            {totPro > 0 ? `${mode === "safe" ? "Safe" : "Growth"} mode reserves are taken from ${fmt(totPro, cur)} net profit in the period.` : "A loss in the period: nothing is reserved, and free cash is the full loss."}
+            {totPro > 0 ? `${mode === "safe" ? "Safe" : "Growth"} mode reserves are taken from ${fmt(totPro, cur)} net profit in the period.` : "A loss in the period: nothing is reserved, so the full loss shows."}
           </p>
         </Panel>
       </div>
+
+      {[m.totFinIn, m.totFinOut, m.totTrIn, m.totTrOut, m.totRefIn, m.totRefOut].some(v => v > 0) && (
+        <Panel title="Money that is not revenue or costs" action={<PanelLink to="transactions" onNavigate={go}>Review transactions</PanelLink>}>
+          <dl className="kv">
+            <dt>Loans received and owner money in</dt><dd>{fmt(m.totFinIn, cur)}</dd>
+            <dt>Loan repayments and owner withdrawals</dt><dd>{fmt(m.totFinOut, cur)}</dd>
+            <dt>Transfers between your own accounts</dt><dd>{fmt(m.totTrIn, cur)} in, {fmt(m.totTrOut, cur)} out</dd>
+            <dt>Refunds paid to customers</dt><dd>{fmt(m.totRefOut, cur)}</dd>
+            <dt>Refunds received</dt><dd>{fmt(m.totRefIn, cur)}</dd>
+          </dl>
+          <p className="panel-copy" style={{ marginTop:10 }}>Loans, owner money and transfers are kept out of revenue, costs and margin. Loan repayments and owner withdrawals still leave the bank, so they count toward burn, runway and hiring capacity. Refunds are already netted: refunds you pay reduce revenue, refunds you receive reduce costs.</p>
+        </Panel>
+      )}
 
       <div className="row row-3">
         <Panel title="Break-even">
@@ -3096,8 +3385,8 @@ function FinancialsSection({ ctx }) {
         <Panel title="Revenue concentration">
           {!concentrationData?.shown ? (
             <p className="panel-copy">
-              {concentrationData?.confidenceLevel === "low"
-                ? `Not enough payer names could be read reliably to show this safely. ${concentrationData.reason}`
+              {concentrationData?.totalRevenue > 0
+                ? concentrationData.confidenceLevel === "low" ? `Not enough payer names could be read reliably to show this safely. ${concentrationData.reason}` : concentrationData.reason
                 : "Upload transaction history to see how concentrated your revenue is in your largest clients."}
             </p>
           ) : (
@@ -3113,7 +3402,7 @@ function FinancialsSection({ ctx }) {
               })}
               <ConfidenceLine c={{ shown:true, level:concentrationData.confidenceLevel, reason:concentrationData.reason }}/>
               {concentrationData.aggregatorPct > 0.5 && (
-                <p className="panel-copy">{concentrationData.aggregatorPct.toFixed(0)}% of revenue arrives through a payment processor (Shopify, Stripe, PayPal) and cannot be attributed to a single client, so it is excluded above.</p>
+                <p className="panel-copy">{concentrationData.aggregatorPct.toFixed(0)}% of revenue arrives through payment processors or marketplaces (such as Stripe, PayPal, Yoco or PayFast) and cannot be attributed to a single client, so it is excluded above.</p>
               )}
             </div>
           )}
@@ -3236,7 +3525,7 @@ function ReportsSection({ ctx }) {
                 <tbody>
                   {monthly.map((r, i) => {
                     const net = (r.revenue || 0) - (r.expenses || 0);
-                    return <tr key={i}><td>{r.month}</td><td className="num">{fmt(r.revenue, cur)}</td><td className="num">{fmt(r.expenses, cur)}</td><td className="num">{fmt(net, cur)}</td><td className="num">{r.revenue > 0 ? pc((net / r.revenue) * 100) : "---"}</td></tr>;
+                    return <tr key={i}><td>{monthLabel(r)}</td><td className="num">{fmt(r.revenue, cur)}</td><td className="num">{fmt(r.expenses, cur)}</td><td className="num">{fmt(net, cur)}</td><td className="num">{r.revenue > 0 ? pc((net / r.revenue) * 100) : "---"}</td></tr>;
                   })}
                 </tbody>
                 <tfoot><tr><th scope="row">Total</th><td className="num">{fmt(totals.rev, cur)}</td><td className="num">{fmt(totals.exp, cur)}</td><td className="num">{fmt(totals.rev - totals.exp, cur)}</td><td className="num">{totals.rev > 0 ? pc(((totals.rev - totals.exp) / totals.rev) * 100) : "---"}</td></tr></tfoot>
@@ -3244,7 +3533,7 @@ function ReportsSection({ ctx }) {
             </div>
           </div>
         </div>
-        <p className="panel-copy" style={{ marginTop:14 }}>Figures are computed from the transactions on file for this period. A metric shown as "Not enough data" lacks the inputs to be stated honestly; it is not zero.</p>
+        <p className="panel-copy" style={{ marginTop:14 }}>Figures are computed from the transactions on file for this period. Loans, owner money and transfers between the business's own accounts are not revenue or costs. A month marked to date is not complete: it counts in the totals, not in monthly averages. A metric shown as "Not enough data" lacks the inputs to be stated honestly; it is not zero.</p>
       </div>
 
       {plan === "advisory" && (
@@ -3315,7 +3604,7 @@ function DecisionLogSection({ ctx }) {
 // ─── SECTION: FORECASTS ───────────────────────────────────────
 function ForecastsSection({ ctx }) {
   const { cur } = ctx;
-  const { m, statusLine, go, runwayText, forwardRunway, activeObligations, upcoming, todayStr, setObligationActive,
+  const { m, statusLine, go, runwayText, forwardRunway, activeObligations, upcoming, todayStr, setObligationActive, cashBalance,
     affordInput, setAffordInput, setAffordAmount, affordResult, checkAfford, scenario, scenarioRunway,
     scRevPct, setScRevPct, scExpPct, setScExpPct, scHire, setScHire, scCash, setScCash } = ctx;
   const { hasData, proj90, proj90Confidence, vel, runwayConfidence, hiringCapacity } = m;
@@ -3336,13 +3625,14 @@ function ForecastsSection({ ctx }) {
         </Panel>
         <Panel title="Runway on average burn">
           <div className="big-num">{runwayText}</div>
-          <p className="panel-copy">Cash divided by average monthly net burn, less the reserve mode's safety share.</p>
+          <p className="panel-copy">Cash divided by average monthly net burn (costs, loan repayments and owner withdrawals, less revenue), less the reserve mode's safety share.{cashBalance ? ` Cash: ${fmt(cashBalance.amount, cur)} on ${cashBalance.on}.` : ""}</p>
           <ConfidenceLine c={runwayConfidence}/>
         </Panel>
         <Panel title="Runway against known bills">
-          <div className="big-num">{!forwardRunway ? "---" : forwardRunway.crossesZero ? `${forwardRunway.monthsUntilCross} mo` : "12+ mo"}</div>
+          <div className="big-num">{m.hasCashData && m.activeCash <= 0 ? "0 mo" : !forwardRunway ? "---" : forwardRunway.crossesZero ? `${forwardRunway.monthsUntilCross} mo` : "12+ mo"}</div>
           <p className="panel-copy">
-            {!forwardRunway ? "Needs a cash balance and at least one detected recurring obligation."
+            {m.hasCashData && m.activeCash <= 0 ? "Your cash balance is already at or below zero, so there is no cash to count down against your bills."
+              : !forwardRunway ? "Needs a cash balance and at least one detected recurring obligation."
               : forwardRunway.crossesZero ? `Cash reaches zero around ${forwardRunway.crossDate}, counting recurring bills on their real dates.`
               : "Cash holds for the next 12 months against your recurring bills on their real dates."}
           </p>
@@ -3419,7 +3709,7 @@ function ForecastsSection({ ctx }) {
           <div className="kpi4" style={{ gap:12 }}>
             {[
               { lbl:"Margin", before:pc(scenario.before.margin), after:pc(scenario.after.margin), better: scenario.after.margin >= scenario.before.margin },
-              { lbl:"True free cash", before:fmt(scenario.before.free, cur), after:fmt(scenario.after.free, cur), better: scenario.after.free >= scenario.before.free },
+              { lbl:"Profit after reserves", before:fmt(scenario.before.free, cur), after:fmt(scenario.after.free, cur), better: scenario.after.free >= scenario.before.free },
               { lbl:"Cash position", before:scenarioRunway(scenario.before), after:scenarioRunway(scenario.after),
                 better: scenario.after.cashFlowPositive || scenario.after.burnMonths >= scenario.before.burnMonths },
               { lbl:"Risk score", before:`${scenario.before.risk.score.toFixed(0)} - ${scenario.before.risk.label}`, after:`${scenario.after.risk.score.toFixed(0)} - ${scenario.after.risk.label}`, better: scenario.after.risk.score <= scenario.before.risk.score },
@@ -3520,7 +3810,7 @@ function SettingsSection({ ctx }) {
         <Panel title="Reserve mode">
           <div style={{ marginBottom:12 }}><ReserveModeToggle mode={mode} setMode={setMode}/></div>
           <p className="panel-copy">
-            Safe mode holds back 30% of profit for tax and 20% as a safety buffer; Growth mode holds back 25% and 10%. It changes True Free Cash, runway and hiring capacity everywhere. Saved on this device.
+            Safe mode holds back 30% of profit for tax and 20% as a safety buffer; Growth mode holds back 25% and 10%. It changes profit after reserves, runway and hiring capacity everywhere. Saved on this device.
           </p>
         </Panel>
         <Panel title="Your data">
@@ -3606,9 +3896,12 @@ function PasswordPanel({ user }) {
 
 // ─── SECTION: HELP & SUPPORT ──────────────────────────────────
 const HELP_FAQ = [
-  ["How is runway calculated?", "Your cash balance divided by average monthly net burn (expenses minus revenue), less the reserve mode's safety share. If revenue covers costs, there is no burn and runway shows \"No burn\". Forecasts also shows runway against your recurring bills on their real dates, which catches a large bill landing soon."],
-  ["What is True Free Cash?", "Net profit for the selected period, after the reserve mode's tax and safety shares. A loss reserves nothing, so free cash is the full loss."],
-  ["What is Hiring Capacity?", "The largest fully-loaded monthly cost (salary, payroll tax, benefits) your average monthly profit covers after the safety share. It scales with your business. To test a specific salary against your cash and bills, use Can I afford it? under Forecasts."],
+  ["How is runway calculated?", "Your cash balance divided by average monthly net burn (costs, loan repayments and owner withdrawals, less revenue), less the reserve mode's safety share. If revenue covers all of that, there is no burn and runway shows \"No burn\". An overdraft or an empty account shows 0 months. Forecasts also shows runway against your recurring bills on their real dates, which catches a large bill landing soon."],
+  ["Where does the cash balance come from?", "The newest of two: a balance you enter under Transactions, with the date it was true, or the closing balance of an uploaded file that has a Balance column. A file's balance covers that one account, so enter the total if the business has several. Enter an overdraft as a negative number. A balance more than 45 days old lowers runway's confidence."],
+  ["What is Profit after reserves?", "Net profit for the selected period, less the reserve mode's tax and safety shares. It is a profit figure, not the money in your bank: your cash balance is under Transactions. A loss reserves nothing, so a loss shows in full."],
+  ["What is Hiring Capacity?", "The largest fully-loaded monthly cost (salary, payroll tax, benefits) your average monthly profit covers, after loan repayments, owner withdrawals and the safety share. It scales with your business. To test a specific salary against your cash and bills, use Can I afford it? under Forecasts."],
+  ["Why are loans and transfers not revenue?", "A loan, money the owner puts in, or a transfer from your own savings is cash arriving, not revenue earned, so it is kept out of revenue, costs and margin. Loan repayments and money the owner takes out still leave the bank, so they count toward burn and runway. Refunds are netted against revenue or costs. These are read from the description; under Transactions, Change on any row corrects one transaction or every transaction described like it."],
+  ["What does \"to date\" mean on a month?", "The month is still in progress, or your data covers only part of it. Its money counts in the period's totals, but averages, growth, trends and the latest-month figures use complete months, so a few days of sales are never compared with a whole month."],
   ["Why do some numbers show ---?", "A metric whose inputs are missing is shown as ---, never as zero, because a zero would be a claim. Add the missing input (for example a cash balance) and it appears."],
   ["What do the confidence labels mean?", "Each metric is graded on how many months of data stand behind it and how recent your latest transaction is. Under three months is low confidence; data older than 45 days lowers it a level."],
   ["What does the period selector change?", "Which uploaded transactions feed the metrics and tables: the last 3, 6 or 12 months, or all time. Recurring obligations are always detected from your full history."],
@@ -3829,10 +4122,10 @@ function HeroDemo() {
   const demoCur = own ? own.currency : "USD";
   const m = own ? computeMetrics(rows, NO_MANUAL, "safe", { currency: demoCur }) : SAMPLE.metrics;
   const tiles = [
-    { key:"free", lbl:"True free cash", val:fmtCompact(m.free, demoCur), title:fmt(m.free, demoCur), col: m.free >= 0 ? C.text : C.danger, sub:"After tax and safety reserves" },
-    { key:"margin", lbl:"Profit margin", val:pc(m.margin), col: m.margin > 0 ? C.positive : C.danger, sub:`${fmtCompact(m.totPro, demoCur)} net over ${m.n} month${m.n === 1 ? "" : "s"}` },
-    { key:"runway", lbl:"Runway", val: m.cashFlowPositive ? "No burn" : (m.runwayConfidence.shown && m.burnMonths > 0) ? `${safe(m.burnMonths).toFixed(1)} mo` : "---",
-      col: m.cashFlowPositive ? C.positive : C.text, sub: m.cashFlowPositive ? "Revenue covers costs" : "Needs a cash balance" },
+    { key:"free", lbl:"Profit after reserves", val:fmtCompact(m.free, demoCur), title:fmt(m.free, demoCur), col: m.free >= 0 ? C.text : C.danger, sub:"Profit less tax and safety reserves" },
+    { key:"margin", lbl:"Profit margin", val:pc(m.margin), col: m.margin > 0 ? C.positive : C.danger, sub:`${fmtCompact(m.totPro, demoCur)} net over ${m.n} month${m.n === 1 ? "" : "s"}${m.partialMonths > 0 && m.n !== rows.length ? `, plus ${m.partialMonths} to date` : ""}` },
+    { key:"runway", lbl:"Runway", val: m.cashFlowPositive ? "No burn" : m.runwayConfidence.shown ? `${safe(m.burnMonths).toFixed(1)} mo` : "---",
+      col: m.cashFlowPositive ? C.positive : C.text, sub: m.cashFlowPositive ? "Revenue covers costs" : m.runwayConfidence.shown ? "From the file's closing balance" : "Needs a Balance column" },
     { key:"risk", lbl:"Risk score", val: m.risk.score.toFixed(0), unit:"/100", col: riskTone(m.risk.label), sub: m.risk.label },
   ];
   return (
@@ -3847,7 +4140,7 @@ function HeroDemo() {
         <div className="mk-demo-kpis">{tiles.map(t => <KpiTile key={t.key} t={t}/>)}</div>
         <div className="panel" style={{ padding:"14px 16px" }}>
           <div className="panel-head" style={{ marginBottom:10 }}>
-            <h3 className="panel-title">Cash in and cash out</h3>
+            <h3 className="panel-title">Revenue and costs</h3>
             <span className="page-meta" style={{ marginTop:0 }}>{demoCur ? `Monthly, ${demoCur}` : "Monthly"}</span>
           </div>
           <BChart data={rows} currency={demoCur} compact/>
@@ -3871,19 +4164,19 @@ const MK_LINKS = [["#product", "Product"], ["#how", "How it works"], ["#pricing"
 
 const MK_FAQ = [
   ["What is Command Ledger?",
-    "Financial intelligence software for founders. You upload your bank or accounting exports and Command Ledger shows your true free cash, runway, profitability, committed costs and risk, with one recommended move each week. It supports your decisions. It does not replace your accountant, and it does not give tax or legal advice."],
+    "Financial intelligence software for founders. You upload your bank or accounting exports and Command Ledger shows your profit after tax and safety reserves, runway, profitability, committed costs and risk, with one recommended move each week. It supports your decisions. It does not replace your accountant, and it does not give tax or legal advice."],
   ["Who should use it?",
     "Founders and owners of businesses with steady revenue who have outgrown a spreadsheet. Agencies, consultancies, SaaS and e-commerce businesses are typical. It is most useful once you have three or more months of transactions to analyse."],
   ["What financial data can I upload?",
     "CSV or Excel files (.csv, .xlsx, .xls) exported from your bank, QuickBooks, Xero or Wave, or any spreadsheet with dates and amounts. You can also sync a Google Sheet published as CSV. Columns are detected automatically, and uploading an overlapping file again does not create duplicates."],
   ["How does Command Ledger calculate financial metrics?",
-    "Every metric comes from a published formula applied to your transactions. Runway is your cash divided by average monthly net burn. True free cash is profit after a reserve for tax and a safety buffer. Each figure shows how confident it is, based on how much recent data stands behind it, and a figure without enough data is shown as missing rather than as zero."],
+    "Every metric comes from a published formula applied to your transactions. Runway is your cash balance divided by average monthly net burn. Profit after reserves is net profit less a reserve for tax and a safety buffer. Loans, owner money and transfers between your own accounts are kept out of revenue and costs. Each figure shows how confident it is, based on how much recent data stands behind it, and a figure without enough data is shown as missing rather than as zero."],
   ["Is my financial information secure?",
     "Data is encrypted in transit. Your transactions are stored in a private history that only your login can read, enforced by the database itself. The uploaded file is not kept, and deleting an upload deletes every transaction it added. An AI brief, sent only when you request one, includes your computed metrics and the names of your largest payers and recurring costs, never your transaction list. Card payments are handled entirely by PayPal."],
   ["Does Command Ledger connect directly to my bank?",
     "No. Command Ledger never asks for your bank login. It works from the exports you choose to upload and the sheet you choose to sync."],
   ["What happens when I cancel?",
-    "You can cancel at any time from your PayPal account, and your access ends when PayPal confirms the cancellation. First-time monthly subscribers can request a refund within 7 days, and annual subscriptions can be refunded pro rata within 30 days. Your uploaded history stays in your account until you delete it or ask us to delete your account."],
+    "You can cancel at any time from your PayPal account. Cancelling stops the next charge, and your access ends when PayPal confirms the cancellation, not at the end of the period already paid. First-time monthly subscribers can request a refund within 7 days, and annual subscriptions can be refunded pro rata within 30 days. Your uploaded history stays in your account until you delete it or ask us to delete your account."],
   ["What support comes with Command Ledger?",
     "Email support: we reply within 2 business days. Calls are part of Command Advisory and the Financial Diagnostic, not the US$99 plan."],
   ["How does Command Advisory work?",
@@ -3971,7 +4264,7 @@ function MarketingSite({ onLogin, onPlanSelect, onTerms, onPrivacy }) {
             </div>
             <div className="mk-outcomes">
               {[
-                ["01", "Financial clarity", "See the cash you can actually deploy, what you keep from each dollar of revenue, and how many months you have if things change.", ["True free cash", "Profit margin", "Burn runway"]],
+                ["01", "Financial clarity", "See what is left after tax and a safety reserve, what each dollar of revenue earns you, and how many months your cash lasts if things change.", ["Profit after reserves", "Profit margin", "Burn runway"]],
                 ["02", "Financial control", "Know every recurring commitment before it lands. Payroll, rent, software and tax are detected in your own history and projected forward.", ["Recurring obligations", "Forward cash"]],
                 ["03", "Better decisions", "Test a hire or a new cost against your real numbers, see how dependent you are on one client, and get one clear move each week.", ["Affordability", "Concentration", "Weekly directive"]],
               ].map(([n, title, body, tags]) => (
@@ -3994,10 +4287,10 @@ function MarketingSite({ onLogin, onPlanSelect, onTerms, onPrivacy }) {
             </div>
             <div className="mk-caps">
               <article className="mk-cap wide">
-                <h3 className="mk-h3">True free cash and runway</h3>
-                <p className="mk-p">Revenue is not money you can spend. Command Ledger sets aside tax and a safety buffer first and shows what remains, then measures runway against net burn rather than gross spending, so a profitable month is never mistaken for a crisis.</p>
+                <h3 className="mk-h3">Profit after reserves, and runway</h3>
+                <p className="mk-p">Revenue is not profit, and profit is not all yours to spend. Command Ledger sets aside tax and a safety buffer from profit and shows what remains, keeps loans and transfers out of revenue, then measures runway from your cash balance against net burn rather than gross spending, so a profitable month is never mistaken for a crisis.</p>
                 <div className="mk-cap-figures">
-                  <KpiTile t={{ lbl:"True free cash", val:fmt(m.free, "USD"), col:C.text, sub:"Three months, after reserves" }}/>
+                  <KpiTile t={{ lbl:"Profit after reserves", val:fmt(m.free, "USD"), col:C.text, sub:"Three months, after tax and buffer" }}/>
                   <KpiTile t={{ lbl:"Break-even revenue", val:fmt(m.breakEven, "USD"), col:C.text, sub:`Monthly. June revenue: ${fmt(s.last.revenue, "USD")}` }}/>
                 </div>
                 <p className="mk-cap-note">Sample data. Safe mode reserves 30% of profit for tax and 20% as a safety buffer.</p>
@@ -4227,7 +4520,7 @@ function TermsPage({ onBack }) {
         <h2 className="page-h2">3. Plans and support</h2>
         <p className="page-p">Command Ledger (US$99 per month) includes the software and email support, with a reply within 2 business days. Command Advisory (US$1,500 per month) adds your data processed every month, a 60-minute call every month, a written board pack every month, a 12-month forecast refreshed every quarter, and an email line answered within 24 hours on business days. The Financial Diagnostic (US$750, one-time) is delivered within 10 business days of receiving your exports: a written findings memo and a 60-minute call to walk you through it. Prices are in US dollars, and any tax is shown before you subscribe.</p>
         <h2 className="page-h2">4. Payment</h2>
-        <p className="page-p">Subscriptions are billed via PayPal, monthly or annually depending on the term selected, and auto-renew unless cancelled at least 7 days before the renewal date. The Financial Diagnostic is a one-time charge, not a subscription.</p>
+        <p className="page-p">Subscriptions are billed through PayPal each month, or once a year for an annual term agreed by email, and renew automatically until you cancel. You can cancel at any time in your PayPal account. Cancelling stops the next charge, and your access ends as soon as PayPal confirms the cancellation, not at the end of the period already paid. The Financial Diagnostic is a one-time charge, not a subscription.</p>
         <h2 className="page-h2">5. Refunds</h2>
         <p className="page-p">7-day refund on monthly subscriptions for first-time subscribers. Annual subscriptions may be refunded pro rata within 30 days. The Financial Diagnostic is non-refundable once analysis has begun; its credit against Command Advisory applies if you subscribe within 30 days of buying it, and is forfeited if that subscription is refunded.</p>
         <h2 className="page-h2">6. Disclaimer</h2>
@@ -4239,6 +4532,8 @@ function TermsPage({ onBack }) {
   );
 }
 
+// Describes only what the product does today. Every processor named here is
+// one the code actually sends data to; keep the list in step with the code.
 function PrivacyPage({ onBack }) {
   return (
     <div style={{ minHeight:"100vh" }}>
@@ -4246,13 +4541,26 @@ function PrivacyPage({ onBack }) {
       <main className="page-wrap">
         <h1 className="page-title">Privacy Policy</h1>
         <div className="page-date">Last updated: November 2026</div>
-        <h2 className="page-h2">1. What We Collect</h2>
-        <p className="page-p">Name, email, and authentication details on sign-in. Financial data you upload. Usage data such as features accessed and session duration.</p>
-        <h2 className="page-h2">2. How We Use It</h2>
-        <p className="page-p">To provide the Service, process payments, deliver AI analysis, and send account updates. We do not sell your data.</p>
-        <h2 className="page-h2">3. Security</h2>
-        <p className="page-p">All data encrypted in transit via SSL. Transactions you upload to your account are stored in your private history with Supabase, readable only by your login, so your metrics can track change over time; the uploaded file itself is not kept. Deleting an upload from Upload History permanently deletes every transaction it added. The free preview on the home page runs in your browser and stores nothing. User accounts are stored securely via Supabase.</p>
-        <h2 className="page-h2">4. Contact</h2>
+        <h2 className="page-h2">1. Who we are</h2>
+        <p className="page-p">Command Ledger is responsible for the personal information described here. Our Information Officer can be reached at commandledger@gmail.com.</p>
+        <h2 className="page-h2">2. What we collect</h2>
+        <p className="page-p">Your account: your name, email address and business name, and your sign-in details (an email and password, or your Google account if you sign in with Google). Passwords are held by our sign-in provider and are never visible to us.</p>
+        <p className="page-p">The financial data you give us: the transactions in the files you upload (dates, descriptions, amounts, categories and currencies), each upload's name, period and closing balance, a cash balance you enter, the recurring bills detected from your history, your choices about what transactions count as, and the directives issued to you with your responses and notes.</p>
+        <p className="page-p">Payments: PayPal processes every payment. We receive your PayPal subscription or order reference and its status, never your card or bank details.</p>
+        <p className="page-p">In your browser: your sign-in session, your reserve-mode setting and a plan you chose before signing up are kept in your browser's local storage. We do not use advertising or tracking cookies. Page visits may be counted by Vercel Web Analytics, which does not use cookies.</p>
+        <h2 className="page-h2">3. How we use it</h2>
+        <p className="page-p">To provide the Service and compute your metrics, process payments, answer support requests, deliver Command Advisory and the Financial Diagnostic if you buy them, and send messages about your account. We do not sell your personal information.</p>
+        <h2 className="page-h2">4. The AI brief</h2>
+        <p className="page-p">Only when you ask for a brief, your computed metrics, the names of your largest payers, the names and amounts of your recurring costs, your recent directives with your notes on them, and the totals of loans, owner money, transfers and refunds are sent to Anthropic, whose Claude model writes the brief, under Anthropic's commercial terms for API customers. Your transaction list is not sent.</p>
+        <h2 className="page-h2">5. Who processes it, and where</h2>
+        <p className="page-p">Supabase stores your account and financial data and runs sign-in, in the European Union (Frankfurt, Germany). Vercel hosts the website. PayPal processes payments. Anthropic, in the United States, writes the AI brief when you ask for one. Google handles sign-in only if you choose to sign in with Google. Your information is therefore processed outside South Africa, by providers bound by their own data-protection terms, so that we can provide the Service you signed up for.</p>
+        <h2 className="page-h2">6. How long we keep it</h2>
+        <p className="page-p">Your transactions and other account data are kept while your account exists, so your history can be compared over time. The uploaded file itself is not kept. Deleting an upload from Upload History permanently deletes every transaction it added. To delete your account and everything in it, email us: account deletion is not yet available inside the app. Payment records may be kept for as long as tax and accounting law requires.</p>
+        <h2 className="page-h2">7. Security</h2>
+        <p className="page-p">All data is encrypted in transit. Your transactions are stored in a private history that only your login can read, enforced by the database itself. The free preview on the home page runs in your browser and stores nothing.</p>
+        <h2 className="page-h2">8. Your rights</h2>
+        <p className="page-p">You may ask what personal information we hold about you, ask us to correct or delete it, object to how it is processed, and withdraw any consent you have given. Email commandledger@gmail.com and we will reply. If you are not satisfied with our answer, you may complain to the Information Regulator of South Africa at POPIAComplaints@inforegulator.org.za (inforegulator.org.za).</p>
+        <h2 className="page-h2">9. Contact</h2>
         <p className="page-p">commandledger@gmail.com</p>
       </main>
     </div>

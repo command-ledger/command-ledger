@@ -97,6 +97,15 @@ describe("buildAlerts", () => {
   });
 });
 
+describe("buildReportCsv marks a month in progress", () => {
+  it("labels a partial month as to date", () => {
+    const csv = buildReportCsv({ rows: [{ month: "Oct 26", revenue: 100, expenses: 50 }, { month: "Nov 26", partial: true, revenue: 10, expenses: 5 }] });
+    const lines = csv.split(/\r\n/);
+    expect(lines).toContain("Nov 26 (to date),10,5,5,50");
+    expect(lines).toContain("Oct 26,100,50,50,50");
+  });
+});
+
 describe("buildReportCsv", () => {
   const csv = buildReportCsv({
     periodLabel: "Last 3 months", generatedAt: "2026-10-31",
