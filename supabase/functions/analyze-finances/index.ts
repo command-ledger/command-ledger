@@ -358,21 +358,45 @@ ${expenseBreakdown ? `EXPENSE BREAKDOWN:\n${expenseBreakdown}` : ""}
 
 Return the JSON object now.`
 
-    const response = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "x-api-key": ANTHROPIC_API_KEY,
-        "anthropic-version": "2023-06-01",
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({
-        model: "claude-sonnet-4-5-20250929",
-        max_tokens: 1200,
-        temperature: 0.2,
-        system: systemPrompt,
-        messages: [{ role: "user", content: userPrompt }],
-      }),
-    })
+    // Claude Opus 5.5. Thinking is always on for this model, so effort is
+    // the control (set explicitly: "medium" is its default), and max_tokens
+    // leaves room for the thinking as well as the JSON reply. It accepts no
+    // sampling parameters, so there is no temperature. A safety classifier
+    // can decline a request with a normal 200 and stop_reason "refusal";
+    // `fallbacks: "default"` (beta server-side-fallback-2026-07-01) re-runs a
+    // declined request on the model Anthropic recommends for that category,
+    // still within Anthropic's API.
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), 120_000)
+    let response: Response
+    try {
+      response = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        signal: controller.signal,
+        headers: {
+          "x-api-key": ANTHROPIC_API_KEY,
+          "anthropic-version": "2023-06-01",
+          "anthropic-beta": "server-side-fallback-2026-07-01",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "claude-opus-5-5",
+          max_tokens: 16000,
+          output_config: { effort: "medium" },
+          fallbacks: "default",
+          system: systemPrompt,
+          messages: [{ role: "user", content: userPrompt }],
+        }),
+      })
+    } catch (err) {
+      const timedOut = err instanceof Error && err.name === "AbortError"
+      return new Response(
+        JSON.stringify({ error: timedOut ? "The advisor took too long to answer. Try again." : "The advisor could not be reached. Try again." }),
+        { headers: { ...corsHeaders, "Content-Type": "application/json" }, status: 504 }
+      )
+    } finally {
+      clearTimeout(timer)
+    }
 
     const data = await response.json()
 
@@ -383,7 +407,25 @@ Return the JSON object now.`
       )
     }
 
-    const text = data?.content?.[0]?.text || ""
+    // Checked before reading content: a refusal can arrive with no content
+    // at all, and here it means the fallback declined too.
+    if (data?.stop_reason === "refusal") {
+      console.warn("Advisor request declined", { category: data?.stop_details?.category ?? null })
+      return new Response(
+        JSON.stringify({ error: "The advisor could not write a brief for these figures. Try again later, or email commandledger@gmail.com." }),
+        { headers: { ...corsHeaders, "Content-Type": "application/json" }, status: 502 }
+      )
+    }
+
+    // Read by block type, never by position: the response can begin with
+    // thinking blocks (empty under the default display) and, after a
+    // fallback, a fallback block.
+    const text = Array.isArray(data?.content)
+      ? data.content.filter((b: { type?: string }) => b?.type === "text").map((b: { text?: string }) => b.text || "").join("")
+      : ""
+    if (data?.stop_reason === "max_tokens") {
+      console.warn("Advisor reply hit max_tokens", { outputTokens: data?.usage?.output_tokens ?? null })
+    }
 
     // The model is asked to return only JSON, but strip any stray
     // conversational wrapping defensively before parsing.
