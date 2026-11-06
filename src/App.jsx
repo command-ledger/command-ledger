@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo, Fragment } from "react";
 import { createClient } from "@supabase/supabase-js";
-import { fmt, pc, safe, parseAnyCSV, computeMetrics, runScenario, parseTransactions, computeDedupeHash, aggregateTransactionsByMonth, computeRevenueConcentration, detectRecurringObligations, computeForwardRunway, checkAffordability, detectMissedObligations, projectForwardCalendar, summarizeCalendarByWeek, computeDirective, getDirectiveMetricValue, describeDirectiveOutcome, checkoutBlockReason, computeConfidence, fmtCompact, filterTransactions, searchWorkspace, buildAlerts, buildReportCsv, SUPPORTED_CURRENCIES, isSupportedCurrency, currencySymbol, currencyName, partitionByCurrency, decodeTextFile, buildRuleIndex, resolveKind, classificationKey, summarizeKinds, periodStartDate, effectiveCashBalance, monthLabel, isGenericCounterparty } from "./lib/financials.js";
+import { fmt, pc, safe, parseAnyCSV, computeMetrics, runScenario, parseTransactions, computeDedupeHash, aggregateTransactionsByMonth, computeRevenueConcentration, detectRecurringObligations, computeForwardRunway, checkAffordability, detectMissedObligations, projectForwardCalendar, summarizeCalendarByWeek, computeDirective, getDirectiveMetricValue, describeDirectiveOutcome, checkoutBlockReason, computeConfidence, fmtCompact, filterTransactions, searchWorkspace, buildAlerts, buildReportCsv, SUPPORTED_CURRENCIES, isSupportedCurrency, currencySymbol, currencyName, partitionByCurrency, decodeTextFile, detectFileCurrency, resolveFileCurrency, buildRuleIndex, resolveKind, classificationKey, summarizeKinds, periodStartDate, effectiveCashBalance, monthLabel, isGenericCounterparty } from "./lib/financials.js";
 
 const supabase = createClient(
   import.meta.env.VITE_SUPABASE_URL,
@@ -939,12 +939,12 @@ function DirectiveStrip({ d, children, compact = false }) {
 // A business keeps its books in one currency. Nothing here converts: a
 // transaction in another currency is stored as it arrived and left out of
 // the figures, and the founder is told so.
-function CurrencySelect({ id, value, onChange, compact = false, ariaLabel, style }) {
+function CurrencySelect({ id, value, onChange, compact = false, ariaLabel, style, autoLabel }) {
   const known = SUPPORTED_CURRENCIES.some(c => c.code === value);
   return (
     <select id={id} className="di" value={value || ""} aria-label={ariaLabel} onChange={e => onChange(e.target.value)}
       style={compact ? { width:92, flex:"0 0 auto", ...style } : { maxWidth:320, ...style }}>
-      {!value && <option value="" disabled>Choose a currency</option>}
+      {autoLabel ? <option value="">{autoLabel}</option> : !value && <option value="" disabled>Choose a currency</option>}
       {SUPPORTED_CURRENCIES.map(c => <option key={c.code} value={c.code}>{compact ? c.code : `${c.name} (${c.code})`}</option>)}
       {value && !known && <option value={value}>{value}</option>}
     </select>
@@ -963,7 +963,7 @@ function CurrencyPrompt({ onSave }) {
   };
   return (
     <Panel title="Choose your business currency">
-      <p className="panel-copy">Every figure is shown in the currency your business keeps its books in. Command Ledger never converts between currencies, so choose this before you upload.</p>
+      <p className="panel-copy">Every figure is shown in the currency your business keeps its books in. Upload a file and Command Ledger reads this from it, or choose it here if you enter figures by hand. Nothing is ever converted between currencies.</p>
       <div style={{ display:"flex", gap:8, flexWrap:"wrap", marginTop:12 }}>
         <CurrencySelect id="base-currency" ariaLabel="Business currency" value={code} onChange={setCode}/>
         <button className="btn btn-primary btn-md" disabled={!code || busy} onClick={save}>{busy ? "Saving..." : "Save"}</button>
@@ -994,6 +994,18 @@ function dateOrderNote(d) {
   return "Every date in this file could be read either way, so they were read day first (05/03/2026 is 5 March). If your file puts the month first, export the dates as YYYY-MM-DD and upload it again.";
 }
 
+// How a file's currency was decided, for the upload message. Whatever was not
+// stated outright says so, because a wrong label gives wrong figures with no
+// other warning, and says where to correct it.
+function fileCurrencyNote({ how, basis }, code) {
+  const name = currencyName(code);
+  const fix = "If that is wrong, change it under Transactions, in Upload history. Amounts are not affected.";
+  if (how === "stated") return `This file is in ${name} (${code}), read from ${basis === "rows" ? "its amounts" : basis === "heading" ? "its column headings" : "the lines above its table"}.`;
+  if (how === "inferred") return `This file does not state a currency. Its details point to ${name} (${code}), so it was read that way. ${fix}`;
+  if (how === "business") return `This file does not state a currency, so it was read as your business currency, ${name} (${code}). ${fix}`;
+  return "";
+}
+
 // A form label with the business currency's symbol: "Cash balance (R)".
 const withSymbol = (label, cur) => cur ? `${label} (${currencySymbol(cur)})` : label;
 
@@ -1022,31 +1034,46 @@ function DataUpload({ onDataLoaded, hasData, currency, rules }) {
   const [err,     setErr]     = useState("");
   const [csvUrl,  setCsvUrl]  = useState("");
   const [syncing, setSyncing] = useState(false);
-  // The currency this file's amounts are in. It starts as the business
-  // currency; with none chosen yet, the founder must pick, and that choice
-  // becomes the business currency.
-  const [fileCur, setFileCur] = useState(currency || "");
-  useEffect(() => { if (currency) setFileCur(c => c || currency); }, [currency]);
+  // Empty means "read it from the file". A founder can still name the currency
+  // here, and that wins over anything the file says.
+  const [fileCur, setFileCur] = useState("");
+  // A file that states no currency, for an account with none yet, waits here
+  // for one answer rather than being uploaded twice.
+  const [waiting, setWaiting] = useState(null); // null | { text, source, detected }
+  const [answer,  setAnswer]  = useState("");
   const fileRef = useRef(null);
 
-  const processCSVText = (text, source) => {
-    const result = parseAnyCSV(text, { currency: fileCur, rules });
+  const importFile = (text, source, code, note) => {
+    const result = parseAnyCSV(text, { currency: code, rules });
     if (!result || result.rows.length === 0) {
-      setErr(`No readable financial data in ${fileCur} found. Ensure the file has at minimum a Revenue or Amount column.`);
+      setErr("No readable financial data found. Ensure the file has at minimum a Revenue or Amount column.");
       return false;
     }
-    setErr("");
-    onDataLoaded(result.rows, source, result.detectedFields, text, fileCur);
+    setErr(""); setWaiting(null); setAnswer("");
+    onDataLoaded(result.rows, source, result.detectedFields, text, code, note);
     return true;
   };
-  const needCurrency = () => {
-    if (fileCur) return false;
-    setErr("Choose the currency this file is in first.");
-    return true;
+
+  const processCSVText = (text, source) => {
+    const detected = detectFileCurrency(text);
+    if (!detected) {
+      setErr("No readable financial data found. Ensure the file has at minimum a Revenue or Amount column.");
+      return false;
+    }
+    const decision = resolveFileCurrency({ manual: fileCur, detected, business: currency });
+    if (decision.unsupported) {
+      setErr(`This file is in ${decision.unsupported}. Command Ledger reports in US dollars or rand and never converts, so it was not imported.`);
+      return false;
+    }
+    if (decision.ask) {
+      setErr(""); setAnswer(""); setWaiting({ text, source, detected });
+      return false;
+    }
+    return importFile(text, source, decision.currency, { how: decision.how, basis: detected.basis });
   };
 
   const handleFile = async (file) => {
-    if (!file || needCurrency()) return;
+    if (!file) return;
     setErr(""); setParsing(true);
     const ext = file.name.split(".").pop().toLowerCase();
     try {
@@ -1068,7 +1095,7 @@ function DataUpload({ onDataLoaded, hasData, currency, rules }) {
   };
 
   const syncSheet = async () => {
-    if (!csvUrl.trim() || needCurrency()) return;
+    if (!csvUrl.trim()) return;
     setSyncing(true); setErr("");
     try {
       const url = csvUrl + (csvUrl.includes("?") ? "&" : "?") + "nocache=" + Date.now();
@@ -1085,16 +1112,25 @@ function DataUpload({ onDataLoaded, hasData, currency, rules }) {
   return (
     <div style={{ display:"flex", flexDirection:"column", gap:16 }}>
       <div className="input-group" style={{ marginBottom:0 }}>
-        <label className="di-lbl" htmlFor="file-currency">Amounts in this file are in</label>
-        <CurrencySelect id="file-currency" value={fileCur} onChange={v => { setFileCur(v); setErr(""); }}/>
+        <label className="di-lbl" htmlFor="file-currency">Currency of this file</label>
+        <CurrencySelect id="file-currency" value={fileCur} autoLabel="Read it from the file" onChange={v => { setFileCur(v); setErr(""); }}/>
         <p className="panel-copy" style={{ marginTop:6 }}>
-          {currency
-            ? (fileCur && fileCur !== currency
-                ? `Your business currency is ${currency}. Transactions in ${fileCur} are stored, but not added to your figures, because Command Ledger never converts between currencies.`
-                : "Rows marked with another currency, such as $ or USD, keep that currency and are not added to your figures.")
-            : "This also sets your business currency, the one every figure is shown in. You can change it later in Settings."}
+          {fileCur && currency && fileCur !== currency
+            ? `Your business currency is ${currency}. Transactions in ${fileCur} are stored, but not added to your figures, because Command Ledger never converts between currencies.`
+            : currency
+              ? "Command Ledger reads the currency from your file, and tells you how it decided. Rows in another currency keep their own label and are not added to your figures."
+              : "Command Ledger reads the currency from your file, and your first file sets your business currency. You can change it later in Settings."}
         </p>
       </div>
+      {waiting && (
+        <div className="d-alert warn" role="status" style={{ flexDirection:"column", gap:10 }}>
+          <span>This file does not say what currency it is in, and nothing in it proves one. Which is it? Amounts are not changed either way.</span>
+          <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
+            <CurrencySelect id="file-currency-answer" ariaLabel="Currency of this file" value={answer} onChange={setAnswer}/>
+            <button className="btn btn-primary btn-md" disabled={!answer} onClick={() => importFile(waiting.text, waiting.source, answer, { how:"chosen" })}>Continue</button>
+          </div>
+        </div>
+      )}
       <div
         className={`drop-zone${drag ? " drag" : ""}`}
         onDragOver={e => { e.preventDefault(); setDrag(true); }}
@@ -1231,16 +1267,25 @@ function PayModal({ planKey, currentPlanKey, userEmail, userId, onClose, onSucce
 
     window.paypal.Buttons({
       style: { color:"gold", shape:"rect", label:"subscribe", layout:"vertical" },
-      createSubscription: (_d, actions) =>
-        actions.subscription.create({
+      createSubscription: async (_d, actions) => {
+        const subscriptionId = await actions.subscription.create({
           plan_id:   verified.planId,
           custom_id: userId,
-        }),
-      onApprove: async () => {
-        // Plan upgrade is handled server-side by the paypal-webhook Edge Function.
-        // The browser only updates the UI — it no longer writes to the database.
+        });
+        // Tell the server the id now, before the buyer approves, so a browser
+        // closed straight after paying still leaves something to check at the
+        // next sign-in. Not awaited: checkout must never wait on this.
+        supabase.functions.invoke("confirm-subscription", { body: { action:"register", subscriptionId } })
+          .then(({ error }) => { if (error) console.error("Checkout could not be registered:", error); })
+          .catch(err => console.error("Checkout could not be registered:", err));
+        return subscriptionId;
+      },
+      onApprove: async (data) => {
+        // Access is granted on the server, from PayPal's own record of this
+        // subscription. The id is passed along so the server knows what to
+        // read. The browser never writes to the plan and cannot grant anything.
         setDone(true);
-        onSuccess(planKey);
+        onSuccess(planKey, data?.subscriptionID);
       },
       onError: err => {
         console.error("PayPal error:", err);
@@ -1331,6 +1376,43 @@ function PayModal({ planKey, currentPlanKey, userEmail, userId, onClose, onSucce
 // never happen is telling a buyer "not charged" when they were: they pay again
 // and are charged twice. So a capture that cannot be confirmed says "do not pay
 // again", never "failed".
+// A buyer's one-time purchases, so a returning Diagnostic customer sees what they
+// bought and what happens next. A Diagnostic is delivered by hand and opens no
+// workspace, so without this the app would show them nothing but the paywall.
+const DIAGNOSTIC_ORDER_NOTE = {
+  completed: "paid. Email your last twelve months of bank or accounting exports to commandledger@gmail.com if you have not yet.",
+  pending:   "payment is clearing at PayPal. You do not need to pay again.",
+  review:    "we are confirming this payment and will contact you. You do not need to pay again.",
+  refunded:  "refunded.",
+};
+
+function DiagnosticPurchases({ userId }) {
+  const [orders, setOrders] = useState([]);
+  useEffect(() => {
+    if (!userId) return;
+    let live = true;
+    supabase.from("diagnostic_orders")
+      .select("id, status, created_at")
+      .in("status", Object.keys(DIAGNOSTIC_ORDER_NOTE))
+      .order("created_at", { ascending:false })
+      .then(({ data, error }) => {
+        if (error) { console.error("Diagnostic orders could not be read:", error); return; }
+        if (live) setOrders(data || []);
+      });
+    return () => { live = false; };
+  }, [userId]);
+  if (orders.length === 0) return null;
+  return (
+    <div style={{ marginBottom:14 }}>
+      {orders.map(o => (
+        <div key={o.id} className="d-alert info" role="status" style={{ marginBottom:8 }}>
+          {DIAGNOSTIC.name} ({new Date(o.created_at).toLocaleDateString("en-ZA", { day:"numeric", month:"long", year:"numeric" })}): {DIAGNOSTIC_ORDER_NOTE[o.status]}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 const DIAGNOSTIC_OUTCOME = {
   completed: {
     title: "Payment received",
@@ -2284,7 +2366,7 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
     await loadHistory(); await loadBatches(); await loadObligations();
   };
 
-  const handleDataLoaded = async (parsedRows, source, cols, rawText, fileCurrency) => {
+  const handleDataLoaded = async (parsedRows, source, cols, rawText, fileCurrency, currencyNote = {}) => {
     setUploadStatus(""); setUploadErr(""); setUploadBusy(true);
     const fileCur = fileCurrency || cur;
     if (!fileCur) {
@@ -2292,8 +2374,21 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
       setUploadBusy(false);
       return;
     }
+    // With nothing on file yet, the first file decides the business currency,
+    // whatever was set before: no figures depend on the old one, so nothing
+    // moves, and a rand business is not left reporting in dollars. This counts
+    // the whole history in the database. txns holds only the selected period,
+    // and may not have loaded yet, so an empty txns does not mean an empty
+    // account. If the count cannot be read, the business currency stays.
     let base = cur;
-    if (!base) {
+    let firstFile = false;
+    if (base && base !== fileCur && isSupportedCurrency(fileCur)) {
+      const { count, error: countErr } = await supabase.from("transactions")
+        .select("id", { count:"exact", head:true }).eq("user_id", user.id);
+      if (countErr) console.error("Could not count transactions:", countErr);
+      else firstFile = count === 0;
+    }
+    if (!base || firstFile) {
       if (!(await saveBaseCurrency(fileCur))) {
         setUploadErr("Your business currency could not be saved, so the file was not uploaded. Try again.");
         setUploadBusy(false);
@@ -2362,6 +2457,7 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
         : `Of this file's transactions, ${keptOut.length === 1 ? keptOut[0] : `${keptOut.slice(0, -1).join(", ")} and ${keptOut[keptOut.length - 1]}`}. ${kinds.refund.count && !kinds.financing.count && !kinds.transfer.count ? "Refunds are netted against revenue or costs" : "These are kept out of revenue and costs (refunds are netted against them)"}; check them under All transactions.`;
       setUploadStatus([
         `Added ${insertedCount} new transaction${insertedCount === 1 ? "" : "s"}. ${duplicateCount} already on file.`,
+        fileCurrencyNote(currencyNote, fileCur),
         otherCurrency > 0 ? `${otherCurrency} ${otherCurrency === 1 ? "is" : "are"} in a currency other than ${base}, so ${otherCurrency === 1 ? "it is" : "they are"} stored but not added to your figures.` : "",
         parsed.unreadable > 0 ? `${parsed.unreadable} amount${parsed.unreadable === 1 ? "" : "s"} could not be read as a number and ${parsed.unreadable === 1 ? "was" : "were"} skipped.` : "",
         parsed.skippedDates > 0 ? `${parsed.skippedDates} row${parsed.skippedDates === 1 ? " had a date that could not be read and was" : "s had dates that could not be read and were"} skipped.` : "",
@@ -3729,6 +3825,86 @@ function ForecastsSection({ ctx }) {
 }
 
 // ─── SECTION: SETTINGS ────────────────────────────────────────
+// Payments that need a person, for accounts listed in app_admins. The list and
+// the repair run in the payment-admin Edge Function, which checks that on every
+// call; this check only decides whether to show the panel.
+function PaymentRepairPanel({ userId }) {
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [items, setItems]     = useState(null);
+  const [subId, setSubId]     = useState("");
+  const [busy, setBusy]       = useState(false);
+  const [note, setNote]       = useState(null);
+
+  const load = useCallback(async () => {
+    const { data, error } = await supabase.functions.invoke("payment-admin", { body: { action:"list" } });
+    if (error) { console.error("Payment list failed:", error); setNote({ t:"crit", text:"The payment list could not be loaded. Try again." }); return; }
+    setItems(data);
+  }, []);
+
+  useEffect(() => {
+    if (!userId) return;
+    let live = true;
+    supabase.from("app_admins").select("user_id").eq("user_id", userId).maybeSingle().then(({ data, error }) => {
+      if (error) { console.error("Admin check failed:", error); return; }
+      if (live && data) { setIsAdmin(true); load(); }
+    });
+    return () => { live = false; };
+  }, [userId, load]);
+
+  if (!isAdmin) return null;
+
+  const reconcile = async (id) => {
+    setBusy(true); setNote(null);
+    const { data, error } = await supabase.functions.invoke("payment-admin", { body: { action:"reconcile", subscriptionId: id.trim() } });
+    setBusy(false);
+    if (error) { console.error("Reconcile failed:", error); setNote({ t:"crit", text:"That subscription could not be checked. Check the id starts with I- and try again." }); return; }
+    const text = {
+      granted:   `Access granted (${data.plan}).`,
+      waiting:   `Nothing changed yet: ${data.reason}. PayPal status is ${data.paypalStatus}.`,
+      refused:   `Access not granted: ${data.reason}.`,
+      ignored:   `Nothing changed: ${data.reason}.`,
+      not_found: "PayPal has no subscription with that id.",
+    }[data.result] || "Done.";
+    setNote({ t: data.result === "granted" ? "ok" : "warn", text });
+    load();
+  };
+
+  const resolve = async (eventId) => {
+    const { error } = await supabase.functions.invoke("payment-admin", { body: { action:"resolve", eventId } });
+    if (error) { console.error("Resolve failed:", error); setNote({ t:"crit", text:"That item could not be marked as dealt with." }); return; }
+    load();
+  };
+
+  const events = items?.events || [];
+  const checkouts = items?.checkouts || [];
+  return (
+    <div className="row">
+      <Panel title="Payment repair">
+        <p className="panel-copy">Payments that need a person, and a way to re-check one with PayPal. Access is only ever granted from PayPal's own record.</p>
+        {items && events.length === 0 && checkouts.length === 0 && <p className="panel-copy" style={{ marginTop:10 }}>Nothing needs attention.</p>}
+        {checkouts.map(c => (
+          <div key={c.subscription_id} className="d-alert warn" style={{ justifyContent:"space-between", alignItems:"center", flexWrap:"wrap", marginTop:10 }}>
+            <span>Approved, no access yet: {c.email || "unknown customer"}, {c.plan_key}, {c.subscription_id}{c.detail ? ` (${c.detail})` : ""}</span>
+            <button className="panel-link" disabled={busy} onClick={() => reconcile(c.subscription_id)}>Check with PayPal<Icon name="arrow" size={14}/></button>
+          </div>
+        ))}
+        {events.map(e => (
+          <div key={e.id} className={`d-alert ${e.status === "failed" ? "crit" : "warn"}`} style={{ justifyContent:"space-between", alignItems:"center", flexWrap:"wrap", marginTop:10 }}>
+            <span>{e.detail || e.event_type}{e.email ? ` ${e.email}.` : ""}{e.amount ? ` ${e.amount} ${e.currency || ""}.` : ""}</span>
+            <button className="panel-link" onClick={() => resolve(e.id)}>Mark as dealt with<Icon name="arrow" size={14}/></button>
+          </div>
+        ))}
+        <form style={{ display:"flex", gap:8, flexWrap:"wrap", marginTop:14 }} onSubmit={e => { e.preventDefault(); if (subId.trim()) reconcile(subId); }}>
+          <label className="di-lbl" htmlFor="repair-sub" style={{ width:"100%" }}>PayPal subscription id</label>
+          <input id="repair-sub" className="di" style={{ flex:"1 1 220px" }} value={subId} maxLength={50} placeholder="I-..." onChange={e => setSubId(e.target.value)}/>
+          <button className="btn btn-primary btn-md" type="submit" disabled={busy || !subId.trim()}>{busy ? "Checking..." : "Check with PayPal"}</button>
+        </form>
+        {note && <div className={`d-alert ${note.t}`} role="status" style={{ marginTop:12 }}>{note.text}</div>}
+      </Panel>
+    </div>
+  );
+}
+
 function SettingsSection({ ctx }) {
   const { user, profile, plan, mode, setMode, onUpgrade, onBuyDiagnostic, onProfileChange, go } = ctx;
   const [name, setName] = useState(profile?.name || "");
@@ -3803,8 +3979,11 @@ function SettingsSection({ ctx }) {
             {plan === "software" && " Annual billing (US$990/year) is arranged by email."}
           </p>
           <button className="panel-link" style={{ marginTop:8 }} onClick={onBuyDiagnostic}>Buy a one-time US${DIAGNOSTIC.usd.toLocaleString()} Financial Diagnostic<Icon name="arrow" size={14}/></button>
+          <div style={{ marginTop:12 }}><DiagnosticPurchases userId={user?.id}/></div>
         </Panel>
       </div>
+
+      <PaymentRepairPanel userId={user?.id}/>
 
       <div className="row row-2">
         <Panel title="Reserve mode">
@@ -3905,6 +4084,8 @@ const HELP_FAQ = [
   ["Why do some numbers show ---?", "A metric whose inputs are missing is shown as ---, never as zero, because a zero would be a claim. Add the missing input (for example a cash balance) and it appears."],
   ["What do the confidence labels mean?", "Each metric is graded on how many months of data stand behind it and how recent your latest transaction is. Under three months is low confidence; data older than 45 days lowers it a level."],
   ["What does the period selector change?", "Which uploaded transactions feed the metrics and tables: the last 3, 6 or 12 months, or all time. Recurring obligations are always detected from your full history."],
+  ["How is a file's currency decided?", "Command Ledger reads it from the file: a currency column, R or $ on the amounts, a column heading such as Amount (ZAR), or a line above the table. If the file says nothing, details such as South African banks and suppliers can point to it, and the upload message says so. If nothing proves it, the file is read as your business currency, or you are asked once. Amounts are never converted, and you can correct a label under Upload history."],
+  ["I paid but my plan has not opened", "Do not pay again. Access usually opens within a minute, and it is checked again whenever you sign in. If it has not opened within an hour, email commandledger@gmail.com with the date you paid."],
 ];
 
 function HelpSection({ ctx }) {
@@ -4176,7 +4357,7 @@ const MK_FAQ = [
   ["Does Command Ledger connect directly to my bank?",
     "No. Command Ledger never asks for your bank login. It works from the exports you choose to upload and the sheet you choose to sync."],
   ["What happens when I cancel?",
-    "You can cancel at any time from your PayPal account. Cancelling stops the next charge, and your access ends when PayPal confirms the cancellation, not at the end of the period already paid. First-time monthly subscribers can request a refund within 7 days, and annual subscriptions can be refunded pro rata within 30 days. Your uploaded history stays in your account until you delete it or ask us to delete your account."],
+    "You can cancel at any time from your PayPal account. Cancelling stops the next charge, and your access ends when PayPal confirms the cancellation, not at the end of the period already paid. First-time monthly subscribers can request a refund within 7 days, and annual subscriptions can be refunded pro rata within 30 days. A refund does not end a subscription by itself, so cancel it as well. Your uploaded history stays in your account until you delete it or ask us to delete your account."],
   ["What support comes with Command Ledger?",
     "Email support: we reply within 2 business days. Calls are part of Command Advisory and the Financial Diagnostic, not the US$99 plan."],
   ["How does Command Advisory work?",
@@ -4520,7 +4701,7 @@ function TermsPage({ onBack }) {
         <h2 className="page-h2">3. Plans and support</h2>
         <p className="page-p">Command Ledger (US$99 per month) includes the software and email support, with a reply within 2 business days. Command Advisory (US$1,500 per month) adds your data processed every month, a 60-minute call every month, a written board pack every month, a 12-month forecast refreshed every quarter, and an email line answered within 24 hours on business days. The Financial Diagnostic (US$750, one-time) is delivered within 10 business days of receiving your exports: a written findings memo and a 60-minute call to walk you through it. Prices are in US dollars, and any tax is shown before you subscribe.</p>
         <h2 className="page-h2">4. Payment</h2>
-        <p className="page-p">Subscriptions are billed through PayPal each month, or once a year for an annual term agreed by email, and renew automatically until you cancel. You can cancel at any time in your PayPal account. Cancelling stops the next charge, and your access ends as soon as PayPal confirms the cancellation, not at the end of the period already paid. The Financial Diagnostic is a one-time charge, not a subscription.</p>
+        <p className="page-p">Subscriptions are billed through PayPal each month, or once a year for an annual term agreed by email, and renew automatically until you cancel. You can cancel at any time in your PayPal account. Cancelling stops the next charge, and your access ends as soon as PayPal confirms the cancellation, not at the end of the period already paid. A refund does not end a subscription by itself. If a payment is reversed through your bank or card issuer, access is put on hold until that is resolved. The Financial Diagnostic is a one-time charge, not a subscription.</p>
         <h2 className="page-h2">5. Refunds</h2>
         <p className="page-p">7-day refund on monthly subscriptions for first-time subscribers. Annual subscriptions may be refunded pro rata within 30 days. The Financial Diagnostic is non-refundable once analysis has begun; its credit against Command Advisory applies if you subscribe within 30 days of buying it, and is forfeited if that subscription is refunded.</p>
         <h2 className="page-h2">6. Disclaimer</h2>
@@ -4570,8 +4751,9 @@ function PrivacyPage({ onBack }) {
 // ─── PAYWALL GATE ─────────────────────────────────────────────
 // Shown instead of the Dashboard when profile.plan is empty.
 // No data, no features, no bypass — user must subscribe to proceed.
-function PaywallGate({ user, activating, onSelectPlan, onLogout }) {
+function PaywallGate({ user, status, activating, onSelectPlan, onLogout }) {
   const userName = user?.user_metadata?.full_name || user?.email?.split("@")[0] || "Founder";
+  const onHold = status === "disputed";
   return (
     <div className="auth-page">
       <div className="auth-card" style={{ maxWidth:680 }}>
@@ -4583,6 +4765,12 @@ function PaywallGate({ user, activating, onSelectPlan, onLogout }) {
           <p className="auth-sub">Your account is ready. Choose a plan to open your command centre; the dashboard opens once a subscription is active.</p>
         </div>
         <div className="auth-form">
+          {onHold && (
+            <div className="d-alert warn" role="status" style={{ marginBottom:14 }}>
+              Your access is on hold because a payment was disputed with your bank or card issuer. Your data is safe. Email <a href="mailto:commandledger@gmail.com?subject=Payment%20dispute">commandledger@gmail.com</a> to resolve it.
+            </div>
+          )}
+          <DiagnosticPurchases userId={user?.id}/>
           <div style={{ display:"flex", flexDirection:"column", gap:14 }}>
             {[
               { key:"software", hot:false },
@@ -4607,7 +4795,7 @@ function PaywallGate({ user, activating, onSelectPlan, onLogout }) {
                     {(pl.intro || pl.tax) && <div style={{ fontSize:12.5, color:C.text2, marginTop:2 }}>{pl.intro ? introTerms(pl) : taxTerms(pl)}</div>}
                   </div>
                   <button className={`btn ${p.hot ? "btn-primary" : "btn-outline"}`} style={{ padding:"10px 22px", fontSize:11, whiteSpace:"nowrap" }} onClick={() => onSelectPlan(p.key)}
-                    disabled={activating} title={activating ? "A payment is being activated for this account" : undefined}>
+                    disabled={activating || onHold} title={activating ? "Checking this account for a payment in progress" : undefined}>
                     Subscribe
                   </button>
                 </div>
@@ -4750,41 +4938,93 @@ export default function App() {
     return () => subscription.unsubscribe();
   }, [loadProfile, showMarketing]);
 
-  // Access is granted by the PayPal webhook, which can land seconds or minutes
-  // after the buyer approves. Reloading the profile once, a second later, used
-  // to drop most buyers straight back on the paywall with their Subscribe
-  // buttons live — a paying customer invited to pay again. Instead the profile
-  // is polled until the plan they bought appears, checkout stays closed while
-  // that happens, and if it is slow they are told plainly not to pay again.
-  const [activation, setActivation] = useState(null); // null | { planKey, status: "pending" | "delayed" }
+  // After the buyer approves, the server is asked to read the subscription from
+  // PayPal and grant access (confirm-subscription). The webhook can do the same
+  // moments later; whichever lands first, the plan appears on the profile, which
+  // is the only thing this waits for. Reloading the profile once used to drop
+  // most buyers straight back on the paywall with their Subscribe buttons live:
+  // a paying customer invited to pay again. So checkout stays closed while this
+  // runs, and if it is slow they are told plainly not to pay again.
+  const [activation, setActivation] = useState(null); // null | { planKey, status: "pending" | "delayed" | "failed", subscriptionId }
   const activationRun = useRef(0);
+  const activationBlocks = !!activation && activation.status !== "failed";
 
-  const pollActivation = useCallback(async (planKey) => {
+  const pollActivation = useCallback(async (planKey, subscriptionId) => {
     const run = ++activationRun.current;
-    setActivation({ planKey, status: "pending" });
+    setActivation({ planKey, status: "pending", subscriptionId });
     const { data: { user: u } } = await supabase.auth.getUser();
     if (!u) { setActivation(null); return; }
     for (let i = 0; i < 20; i++) {
-      await new Promise(r => setTimeout(r, 3000));
+      // A failed check only means we could not ask, never that payment failed.
+      const { data: check, error: checkErr } = await supabase.functions.invoke("confirm-subscription", {
+        body: subscriptionId ? { action:"confirm", subscriptionId } : { action:"recheck" },
+      });
       if (activationRun.current !== run) return;
+      if (checkErr) console.error("Activation check failed:", checkErr);
       const { data, error } = await supabase.from("profiles").select("*").eq("id", u.id).single();
-      if (error) { console.error("Activation check failed:", error); continue; }
-      if (resolvePlanKey(data.plan) === planKey && data.plan) {
+      if (activationRun.current !== run) return;
+      if (error) console.error("Activation check failed:", error);
+      else if (resolvePlanKey(data.plan) === planKey && data.plan) {
         setProfile(data);
         setActivation(null);
         return;
       }
+      if (check?.state === "failed") {
+        setActivation({ planKey, status: "failed", subscriptionId });
+        return;
+      }
+      await new Promise(r => setTimeout(r, 3000));
+      if (activationRun.current !== run) return;
     }
-    if (activationRun.current === run) setActivation({ planKey, status: "delayed" });
+    if (activationRun.current === run) setActivation({ planKey, status: "delayed", subscriptionId });
   }, []);
 
-  const handlePaySuccess = useCallback((planKey) => {
+  const handlePaySuccess = useCallback((planKey, subscriptionId) => {
     setPayModal(null);
-    pollActivation(resolvePlanKey(planKey));
+    pollActivation(resolvePlanKey(planKey), subscriptionId);
   }, [pollActivation]);
 
   // Signing out abandons any activation check in flight.
   useEffect(() => { if (!user) { activationRun.current++; setActivation(null); } }, [user]);
+
+  // A payment still being activated outlives the page. After a refresh, or at
+  // the next sign-in, the open checkout is found and checked again, so a buyer
+  // who closed the browser gets their access without paying twice. Subscribe
+  // stays closed until this has looked, so it cannot be clicked in between.
+  const [checkoutsChecked, setCheckoutsChecked] = useState(false);
+  const signedInId = user?.id ?? null;
+  const profileLoaded = !!profile;
+  useEffect(() => {
+    if (!signedInId) { setCheckoutsChecked(false); return; }
+    if (!profileLoaded) return;
+    let live = true;
+    (async () => {
+      try {
+        const { data: open, error } = await supabase.from("subscription_checkouts")
+          .select("subscription_id, plan_key")
+          .in("status", ["created", "approved"])
+          .order("created_at", { ascending:false })
+          .limit(1);
+        if (error) throw error;
+        if (!live || !open?.length) return;
+        const { data: check, error: checkErr } = await supabase.functions.invoke("confirm-subscription", { body: { action:"recheck" } });
+        if (checkErr) throw checkErr;
+        if (!live) return;
+        if (check?.state === "active") {
+          const { data, error: readErr } = await supabase.from("profiles").select("*").eq("id", signedInId).single();
+          if (readErr) throw readErr;
+          if (live) setProfile(data);
+        } else if (check?.state === "pending") {
+          pollActivation(resolvePlanKey(open[0].plan_key), open[0].subscription_id);
+        }
+      } catch (err) {
+        console.error("Open checkouts could not be checked:", err);
+      } finally {
+        if (live) setCheckoutsChecked(true);
+      }
+    })();
+    return () => { live = false; };
+  }, [signedInId, profileLoaded, pollActivation]);
 
   const handlePlanSelect = useCallback((planKey) => {
     if (user) { setPayModal(planKey); return; }
@@ -4794,19 +5034,22 @@ export default function App() {
 
   // While a payment is activating, no new subscription checkout opens.
   const openSubscription = useCallback((planKey) => {
-    if (activation && planKey !== "diagnostic") return;
+    if (planKey !== "diagnostic" && (activationBlocks || !checkoutsChecked)) return;
     setPayModal(planKey);
-  }, [activation]);
+  }, [activationBlocks, checkoutsChecked]);
 
   useEffect(() => {
     if (appState !== "dashboard" || !user || !profile) return;
     const key = peekPendingPlan();
     if (!key) return;
+    // A plan chosen before signing in waits until open checkouts have been
+    // looked at, or checkout would be skipped rather than opened.
+    if (key !== "diagnostic" && !checkoutsChecked) return;
     clearPendingPlan();
     if (key === "diagnostic") setPayModal("diagnostic");
     // Someone already on the plan they chose is not sent to buy it again.
     else if (!profile.plan || resolvePlanKey(profile.plan) !== key) openSubscription(key);
-  }, [appState, user, profile, openSubscription]);
+  }, [appState, user, profile, openSubscription, checkoutsChecked]);
 
   if (appState === "loading") return (
     <>
@@ -4825,13 +5068,17 @@ export default function App() {
         <div className="activation-banner" role="status">
           {activation.status === "pending" ? (
             <><span className="spinner"/>Payment approved. Activating {PLANS[activation.planKey].name}. This usually takes under a minute. Do not pay again.</>
+          ) : activation.status === "failed" ? (
+            <span>
+              PayPal did not complete this subscription, so {PLANS[activation.planKey].name} was not activated. Check your PayPal account before trying again. If you were charged, email <a href="mailto:commandledger@gmail.com?subject=Subscription%20activation">commandledger@gmail.com</a>.
+            </span>
           ) : (
             <>
               <span>
                 PayPal approved your payment, but activation is taking longer than usual. Do not subscribe again, or you would be charged twice.
                 Use Check again in a few minutes; if it has not activated within an hour, email <a href="mailto:commandledger@gmail.com?subject=Subscription%20activation">commandledger@gmail.com</a>.
               </span>
-              <button className="btn btn-outline" style={{ padding:"6px 14px", fontSize:11, whiteSpace:"nowrap" }} onClick={() => pollActivation(activation.planKey)}>Check again</button>
+              <button className="btn btn-outline" style={{ padding:"6px 14px", fontSize:11, whiteSpace:"nowrap" }} onClick={() => pollActivation(activation.planKey, activation.subscriptionId)}>Check again</button>
             </>
           )}
         </div>
@@ -4862,7 +5109,8 @@ export default function App() {
         ) : (
           <PaywallGate
             user={user}
-            activating={!!activation}
+            status={profile.status}
+            activating={activationBlocks || !checkoutsChecked}
             onSelectPlan={openSubscription}
             onLogout={async () => { await supabase.auth.signOut(); }}
           />

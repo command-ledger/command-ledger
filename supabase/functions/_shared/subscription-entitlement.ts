@@ -42,6 +42,32 @@ export type EntitlementDecision =
 const ENDED = new Set(["CANCELLED", "EXPIRED"])
 const isActive = (status: string | null | undefined) => (status || "").toUpperCase() === "ACTIVE"
 
+// Whether PayPal's current record of a subscription supports granting access,
+// judged before decideGrant(). Events can arrive late, twice or out of order,
+// so this reads what PayPal says now rather than what an event once said:
+// without it, a delayed renewal event arriving after a cancellation would
+// grant access to a subscription that had already ended.
+//
+//   null    nothing stands in the way
+//   wait    not paid yet, but it may still be: try again later
+//   refuse  this subscription will not become paid access
+//
+// PayPal can report ACTIVE before the first payment has cleared, and a first
+// payment can fail, so ACTIVE alone is not proof of payment. paymentConfirmed
+// is set when a verified payment event for this subscription is the proof.
+export type GrantBlock = { kind: "wait" | "refuse"; reason: string } | null
+
+// deno-lint-ignore no-explicit-any
+export function grantBlock(sub: any, { paymentConfirmed = false }: { paymentConfirmed?: boolean } = {}): GrantBlock {
+  const status = String(sub?.status || "").toUpperCase()
+  if (status === "APPROVAL_PENDING" || status === "APPROVED") return { kind: "wait", reason: `subscription is ${status}` }
+  if (status !== "ACTIVE") return { kind: "refuse", reason: `subscription is ${status || "unreadable"}` }
+  if (paymentConfirmed) return null
+  const paid = Number(sub?.billing_info?.last_payment?.amount?.value)
+  if (!(paid > 0)) return { kind: "wait", reason: "no payment received yet" }
+  return null
+}
+
 // A superseded subscription is cancelled automatically only when the one
 // being kept is ACTIVE (never leave a customer with nothing that bills
 // successfully) and both were bought for the same user. Anything less sure

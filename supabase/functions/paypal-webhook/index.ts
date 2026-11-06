@@ -1,19 +1,23 @@
-// PayPal subscription webhook.
+// PayPal webhook.
 //
-// This is the only place that grants or revokes paid access after checkout —
-// src/App.jsx's PayModal only updates local UI state on approval, it never
-// writes to the database. If this function silently no-ops, a customer can
-// be charged by PayPal and never receive access.
+// Checks that an event really came from PayPal, then hands it to
+// ../_shared/paypal-events.ts, which records it and applies it: renewals,
+// cancellations, failed payments, refunds, chargebacks, and first payments when
+// the buyer's browser never came back. confirm-subscription grants access at
+// checkout as well, so a paying customer no longer depends on this function
+// alone. The rules for both are in ../_shared/paypal-access.ts.
 //
 // Required Supabase Edge Function secrets (SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY
 // are injected automatically and do not need to be set):
-//   PAYPAL_CLIENT_ID       — PayPal REST app client ID (server-side, can match the
-//                             public VITE_PAYPAL_CLIENT_ID or be a dedicated app)
-//   PAYPAL_SECRET_ID       — PayPal REST app secret
-//   PAYPAL_WEBHOOK_ID      — ID of the webhook configured in the PayPal dashboard
-//                             to point at this function's URL
-//   PAYPAL_API_BASE        — optional, defaults to the PayPal sandbox API.
-//                             Set to https://api-m.paypal.com in production.
+//   PAYPAL_CLIENT_ID       PayPal REST app client ID. Must be the same app the
+//                          browser's buttons use: PayPal delivers subscription
+//                          events to the webhooks of the app that created them.
+//   PAYPAL_SECRET_ID       PayPal REST app secret
+//   PAYPAL_WEBHOOK_ID      The id of that app's webhook, 17 upper-case characters.
+//                          Not a client id. A wrong value fails every signature
+//                          check, which is why it is checked below.
+//   PAYPAL_API_BASE        optional, defaults to the PayPal sandbox API.
+//                          Set to https://api-m.paypal.com in production.
 
 declare module "https://deno.land/std@0.168.0/http/server.ts" {
   export function serve(handler: (req: Request) => Response | Promise<Response>): void
@@ -21,9 +25,9 @@ declare module "https://deno.land/std@0.168.0/http/server.ts" {
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts"
 import { createClient } from "jsr:@supabase/supabase-js@2"
-import { planKeyForId } from "../_shared/paypal-plans.ts"
-import { verifyDiagnosticCapture } from "../_shared/one-time-products.ts"
-import { decideGrant, decideEnd, type EntitlementDecision } from "../_shared/subscription-entitlement.ts"
+import { looksLikeWebhookId } from "../_shared/payment-events.ts"
+import { createAccess } from "../_shared/paypal-access.ts"
+import { createEventProcessor } from "../_shared/paypal-events.ts"
 
 declare const Deno: {
   env: {
@@ -40,26 +44,9 @@ const PAYPAL_WEBHOOK_ID = Deno.env.get("PAYPAL_WEBHOOK_ID")
 // requests verified against the wrong PayPal environment.
 const PAYPAL_API_BASE = Deno.env.get("PAYPAL_API_BASE") || "https://api-m.sandbox.paypal.com"
 
-// Plan id -> entitlement lives in ../_shared/paypal-plans.ts, shared with
-// plan-pricing. An unmapped plan_id grants nothing, which is the correct
-// failure: a subscription whose tier cannot be identified must not silently
-// confer access.
-
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
-
-async function getAccessToken(): Promise<string> {
-  const res = await fetch(`${PAYPAL_API_BASE}/v1/oauth2/token`, {
-    method: "POST",
-    headers: {
-      "Authorization": `Basic ${btoa(`${PAYPAL_CLIENT_ID}:${PAYPAL_CLIENT_SECRET}`)}`,
-      "Content-Type": "application/x-www-form-urlencoded",
-    },
-    body: "grant_type=client_credentials",
-  })
-  if (!res.ok) throw new Error(`PayPal OAuth failed: ${res.status} ${await res.text()}`)
-  const data = await res.json()
-  return data.access_token
-}
+const access = createAccess(supabase, { apiBase: PAYPAL_API_BASE, clientId: PAYPAL_CLIENT_ID ?? "", clientSecret: PAYPAL_CLIENT_SECRET ?? "" })
+const events = createEventProcessor(supabase, access)
 
 // Verifies the event actually came from PayPal via PayPal's own verification
 // API, rather than reimplementing the certificate-chain crypto by hand.
@@ -92,154 +79,20 @@ async function verifyWebhookSignature(headers: Headers, event: unknown, accessTo
   return result.verification_status === "SUCCESS"
 }
 
-async function fetchSubscription(subscriptionId: string, accessToken: string) {
-  const res = await fetch(`${PAYPAL_API_BASE}/v1/billing/subscriptions/${subscriptionId}`, {
-    headers: { "Authorization": `Bearer ${accessToken}` },
-  })
-  if (!res.ok) return null
-  return await res.json()
-}
-
-// Cancels a superseded subscription so the customer stops paying for a plan
-// they replaced. Already-paid periods are not refunded here; that stays a
-// human decision. A failure is logged rather than thrown: the access change
-// has already been applied, and a redelivered event would find the new
-// subscription on file and never retry the cancel — so the log line is the
-// record a person acts on.
-async function cancelSuperseded(userId: string, subscriptionId: string, replacedBy: string, accessToken: string) {
-  const res = await fetch(`${PAYPAL_API_BASE}/v1/billing/subscriptions/${subscriptionId}/cancel`, {
-    method: "POST",
-    headers: { "Authorization": `Bearer ${accessToken}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ reason: "Replaced by a newer Command Ledger subscription on the same account." }),
-  })
-  // 204 is success; 422 SUBSCRIPTION_STATUS_INVALID means it is already cancelled.
-  if (res.ok || res.status === 422) {
-    console.log("Superseded subscription cancelled.", { userId, cancelled: subscriptionId, keep: replacedBy, status: res.status })
-    return
-  }
-  console.error("Could not cancel superseded subscription; cancel it in PayPal by hand.", {
-    userId, cancel: subscriptionId, keep: replacedBy, status: res.status, body: await res.text(),
-  })
-}
-
-// requireRow is set for events that grant access. An update that matches no
-// row returns no error, so without this check a paying subscriber whose profile
-// row does not exist yet would be acknowledged with 200 and PayPal would stop
-// retrying — charged, and never granted access. Throwing instead returns 500,
-// and PayPal redelivers the event until the row exists (the app creates it on
-// the subscriber's next sign-in). Revocations do not set it: with no row there
-// is nothing to revoke, and retrying would only add noise.
-async function setProfile(
-  userId: string,
-  fields: { plan?: string | null; status: string; paypal_subscription_id?: string },
-  { requireRow = false }: { requireRow?: boolean } = {},
-) {
-  const { data, error } = await supabase
-    .from("profiles")
-    .update({ ...fields, updated_at: new Date().toISOString() })
-    .eq("id", userId)
-    .select("id")
-  if (error) throw new Error(`Supabase profile update failed: ${error.message}`)
-  if (!data || data.length === 0) {
-    const msg = `No profile row for user ${userId}; ${fields.status} not applied.`
-    if (requireRow) throw new Error(msg)
-    console.warn(msg)
-  }
-}
-
-// The subscription id that grants this profile's plan, or null when none is on
-// file (or there is no row — a grant then fails in setProfile and is retried).
-async function subscriptionOnFile(userId: string): Promise<string | null> {
-  const { data, error } = await supabase
-    .from("profiles")
-    .select("paypal_subscription_id")
-    .eq("id", userId)
-    .maybeSingle()
-  if (error) throw new Error(`Supabase profile read failed: ${error.message}`)
-  return data?.paypal_subscription_id ?? null
-}
-
-// Applies a grant event for subscription `sub` (PayPal's subscription object)
-// according to decideGrant(). Two live subscriptions mean a customer is billed
-// twice: the superseded one is cancelled when that is safe, and logged for a
-// person when it is not.
-// deno-lint-ignore no-explicit-any
-async function applyGrant(userId: string, sub: any, accessToken: string) {
-  const event = { id: sub.id, planKey: planKeyForId(sub.plan_id), createTime: sub.create_time, status: sub.status, customId: sub.custom_id }
-  const onFile = await subscriptionOnFile(userId)
-  let stored = null
-  if (onFile && onFile !== sub.id) {
-    const s = await fetchSubscription(onFile, accessToken)
-    stored = s ? { id: onFile, status: s.status, createTime: s.create_time, customId: s.custom_id } : null
-  }
-  const decision: EntitlementDecision = decideGrant(event, onFile, stored)
-  const keep = decision.kind === "grant" ? sub.id : onFile
-  if ("duplicateOf" in decision && decision.duplicateOf) {
-    console.error("Customer has two live subscriptions; cancel the older one in PayPal.", { userId, keep, cancel: decision.duplicateOf })
-  }
-  if (decision.kind === "grant") {
-    // The profile moves to the new subscription before the old one is
-    // cancelled, so the CANCELLED event that follows is not the one on file
-    // and cannot revoke access.
-    await setProfile(userId, { plan: decision.planKey, status: "active", paypal_subscription_id: decision.subscriptionId }, { requireRow: true })
-  } else if (decision.kind === "ignore") {
-    console.warn("Grant event not applied.", { userId, subscription: sub.id, reason: decision.reason })
-  }
-  if ("cancel" in decision && decision.cancel && keep) {
-    await cancelSuperseded(userId, decision.cancel, keep, accessToken)
-  }
-}
-
-// Records a one-time Financial Diagnostic payment from its capture event. The
-// buyer's browser normally records it through diagnostic-order, but a browser
-// closed between paying and that call returning would otherwise leave money
-// received with no record. Idempotent: an order already completed or under
-// review is left alone. A database failure throws, so PayPal redelivers.
-// deno-lint-ignore no-explicit-any
-async function reconcileDiagnosticCapture(orderId: string, capture: any) {
-  const { data: row, error } = await supabase
-    .from("diagnostic_orders")
-    .select("id, status, user_id")
-    .eq("paypal_order_id", orderId)
-    .maybeSingle()
-  if (error) throw new Error(`diagnostic_orders lookup failed: ${error.message}`)
-  if (!row) {
-    console.warn("Capture for an order this app did not create; not a diagnostic.", { orderId })
-    return
-  }
-  if (row.status === "completed" || row.status === "review") return
-
-  const verdict = verifyDiagnosticCapture(capture, row.user_id ?? undefined)
-  if (verdict.ok) {
-    const { error: updErr } = await supabase.from("diagnostic_orders").update({
-      status: verdict.state,
-      paypal_capture_id: verdict.captureId,
-      completed_at: verdict.state === "completed" ? new Date().toISOString() : null,
-    }).eq("id", row.id)
-    if (updErr) throw new Error(`diagnostic_orders update failed: ${updErr.message}`)
-    return
-  }
-  if (verdict.state === "review") {
-    console.error("Diagnostic capture needs review.", { orderId, reason: verdict.reason })
-    const { error: revErr } = await supabase.from("diagnostic_orders").update({
-      status: "review",
-      review_reason: verdict.reason,
-      paypal_capture_id: verdict.captureId,
-    }).eq("id", row.id)
-    if (revErr) throw new Error(`diagnostic_orders review update failed: ${revErr.message}`)
-  }
-}
+const ok = (body: unknown) => new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } })
 
 serve(async (req: Request) => {
   if (req.method !== "POST") {
     return new Response("Method not allowed", { status: 405 })
   }
 
-  if (!PAYPAL_CLIENT_ID || !PAYPAL_CLIENT_SECRET || !PAYPAL_WEBHOOK_ID) {
-    console.error("PayPal webhook misconfigured: PAYPAL_CLIENT_ID / PAYPAL_SECRET_ID / PAYPAL_WEBHOOK_ID secret missing.")
+  if (!PAYPAL_CLIENT_ID || !PAYPAL_CLIENT_SECRET || !looksLikeWebhookId(PAYPAL_WEBHOOK_ID)) {
+    // 500, not 401: this is our fault, and PayPal keeps retrying while it is fixed.
+    console.error("PayPal webhook misconfigured: PAYPAL_CLIENT_ID, PAYPAL_SECRET_ID or a valid PAYPAL_WEBHOOK_ID is missing.")
     return new Response("Webhook not configured", { status: 500 })
   }
 
+  // deno-lint-ignore no-explicit-any
   let event: any
   try {
     event = await req.json()
@@ -248,97 +101,20 @@ serve(async (req: Request) => {
   }
 
   try {
-    const accessToken = await getAccessToken()
+    const accessToken = await access.getAccessToken()
     const verified = await verifyWebhookSignature(req.headers, event, accessToken)
     if (!verified) {
       console.error("PayPal webhook signature verification failed.", { event_type: event?.event_type, id: event?.id })
       return new Response("Signature verification failed", { status: 401 })
     }
+    if (typeof event?.id !== "string" || !event.id) return new Response("Event has no id", { status: 400 })
 
-    const resource = event.resource || {}
-
-    switch (event.event_type) {
-      // Fires once PayPal has captured the first payment and the
-      // subscription is actually live — the correct signal to grant access.
-      case "BILLING.SUBSCRIPTION.ACTIVATED": {
-        const userId = resource.custom_id
-        const planKey = planKeyForId(resource.plan_id)
-        if (!userId || !planKey) {
-          console.error("Activation event missing userId/planKey mapping.", { plan_id: resource.plan_id, custom_id: resource.custom_id })
-          break
-        }
-        await applyGrant(userId, resource, accessToken)
-        break
-      }
-
-      // Recurring renewal payments. The payment resource itself doesn't
-      // reliably carry custom_id, so resolve it via the subscription record —
-      // this also re-activates a profile whose subscription had lapsed.
-      case "PAYMENT.SALE.COMPLETED":
-      case "PAYMENT.CAPTURE.COMPLETED": {
-        const subscriptionId = resource.billing_agreement_id || resource.supplementary_data?.related_ids?.subscription_id
-        if (!subscriptionId) {
-          // No subscription behind it: a one-time order capture.
-          const orderId = resource.supplementary_data?.related_ids?.order_id
-          if (event.event_type === "PAYMENT.CAPTURE.COMPLETED" && orderId) {
-            await reconcileDiagnosticCapture(orderId, resource)
-          }
-          break
-        }
-        const sub = await fetchSubscription(subscriptionId, accessToken)
-        const userId = sub?.custom_id
-        const planKey = planKeyForId(sub?.plan_id)
-        if (userId && planKey) await applyGrant(userId, sub, accessToken)
-        break
-      }
-
-      // Only the subscription on file can end or suspend access; a
-      // superseded subscription ending must not remove access another one
-      // is paying for.
-      case "BILLING.SUBSCRIPTION.CANCELLED":
-      case "BILLING.SUBSCRIPTION.EXPIRED": {
-        const userId = resource.custom_id
-        if (userId) {
-          const decision = decideEnd("revoke", resource.id, await subscriptionOnFile(userId))
-          if (decision.kind === "revoke") {
-            await setProfile(userId, {
-              plan: null,
-              status: event.event_type === "BILLING.SUBSCRIPTION.EXPIRED" ? "expired" : "canceled",
-            })
-          } else {
-            console.warn("End event not applied: not the subscription on file.", { userId, subscription: resource.id })
-          }
-        }
-        break
-      }
-
-      // Suspension (e.g. a failed renewal charge) is a grace-period state —
-      // record it but don't strip the plan; ACTIVATED/PAYMENT.*.COMPLETED
-      // will restore "active" status if the subscription recovers.
-      case "BILLING.SUBSCRIPTION.SUSPENDED": {
-        const userId = resource.custom_id
-        if (userId) {
-          const decision = decideEnd("suspend", resource.id, await subscriptionOnFile(userId))
-          if (decision.kind === "suspend") await setProfile(userId, { status: "suspended" })
-          else console.warn("Suspend event not applied.", { userId, subscription: resource.id })
-        }
-        break
-      }
-
-      default:
-        // Unhandled event types are still acknowledged with 200 so PayPal
-        // doesn't keep retrying deliveries we intentionally ignore.
-        break
-    }
-
-    return new Response(JSON.stringify({ received: true }), {
-      status: 200,
-      headers: { "Content-Type": "application/json" },
-    })
+    const outcome = await events.processEvent(event, accessToken)
+    return ok({ received: true, duplicate: outcome.duplicate })
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : "Unknown error"
     console.error("PayPal webhook processing error:", message)
-    return new Response(JSON.stringify({ error: message }), {
+    return new Response(JSON.stringify({ error: "processing_failed" }), {
       status: 500,
       headers: { "Content-Type": "application/json" },
     })

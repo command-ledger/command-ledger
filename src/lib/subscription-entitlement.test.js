@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { decideGrant, decideEnd } from "../../supabase/functions/_shared/subscription-entitlement.ts";
+import { decideGrant, decideEnd, grantBlock } from "../../supabase/functions/_shared/subscription-entitlement.ts";
 
 // Imports the module paypal-webhook runs, not a copy, so a change to which
 // subscription controls access has to get past these first.
@@ -62,6 +62,41 @@ describe("decideGrant", () => {
 
   it("never grants a subscription whose age cannot be compared over a live one", () => {
     expect(decideGrant({ ...advisory, createTime: null }, "I-SOFTWARE", live(software)).kind).toBe("ignore");
+  });
+});
+
+describe("grantBlock", () => {
+  const paid = { status: "ACTIVE", billing_info: { last_payment: { amount: { value: "99.00", currency_code: "USD" }, time: "2026-11-06T00:12:00Z" } } };
+
+  it("lets a paid, active subscription through", () => {
+    expect(grantBlock(paid)).toBeNull();
+  });
+
+  it("waits while PayPal says active but no payment has landed", () => {
+    expect(grantBlock({ status: "ACTIVE", billing_info: {} }).kind).toBe("wait");
+    expect(grantBlock({ status: "ACTIVE" }).kind).toBe("wait");
+    expect(grantBlock({ status: "ACTIVE", billing_info: { last_payment: { amount: { value: "0.00" } } } }).kind).toBe("wait");
+  });
+
+  it("accepts a verified payment event as the proof", () => {
+    expect(grantBlock({ status: "ACTIVE" }, { paymentConfirmed: true })).toBeNull();
+  });
+
+  it("waits for a subscription the buyer has not finished approving", () => {
+    expect(grantBlock({ status: "APPROVAL_PENDING" }).kind).toBe("wait");
+    expect(grantBlock({ status: "APPROVED" }).kind).toBe("wait");
+    expect(grantBlock({ status: "APPROVED" }, { paymentConfirmed: true }).kind).toBe("wait");
+  });
+
+  it("refuses an ended subscription even when a late payment event arrives", () => {
+    expect(grantBlock({ ...paid, status: "CANCELLED" }, { paymentConfirmed: true }).kind).toBe("refuse");
+    expect(grantBlock({ ...paid, status: "EXPIRED" }).kind).toBe("refuse");
+    expect(grantBlock({ ...paid, status: "SUSPENDED" }).kind).toBe("refuse");
+  });
+
+  it("refuses a subscription it cannot read", () => {
+    expect(grantBlock(null).kind).toBe("refuse");
+    expect(grantBlock({}).kind).toBe("refuse");
   });
 });
 

@@ -1429,6 +1429,115 @@ export const parseTransactions = (text, options = {}) => {
   };
 };
 
+// ─── WHICH CURRENCY A FILE IS IN ─────────────────────────────────
+// The founder should not have to say what the file already says. In order:
+//
+//   stated    the file says so: a Currency column, R or $ on the amounts, ZAR
+//             in a column heading, or a currency line above the table
+//   inferred  it does not say, but the details point one way: South African
+//             banks, suppliers and tax terms, or US ones
+//   null      nothing proves it
+//
+// Many bank exports are plain numbers with no currency anywhere, so null is a
+// normal answer and the only honest one for those files. A guess here would be
+// worse than a question: a file labelled with the wrong currency gives wrong
+// figures with no warning. Nothing is ever converted either way.
+const ISO_CODES = "ZAR|USD|EUR|GBP|AUD|CAD|NZD|CHF";
+const CURRENCY_IN_HEADING = new RegExp(`(?:\\(\\s*|\\s)(${ISO_CODES}|R|\\$|€|£)\\s*\\)?\\s*$`, "i");
+const ISO_IN_LINE = new RegExp(`\\b(${ISO_CODES})\\b`, "g");
+const CURRENCY_NAMES = [
+  [/\b(?:south african )?rands?\b/i, "ZAR"],
+  [/\b(?:u\.?s\.?|united states) dollars?\b/i, "USD"],
+  [/\beuros?\b/i, "EUR"],
+  [/\b(?:british pounds?|pounds? sterling)\b/i, "GBP"],
+];
+// Each is one distinct clue. Words that also mean something else elsewhere are
+// left out on purpose: one match proves little, so two are needed.
+const ZAR_CLUES = [
+  /\bfnb\b|first national bank/i, /\babsa\b/i, /\bnedbank\b/i, /\bcapitec\b/i, /\bstandard bank\b/i, /\binvestec\b/i,
+  /\btyme ?bank\b/i, /\bdiscovery bank\b/i, /\bafrican bank\b/i,
+  /\beskom\b/i, /\bsars\b/i, /\bvodacom\b/i, /\btelkom\b/i, /\bshoprite\b/i, /\bpick n pay\b/i, /\bdis-?chem\b/i, /\bsasol\b/i,
+  /\byoco\b/i, /\bpayfast\b/i, /\bikhokha\b/i, /\bozow\b/i, /\bsnapscan\b/i, /\btakealot\b/i,
+  /\bpaye\b/i, /\buif\b/i, /\bdebit order\b/i, /\bmagtape\b/i,
+];
+const SA_BANKS = ZAR_CLUES.slice(0, 9);
+const USD_CLUES = [
+  /\bwells fargo\b/i, /\bbank of america\b/i, /\bjpmorgan chase\b/i, /\bchase bank\b/i, /\bcapital one\b/i, /\bcitibank\b/i,
+  /\bzelle\b/i, /\bvenmo\b/i, /\bach (?:credit|debit|payment|deposit)\b/i, /\birs\b/i, /\busps\b/i, /\bcomcast\b/i, /\bverizon\b/i,
+];
+
+function distinctClues(text, clues) {
+  return clues.reduce((n, re) => n + (re.test(text) ? 1 : 0), 0);
+}
+
+// { currency, confidence, basis, mixed } or null when the file cannot be read.
+// `mixed` lists any other currency rows declare, so the upload can say so.
+export function detectFileCurrency(text) {
+  const parsed = parseTransactions(text);
+  if (!parsed) return null;
+  const source = String(text ?? "").replace(/^﻿/, "");
+  const lines = source.split(/\r?\n/).filter(l => l.trim() !== "").slice(0, MAX_HEADER_SCAN + 30);
+  const rows = tokenize(source, detectDelimiter(lines));
+  const header = findHeaderRow(rows);
+  const stated = (currency, basis, mixed = []) => ({ currency, confidence: "stated", basis, mixed });
+
+  // The rows themselves: a Currency column, or a marker on the amounts.
+  const counts = {};
+  parsed.transactions.forEach(t => { if (t.currency) counts[t.currency] = (counts[t.currency] || 0) + 1; });
+  const declared = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+  if (declared.length > 0) {
+    return stated(declared[0][0], "rows", declared.slice(1).map(([currency, count]) => ({ currency, count })));
+  }
+
+  // A money column's heading: "Amount (ZAR)", "Debit USD", "Balance R".
+  const { roles } = header;
+  const moneyCols = [roles.amount, roles.revenue, roles.expense, roles.debit, roles.credit, roles.balance].filter(c => c !== undefined);
+  const inHeadings = new Set();
+  moneyCols.forEach(c => {
+    const m = String(rows[header.index][c] ?? "").match(CURRENCY_IN_HEADING);
+    const code = m ? currencyCode(m[1].toUpperCase()) : null;
+    if (code) inHeadings.add(code);
+  });
+  if (inHeadings.size === 1) return stated([...inHeadings][0], "heading");
+
+  // A line above the table: "Currency: ZAR", "All amounts in South African rand".
+  const above = rows.slice(0, header.index).map(r => r.join(" "));
+  const inLines = new Set();
+  above.forEach(line => {
+    (line.match(ISO_IN_LINE) || []).forEach(code => inLines.add(code));
+    CURRENCY_NAMES.forEach(([re, code]) => { if (re.test(line)) inLines.add(code); });
+  });
+  if (inLines.size === 1) return stated([...inLines][0], "above the table");
+
+  // Nothing stated. The file's own bank counts for more than a passing mention.
+  const aboveText = above.join(" ");
+  const everything = `${aboveText} ${parsed.transactions.slice(0, 1000).map(t => t.description).join(" ")}`;
+  const zar = distinctClues(everything, ZAR_CLUES) + (distinctClues(aboveText, SA_BANKS) > 0 ? 1 : 0);
+  const usd = distinctClues(everything, USD_CLUES);
+  const lead = Math.max(zar, usd);
+  const other = Math.min(zar, usd);
+  if (lead >= 2 && lead >= other * 3) {
+    return { currency: zar > usd ? "ZAR" : "USD", confidence: "inferred", basis: "details", mixed: [] };
+  }
+  return { currency: null, confidence: null, basis: null, mixed: [] };
+}
+
+// Decides the currency an upload is filed under. The founder's own choice wins,
+// then what the file says, then what its details show. A file that says nothing
+// goes under the business currency when there is one, and the upload says so;
+// with no business currency yet there is nothing to go on, so the founder is
+// asked. A file stated in a currency the app cannot report in is refused rather
+// than filed under the wrong label when it would become the business currency.
+export function resolveFileCurrency({ manual = "", detected = null, business = null } = {}) {
+  if (manual) return { currency: manual, how: "chosen", ask: false };
+  if (detected?.currency) {
+    if (!business && !isSupportedCurrency(detected.currency)) return { currency: null, how: "unsupported", ask: false, unsupported: detected.currency };
+    return { currency: detected.currency, how: detected.confidence, ask: false };
+  }
+  if (business) return { currency: business, how: "business", ask: false };
+  return { currency: null, how: "unknown", ask: true };
+}
+
 // Monthly totals for the session preview and the public demo, from the same
 // records parseTransactions saves. Monthly buckets add rows together, so
 // they hold one currency: the one the caller names, else the one most rows

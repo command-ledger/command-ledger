@@ -32,9 +32,12 @@ a defect, however good it looks. Visual rules live in `DESIGN.md`.
     an empty account is 0 months of runway, not `---`. The balance shows its
     date and source, and a stale one lowers runway's confidence.
 11. **One currency per figure, never converted.** Every figure is in the
-   business currency chosen in Settings and carries its symbol. Transactions
-   in any other currency are listed in their own currency and counted in a
-   notice, never added in. Command Ledger's own prices are written "US$".
+   business currency, set by the first file or in Settings, and carries its
+   symbol. A file's currency is read from the file; one that does not state
+   it says how it was decided, and the founder is asked rather than a currency
+   being assumed. Transactions in any other currency are listed in their own
+   currency and counted in a notice, never added in. Command Ledger's own
+   prices are written "US$".
 
 ## Accessibility
 
