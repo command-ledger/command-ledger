@@ -19,7 +19,7 @@ const PLANS = {
     // No tax: the PayPal plan's tax was set to 0% on 2026-11-03. To add a tax,
     // set `tax:{ percent }` here together with the same rate in PayPal; every
     // price display then states it, and checkoutBlockReason() blocks a mismatch.
-    name:"Command Ledger", usd:1, annualUsd:990, interval:"MONTH", period:"per month",
+    name:"Command Ledger", usd:99, annualUsd:990, interval:"MONTH", period:"per month",
     tagline:"The system. Your numbers, read correctly, every week.",
     features:[
       "On-demand AI strategic brief",
