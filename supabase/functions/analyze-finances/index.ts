@@ -4,6 +4,7 @@ declare module "https://deno.land/std@0.168.0/http/server.ts" {
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts"
 import { createClient } from "jsr:@supabase/supabase-js@2"
+import { guardVerificationClaims, verificationPromptLine, VERIFICATION_RULE } from "../_shared/verification-brief.ts"
 
 declare const Deno: {
   env: {
@@ -141,6 +142,9 @@ serve(async (req: Request) => {
       // part), counted in the period's totals but never as a whole month,
       // and the label of the latest complete month.
       partialMonths, latestMonth,
+      // Whether the files behind these figures reconciled, and money in that
+      // nobody has identified, which is in no figure above.
+      dataVerification, unconfirmedIn,
     } = body
     // Renamed from trueFreeCash; a frontend deployed before the rename still
     // sends the old name for the same figure.
@@ -297,11 +301,15 @@ Rules:
 - Write every amount in the CURRENCY stated below, formatted exactly like the figures you are given. Never write a dollar sign unless that currency is USD, and never convert between currencies.
 - Profit After Reserves is a profit figure, not cash. Never call it cash, money in the bank, or money available to spend; the founder's cash is the Cash Balance line alone.
 - Anything under MONEY KEPT OUT OF REVENUE AND COSTS is neither revenue nor a cost. Never call a loan or the owner's own money income, and never call a transfer between the business's own accounts spending.
-- A month still in progress is not a full month. Never compare it with full months or read its lower totals as a decline; the monthly figures below are from complete months.`
+- A month still in progress is not a full month. Never compare it with full months or read its lower totals as a decline; the monthly figures below are from complete months.
+- ${VERIFICATION_RULE}
+- Money in marked as not confirmed is in no figure. Never call it revenue, and never assume what it is. While much of the money in is not confirmed, never state a loss, a runway or a risk level as settled: say they wait on confirming that money.`
 
     const userPrompt = `Here is the complete financial position of this business. Analyze it and tell the founder exactly what is happening and what to do:
 
 ${currencyLine}
+${verificationPromptLine(dataVerification)}
+${Number(unconfirmedIn) > 0 ? `MONEY IN NOT CONFIRMED: ${fmt(unconfirmedIn)} of money in has not been identified. It is left out of revenue and every other figure below.` : ""}
 REPORTING PERIOD: ${dataMonths} month(s) of data${Number(partialMonths) > 0 ? `, plus ${partialMonths} month(s) still in progress, counted in the period totals only` : ""}
 DATA CONFIDENCE: ${dataConfidence === "low" ? "Low — a single manually-entered snapshot, no transaction history" : dataConfidence === "medium" ? "Medium — real uploaded data, but under 3 months of history" : "High — real uploaded data with 3+ months of history"}
 ALLOCATION MODE: ${mode === "growth" ? "Aggressive (Growth)" : "Conservative (Safe)"}
@@ -463,6 +471,9 @@ Return the JSON object now.`
       recommendation!.confidenceReason =
         `${recommendation!.confidenceReason} (Capped from Critical — only 1 month of data; more history is needed to confirm a call that severe.)`
     }
+
+    // A prompt is a request. This holds whatever the model wrote.
+    recommendation = guardVerificationClaims(recommendation!, dataVerification?.status)
 
     return new Response(JSON.stringify({ recommendation }), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },

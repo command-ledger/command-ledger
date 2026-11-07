@@ -38,6 +38,14 @@ a defect, however good it looks. Visual rules live in `DESIGN.md`.
    being assumed. Transactions in any other currency are listed in their own
    currency and counted in a notice, never added in. Command Ledger's own
    prices are written "US$".
+12. **A file read is not a file proved.** Nothing is saved until the founder
+    confirms the review. A file with no balance to check against says NOT
+    RECONCILED wherever its figures appear, and no figure is ever called
+    bank-verified. A file that fails its balances cannot be saved, and its
+    figures are never adjusted to agree. Money in nobody has identified is
+    shown, and is not counted as revenue until someone decides. While much of
+    it is undecided, figures built on revenue show `---`, never an alarm: a gap
+    in the data is not a loss.
 
 ## Accessibility
 

@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo, Fragment } from "react";
 import { createClient } from "@supabase/supabase-js";
-import { fmt, pc, safe, parseAnyCSV, computeMetrics, runScenario, parseTransactions, computeDedupeHash, aggregateTransactionsByMonth, computeRevenueConcentration, detectRecurringObligations, computeForwardRunway, checkAffordability, detectMissedObligations, projectForwardCalendar, summarizeCalendarByWeek, computeDirective, getDirectiveMetricValue, describeDirectiveOutcome, checkoutBlockReason, computeConfidence, fmtCompact, filterTransactions, searchWorkspace, buildAlerts, buildReportCsv, SUPPORTED_CURRENCIES, isSupportedCurrency, currencySymbol, currencyName, partitionByCurrency, decodeTextFile, detectFileCurrency, resolveFileCurrency, buildRuleIndex, resolveKind, classificationKey, summarizeKinds, periodStartDate, effectiveCashBalance, monthLabel, isGenericCounterparty } from "./lib/financials.js";
+import { fmt, pc, safe, parseAnyCSV, verifyImport, NOT_RECONCILED_MESSAGE, importBatchFields, reviewRuleRows, batchVerification, summarizeVerification, verificationNotice, accountKey, detectAccountLabel, compareWithStored, workbookToText, computeMetrics, runScenario, parseTransactions, computeDedupeHash, aggregateTransactionsByMonth, computeRevenueConcentration, detectRecurringObligations, computeForwardRunway, checkAffordability, detectMissedObligations, projectForwardCalendar, summarizeCalendarByWeek, computeDirective, getDirectiveMetricValue, describeDirectiveOutcome, checkoutBlockReason, computeConfidence, fmtCompact, filterTransactions, searchWorkspace, buildAlerts, buildReportCsv, SUPPORTED_CURRENCIES, isSupportedCurrency, currencySymbol, currencyName, partitionByCurrency, decodeTextFile, detectFileCurrency, resolveFileCurrency, buildRuleIndex, resolveKind, classificationKey, summarizeKinds, periodStartDate, effectiveCashBalance, monthLabel, isGenericCounterparty } from "./lib/financials.js";
 
 const supabase = createClient(
   import.meta.env.VITE_SUPABASE_URL,
@@ -590,6 +590,13 @@ a{color:inherit;}
 .batch-list li{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:11px 0;border-bottom:1px solid var(--line);}
 .batch-list li:last-child{border-bottom:none;}
 .batch-name{font-size:14px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.import-review{display:flex;flex-direction:column;gap:14px;min-width:0;}
+.import-review-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;}
+.import-review-head .panel-title:focus{outline:none;}
+.import-review-sub{font-size:14.5px;font-weight:600;color:var(--text);margin:4px 0 6px;}
+.import-review-file{word-break:break-word;}
+.import-review-list{margin:8px 0 0;padding-left:18px;font-size:13.5px;color:var(--text-2);line-height:1.6;}
+.import-review-actions{display:flex;gap:10px;flex-wrap:wrap;}
 .batch-meta{font-family:var(--f-num);font-size:12px;color:var(--text-3);margin-top:3px;line-height:1.5;}
 .input-grid-4{grid-template-columns:repeat(4,minmax(0,1fr));}
 .details-summary{cursor:pointer;font-size:14.5px;color:var(--text-2);line-height:1.5;}
@@ -985,6 +992,22 @@ function CurrencyNotice({ cur, excluded, onReview }) {
   );
 }
 
+// Shown over every workspace page while the figures rest on data nobody has
+// proved, or on money in nobody has identified.
+function VerificationNotice({ info, unconfirmedIn, figuresOpen, cur, onReview }) {
+  const open = unconfirmedIn > 0;
+  if (info?.status !== "not_reconciled" && !open) return null;
+  return (
+    <div className="d-alert warn" role="status" style={{ justifyContent:"space-between", alignItems:"center", flexWrap:"wrap" }}>
+      <span>
+        {info?.status === "not_reconciled" && <><strong>{info.title}.</strong> {info.detail} </>}
+        {open && <>{fmt(unconfirmedIn, cur)} of money in is not counted as revenue until you confirm what it is.{figuresOpen ? " Until then, profit, runway and risk cannot be relied on." : ""}</>}
+      </span>
+      <button className="panel-link" onClick={onReview}>Review<Icon name="arrow" size={14}/></button>
+    </div>
+  );
+}
+
 // How numeric dates such as 05/03/2026 were read, for the upload message.
 function dateOrderNote(d) {
   if (!d?.numeric) return "";
@@ -1006,29 +1029,231 @@ function fileCurrencyNote({ how, basis }, code) {
   return "";
 }
 
+// To the cent, for the import review: a statement is checked against these.
+const fmtExact = (n, currency) => {
+  const v = Number(n) || 0;
+  try { return new Intl.NumberFormat(currency === "ZAR" ? "en-ZA" : "en-US", currency ? { style:"currency", currency, minimumFractionDigits:2, maximumFractionDigits:2 } : { minimumFractionDigits:2, maximumFractionDigits:2 }).format(v); }
+  catch { return `${currency || ""} ${v.toFixed(2)}`.trim(); }
+};
+
 // A form label with the business currency's symbol: "Cash balance (R)".
 const withSymbol = (label, cur) => cur ? `${label} (${currencySymbol(cur)})` : label;
 
-// Excel stores a date as a day count and shows it through a number format.
-// sheet_to_csv writes the standard short-date format as m/d/yy whatever the
-// author's locale, so 5 March and 3 May look alike. Date cells are written
-// out as YYYY-MM-DD instead, decoded from the day count itself so no time
-// zone can move them. Dates typed as text are left for the parser, which
-// works out their order from the whole column.
-function excelSheetToCsv(XLSX, ws) {
-  for (const addr of Object.keys(ws)) {
-    if (addr[0] === "!") continue;
-    const c = ws[addr];
-    if (c.t === "n" && c.z && XLSX.SSF.is_date(c.z)) {
-      const d = XLSX.SSF.parse_date_code(c.v);
-      if (d && d.y > 1900) c.w = `${d.y}-${String(d.m).padStart(2, "0")}-${String(d.d).padStart(2, "0")}`;
-    }
-  }
-  return XLSX.utils.sheet_to_csv(ws);
+// ─── IMPORT REVIEW ────────────────────────────────────────────
+// What a file was read as, shown before anything is stored. Nothing here
+// writes: only "Save this import" does, and a file that failed cannot reach it.
+// The founder is asked about the money that matters, never every transaction.
+const REVIEW_IN_KINDS = [["", "Not decided yet"], ["operating", "Revenue"], ["financing", "Owner money or a loan"], ["transfer", "Transfer between own accounts"], ["refund", "A refund"]];
+const REVIEW_OUT_KINDS = [["operating", "A cost"], ["financing", "Loan repayment or owner money"], ["transfer", "Transfer between own accounts"]];
+const RECONCILIATION_TAG = {
+  verified:       { level:"positive", label:"Reconciled" },
+  not_reconciled: { level:"warning",  label:"NOT RECONCILED" },
+  failed:         { level:"critical", label:"Failed" },
+};
+
+function ImportReview({ review, accounts, onCompare, onCurrency, onSave, onCancel, busy }) {
+  const { report, note, askCurrency } = review;
+  const [account, setAccount] = useState(review.accountGuess || (accounts.length === 1 ? accounts[0] : ""));
+  const [choices, setChoices] = useState({});
+  const [rest, setRest] = useState("");
+  const [match, setMatch] = useState(null);
+  const [matchErr, setMatchErr] = useState(false);
+  const headRef = useRef(null);
+  const accepted = report.importStatus === "accepted";
+  // Until the founder says, the amounts carry no symbol: a symbol is a claim.
+  const cur = askCurrency ? null : report.currency;
+  const label = account.trim();
+  const tag = RECONCILIATION_TAG[report.reconciliationStatus];
+
+  useEffect(() => { headRef.current?.focus(); }, []);
+  // What is already stored, for this account. Reading it changes nothing.
+  useEffect(() => {
+    setMatch(null); setMatchErr(false);
+    if (!report.canSave || !label) return;
+    let live = true;
+    // Waits for a pause in typing: each comparison reads every saved transaction.
+    const wait = setTimeout(() => {
+      onCompare(report.transactions, label)
+        .then(m => { if (live) setMatch(m); })
+        .catch(e => { console.error("Could not compare with saved transactions:", e); if (live) setMatchErr(true); });
+    }, 400);
+    return () => { live = false; clearTimeout(wait); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [report, label]);
+
+  const choiceOf = g => choices[g.key] ?? (g.needsDecision ? "" : g.kind);
+  const setChoice = (g, v) => setChoices(c => ({ ...c, [g.key]: v }));
+  const decided = [...report.largestMoneyIn, ...report.reviewOut].filter(g => { const v = choiceOf(g); return v && v !== g.kind; });
+  const restTotal = report.otherUnconfirmed.reduce((s, g) => s + g.total, 0);
+  const stillOpen = report.unconfirmedIn - (rest ? restTotal : 0) - report.largestMoneyIn.filter(g => g.needsDecision && choiceOf(g)).reduce((s, g) => s + g.total, 0);
+  const decisions = [...decided.map(g => ({ description: g.description, kind: choiceOf(g) })), ...(rest ? report.otherUnconfirmed.map(g => ({ description: g.description, kind: rest })) : [])];
+  const ready = report.canSave && !askCurrency && !!label && !!match && !busy;
+
+  return (
+    <div className="import-review">
+      <div className="import-review-head">
+        <h3 className="panel-title" ref={headRef} tabIndex={-1}>Review this file before saving</h3>
+        <SeverityTag level={tag.level} label={accepted ? tag.label : "Rejected"}/>
+      </div>
+
+      {!accepted && (
+        <div className="d-alert crit" role="alert" style={{ flexDirection:"column", gap:6 }}>
+          <strong>This file was not imported, and nothing was saved.</strong>
+          {report.rejections.map(r => <span key={r.code}>{r.message}</span>)}
+        </div>
+      )}
+
+      {accepted && report.reconciliationStatus === "failed" && (
+        <div className="d-alert crit" role="alert" style={{ flexDirection:"column", gap:6 }}>
+          <strong>This file failed its balance check, so it cannot be saved.</strong>
+          <span>Its figures have not been changed to make them agree. Check the file, or export it again.</span>
+          {report.discrepancies.slice(0, 5).map((d, i) => <span key={i}>{d.message}</span>)}
+          {report.discrepancies.length > 5 && <span>{(report.discrepancies.length - 5).toLocaleString()} more not shown.</span>}
+        </div>
+      )}
+
+      {accepted && report.reconciliationStatus === "not_reconciled" && (
+        <div className="d-alert warn" role="status" style={{ flexDirection:"column", gap:4 }}>
+          <strong>NOT RECONCILED</strong>
+          <span>{NOT_RECONCILED_MESSAGE}</span>
+        </div>
+      )}
+
+      {accepted && report.reconciliationStatus === "verified" && (
+        <div className="d-alert ok" role="status">Every balance in this file agrees with its transactions, to the cent. This checks the file against its own balances, not against your bank.</div>
+      )}
+
+      <dl className="kv">
+        <dt>File</dt><dd className="import-review-file">{report.fileName || "Untitled file"}</dd>
+        {report.formatLabel && <><dt>Detected format</dt><dd>{report.formatLabel}</dd></>}
+        <dt>Import status</dt><dd>{accepted ? "Interpreted" : "Rejected"}</dd>
+        <dt>Reconciliation status</dt><dd>{accepted ? tag.label : "Not attempted"}</dd>
+        {accepted && (
+          <>
+            <dt>Detected dates</dt><dd>{report.dateFrom} to {report.dateTo}</dd>
+            <dt>Transaction rows</dt><dd>{report.transactionRows.toLocaleString()}</dd>
+            <dt>Non-transaction rows left out</dt><dd>{report.excludedRows.toLocaleString()}</dd>
+            <dt>Money in</dt><dd>{fmtExact(report.moneyIn, cur)}</dd>
+            <dt>Money out</dt><dd>{fmtExact(report.moneyOut, cur)}</dd>
+            <dt>Net movement</dt><dd>{fmtExact(report.netMovement, cur)}</dd>
+            <dt>Currency</dt><dd>{askCurrency ? "Not stated in the file" : `${cur}${note?.how === "inferred" ? ", from the file's details" : ""}`}</dd>
+            {report.openingBalance !== null && <><dt>{report.openingDerived ? "Opening balance, worked out" : "Opening balance"}</dt><dd>{fmtExact(report.openingBalance, cur)}</dd></>}
+            {report.closingBalance !== null && <><dt>Closing balance</dt><dd>{fmtExact(report.closingBalance, cur)}</dd></>}
+          </>
+        )}
+      </dl>
+
+      {askCurrency && accepted && (
+        <div className="input-group" style={{ marginBottom:0 }}>
+          <label className="di-lbl" htmlFor="review-currency">This file does not state a currency. Which is it?</label>
+          <CurrencySelect id="review-currency" value="" autoLabel="Choose its currency" onChange={v => { if (v) onCurrency(v); }}/>
+        </div>
+      )}
+
+      {report.warnings.map((w, i) => <div key={i} className="d-alert info">{w}</div>)}
+
+      {report.excluded.length > 0 && (
+        <details>
+          <summary className="details-summary">{report.excluded.length.toLocaleString()} row{report.excluded.length === 1 ? " was" : "s were"} left out of the figures</summary>
+          <ul className="import-review-list">
+            {report.excluded.slice(0, 20).map((x, i) => <li key={i}>{x.reason}{x.label ? `: ${x.label}` : ""}</li>)}
+          </ul>
+        </details>
+      )}
+
+      {report.canSave && report.largestMoneyIn.length > 0 && (
+        <div>
+          <h4 className="import-review-sub">Largest money in</h4>
+          <p className="panel-copy">Check for owner money, loans or transfers. Money left as "Not decided yet" is stored, but not counted as revenue until you confirm it.</p>
+          <div className="tbl-wrap">
+            <table className="tbl">
+              <thead><tr><th scope="col">Description</th><th scope="col" className="num">Total</th><th scope="col">What is it?</th></tr></thead>
+              <tbody>
+                {report.largestMoneyIn.map(g => (
+                  <tr key={g.key}>
+                    <td>{g.description}{g.count > 1 ? <span className="muted"> · {g.count.toLocaleString()} payments</span> : null}</td>
+                    <td className="num">{fmtExact(g.total, cur)}</td>
+                    <td>
+                      <select className="di" aria-label={`What is ${g.description}?`} value={choiceOf(g)} onChange={e => setChoice(g, e.target.value)}>
+                        {REVIEW_IN_KINDS.filter(([v]) => v !== "" || g.needsDecision).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+                      </select>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {report.otherUnconfirmed.length > 0 && (
+            <div className="input-group" style={{ marginTop:10, marginBottom:0 }}>
+              <label className="di-lbl" htmlFor="review-rest">The other {report.otherUnconfirmed.length.toLocaleString()} unidentified descriptions, {fmtExact(restTotal, cur)} in total</label>
+              <select id="review-rest" className="di" value={rest} onChange={e => setRest(e.target.value)}>
+                <option value="">Not decided yet</option>
+                <option value="operating">All revenue</option>
+              </select>
+            </div>
+          )}
+          {stillOpen > 0.004 && <p className="panel-copy" style={{ marginTop:8 }}>{fmtExact(stillOpen, cur)} of money in is not yet confirmed. You can decide later under All transactions.</p>}
+        </div>
+      )}
+
+      {report.canSave && report.reviewOut.length > 0 && (
+        <div>
+          <h4 className="import-review-sub">Money out that may not be a cost</h4>
+          <div className="tbl-wrap">
+            <table className="tbl">
+              <thead><tr><th scope="col">Description</th><th scope="col" className="num">Total</th><th scope="col">What is it?</th></tr></thead>
+              <tbody>
+                {report.reviewOut.map(g => (
+                  <tr key={g.key}>
+                    <td>{g.description}</td>
+                    <td className="num">{fmtExact(g.total, cur)}</td>
+                    <td>
+                      <select className="di" aria-label={`What is ${g.description}?`} value={choiceOf(g)} onChange={e => setChoice(g, e.target.value)}>
+                        {REVIEW_OUT_KINDS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+                      </select>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {report.canSave && (
+        <div className="input-group" style={{ marginBottom:0 }}>
+          <label className="di-lbl" htmlFor="review-account">Which bank account is this file from?</label>
+          <input id="review-account" className="di" list="review-accounts" maxLength={120} placeholder="For example, Business cheque" value={account} onChange={e => setAccount(e.target.value)}/>
+          <datalist id="review-accounts">{accounts.map(a => <option key={a} value={a}/>)}</datalist>
+          <p className="panel-copy" style={{ marginTop:6 }}>The same fee on two accounts is two fees, so duplicates are matched within one account.</p>
+        </div>
+      )}
+
+      {report.canSave && match && (
+        <p className="panel-copy">
+          {match.newRows.toLocaleString()} new, {match.duplicates.toLocaleString()} already on file for this account.
+        </p>
+      )}
+      {report.canSave && match?.matchesOtherAccount > 0 && (
+        <div className="d-alert warn" role="status">{match.matchesOtherAccount.toLocaleString()} of these match transactions saved under another account. If this is the same account, choose that name, or they will be counted twice.</div>
+      )}
+      {matchErr && <div className="d-alert crit" role="alert">Your saved transactions could not be checked for duplicates, so this file cannot be saved yet. Try again.</div>}
+
+      <div className="import-review-actions">
+        {report.canSave && (
+          <button className="btn btn-primary btn-md" disabled={!ready} onClick={() => onSave({ report, accountLabel: label, decisions, source: review.source, note })}>
+            {busy ? "Saving..." : "Save this import"}
+          </button>
+        )}
+        <button className="btn btn-outline btn-md" disabled={busy} onClick={onCancel}>{report.canSave ? "Cancel" : "Choose another file"}</button>
+      </div>
+      {report.canSave && <p className="panel-copy">Nothing has been saved yet.</p>}
+    </div>
+  );
 }
 
 // ─── DATA UPLOAD ──────────────────────────────────────────────
-function DataUpload({ onDataLoaded, hasData, currency, rules }) {
+function DataUpload({ hasData, currency, rules, accounts, onCompare, onSave, busy }) {
   const [drag,    setDrag]    = useState(false);
   const [parsing, setParsing] = useState(false);
   const [err,     setErr]     = useState("");
@@ -1039,37 +1264,32 @@ function DataUpload({ onDataLoaded, hasData, currency, rules }) {
   const [fileCur, setFileCur] = useState("");
   // A file that states no currency, for an account with none yet, waits here
   // for one answer rather than being uploaded twice.
-  const [waiting, setWaiting] = useState(null); // null | { text, source, detected }
+  const [waiting, setWaiting] = useState(null); // null | { text, source, otherSheets }
   const [answer,  setAnswer]  = useState("");
+  // The file on the review screen. Nothing is stored until it is confirmed.
+  const [review,  setReview]  = useState(null);
   const fileRef = useRef(null);
 
-  const importFile = (text, source, code, note) => {
-    const result = parseAnyCSV(text, { currency: code, rules });
-    if (!result || result.rows.length === 0) {
-      setErr("No readable financial data found. Ensure the file has at minimum a Revenue or Amount column.");
-      return false;
-    }
+  const inspect = (text, source, code, note, otherSheets, askCurrency = false) => {
+    const report = verifyImport(text, { currency: code, fileName: source, rules, otherSheets });
     setErr(""); setWaiting(null); setAnswer("");
-    onDataLoaded(result.rows, source, result.detectedFields, text, code, note);
-    return true;
+    setReview({ report, text, source, note, otherSheets, askCurrency, accountGuess: detectAccountLabel(text) });
   };
 
-  const processCSVText = (text, source) => {
+  const processCSVText = (text, source, otherSheets = []) => {
     const detected = detectFileCurrency(text);
-    if (!detected) {
-      setErr("No readable financial data found. Ensure the file has at minimum a Revenue or Amount column.");
-      return false;
-    }
     const decision = resolveFileCurrency({ manual: fileCur, detected, business: currency });
     if (decision.unsupported) {
       setErr(`This file is in ${decision.unsupported}. Command Ledger reports in US dollars or rand and never converts, so it was not imported.`);
-      return false;
+      return;
     }
-    if (decision.ask) {
-      setErr(""); setAnswer(""); setWaiting({ text, source, detected });
-      return false;
-    }
-    return importFile(text, source, decision.currency, { how: decision.how, basis: detected.basis });
+    // A file that cannot be read gets its reasons, not a currency question.
+    const check = verifyImport(text, { currency: decision.currency || "", fileName: source, rules, otherSheets, skipCurrency: true });
+    if (check.importStatus === "rejected") { setErr(""); setWaiting(null); setReview({ report: check, text, source, note: {}, otherSheets, askCurrency: false, accountGuess: "" }); return; }
+    if (decision.ask) { setErr(""); setAnswer(""); setWaiting({ text, source, otherSheets }); return; }
+    // A file that states nothing is never assumed to be in the business
+    // currency: the review screen asks.
+    inspect(text, source, decision.currency, { how: decision.how, basis: detected.basis }, otherSheets, decision.how === "business");
   };
 
   const handleFile = async (file) => {
@@ -1084,7 +1304,8 @@ function DataUpload({ onDataLoaded, hasData, currency, rules }) {
         const XLSX = await import("xlsx");
         const buf = await file.arrayBuffer();
         const wb  = XLSX.read(buf, { type:"array", cellNF:true });
-        processCSVText(excelSheetToCsv(XLSX, wb.Sheets[wb.SheetNames[0]]), file.name);
+        const { text, otherSheets } = workbookToText(XLSX, wb);
+        processCSVText(text, file.name, otherSheets);
       } else {
         setErr("Only CSV, text and Excel (.xlsx, .xls) files are accepted.");
       }
@@ -1109,6 +1330,15 @@ function DataUpload({ onDataLoaded, hasData, currency, rules }) {
     setSyncing(false);
   };
 
+  if (review) {
+    return (
+      <ImportReview review={review} accounts={accounts} onCompare={onCompare} busy={busy}
+        onCurrency={code => inspect(review.text, review.source, code, { how:"chosen" }, review.otherSheets)}
+        onCancel={() => setReview(null)}
+        onSave={async args => { if (await onSave(args)) setReview(null); }}/>
+    );
+  }
+
   return (
     <div style={{ display:"flex", flexDirection:"column", gap:16 }}>
       <div className="input-group" style={{ marginBottom:0 }}>
@@ -1127,7 +1357,7 @@ function DataUpload({ onDataLoaded, hasData, currency, rules }) {
           <span>This file does not say what currency it is in, and nothing in it proves one. Which is it? Amounts are not changed either way.</span>
           <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
             <CurrencySelect id="file-currency-answer" ariaLabel="Currency of this file" value={answer} onChange={setAnswer}/>
-            <button className="btn btn-primary btn-md" disabled={!answer} onClick={() => importFile(waiting.text, waiting.source, answer, { how:"chosen" })}>Continue</button>
+            <button className="btn btn-primary btn-md" disabled={!answer} onClick={() => inspect(waiting.text, waiting.source, answer, { how:"chosen" }, waiting.otherSheets)}>Continue</button>
           </div>
         </div>
       )}
@@ -1141,24 +1371,13 @@ function DataUpload({ onDataLoaded, hasData, currency, rules }) {
         <input ref={fileRef} type="file" accept=".csv,.txt,.xlsx,.xls" style={{ display:"none" }} onChange={e => handleFile(e.target.files[0])}/>
         <div className="drop-zone-title">{parsing ? "Reading your file..." : "Drop your financial file here"}</div>
         <div className="drop-zone-sub">
-          Accepts Excel (.xlsx) or CSV from QuickBooks, Xero, Wave, or any spreadsheet.<br/>
-          Any column structure is automatically detected and mapped.
+          Accepts bank exports as CSV or Excel. Each file is checked, and you review it before anything is saved.<br/>
+          A file that cannot be read safely is refused with the reason.
         </div>
         {parsing && <div style={{ marginTop:16, display:"flex", justifyContent:"center" }}><span className="spinner"/></div>}
       </div>
 
-      <div className="g3" style={{ gap:10 }}>
-        {[
-          { name:"QuickBooks", hint:"Reports > Export to Excel or CSV" },
-          { name:"Xero",       hint:"Reports > Export as CSV" },
-          { name:"Wave",       hint:"Reports > Download CSV" },
-        ].map((a, i) => (
-          <div key={i} style={{ background:C.panel2, border:`1px solid ${C.line}`, padding:"12px 14px" }}>
-            <div style={{ fontSize:12, color:C.text, fontWeight:600, marginBottom:2 }}>{a.name}</div>
-            <div style={{ fontSize:10, color:C.text3, lineHeight:1.5 }}>{a.hint}</div>
-          </div>
-        ))}
-      </div>
+      <p className="panel-copy">Best results: a bank statement export with a Balance column, so every transaction can be checked to the cent. Accounting reports such as a Profit and Loss are not transaction files, and are refused.</p>
 
       <div style={{ background:C.panel2, border:`1px solid ${C.line}`, padding:"16px 18px" }}>
         <div className="di-lbl" style={{ marginBottom:10 }}>Live Google Sheets Sync</div>
@@ -1174,7 +1393,7 @@ function DataUpload({ onDataLoaded, hasData, currency, rules }) {
       {hasData && (
         <div className="upload-ok">
           <div style={{ width:8, height:8, borderRadius:"50%", background:C.positive, flexShrink:0 }}/>
-          <div className="upload-ok-txt">Data connected. Your dashboard is reading your real numbers.</div>
+          <div className="upload-ok-txt">Data connected. Your dashboard is reading your saved transactions.</div>
         </div>
       )}
     </div>
@@ -2063,8 +2282,6 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
   });
   const setMode = m => { setModeState(m); try { window.localStorage.setItem("cl.reserveMode", m); } catch { /* storage unavailable */ } };
 
-  const [data, setData] = useState(null);
-  const [dataSource, setDataSource]   = useState("");
   // Financial Memory Engine — persisted transaction history, read fresh on
   // every load and every period-filter change. Nothing here is computed
   // client-side and stored back; `history` is raw monthly aggregates only.
@@ -2131,7 +2348,15 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
   // Transactions and are counted in a notice; they are never added in, and
   // never converted.
   const ruleIndex = useMemo(() => buildRuleIndex(rules), [rules]);
-  const { included: baseTxns, excluded: excludedByCurrency } = useMemo(() => partitionByCurrency(txns, cur), [txns, cur]);
+  // Transactions from a file that went through the review. Their money in
+  // counts as revenue only once it is identified. A monthly summary's Revenue
+  // column already says what it is, and older uploads keep their first reading.
+  const reviewedBatches = useMemo(() => new Set(batches.filter(b => b.reconciliation_status && b.parser_mode !== "named").map(b => b.id)), [batches]);
+  const markedTxns = useMemo(() => txns.map(t => (reviewedBatches.has(t.source_batch_id) ? { ...t, reviewed:true } : t)), [txns, reviewedBatches]);
+  const { included: baseTxns, excluded: excludedByCurrency } = useMemo(() => partitionByCurrency(markedTxns, cur), [markedTxns, cur]);
+  // What the figures on screen rest on: only files that contribute to them.
+  const verification = useMemo(() => summarizeVerification(batches, baseTxns), [batches, baseTxns]);
+  const verificationInfo = verificationNotice(verification);
   const history = useMemo(() => aggregateTransactionsByMonth(baseTxns, { rules: ruleIndex, today: todayStr }), [baseTxns, ruleIndex, todayStr]);
   const concentrationData = useMemo(() => computeRevenueConcentration(baseTxns, ruleIndex), [baseTxns, ruleIndex]);
   // Ascending order, so the last row is the most recent real transaction:
@@ -2188,7 +2413,7 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
       // `dedupe_hash` so a rule set on one transaction finds it again.
       const cutoff = periodStartDate(periodFilter, new Date().toISOString().slice(0, 10));
       const list = await selectAll(() => {
-        let query = supabase.from("transactions").select("id, txn_date, amount, category, description, currency, dedupe_hash")
+        let query = supabase.from("transactions").select("id, txn_date, amount, category, description, currency, dedupe_hash, source_batch_id")
           .order("txn_date", { ascending: true }).order("id", { ascending: true });
         if (cutoff) query = query.gte("txn_date", cutoff);
         return query;
@@ -2366,13 +2591,21 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
     await loadHistory(); await loadBatches(); await loadObligations();
   };
 
-  const handleDataLoaded = async (parsedRows, source, cols, rawText, fileCurrency, currencyNote = {}) => {
+  // Bank accounts already named, offered again so one account keeps one name.
+  const accounts = useMemo(() => [...new Set(batches.map(b => b.account_label).filter(Boolean))], [batches]);
+  const loadStored = () => selectAll(() => supabase.from("transactions").select("dedupe_hash, txn_date, description, amount").order("id", { ascending: true }));
+  const compareFile = async (transactions, label) => compareWithStored(transactions, await loadStored(), accountKey(label));
+
+  // Saves a file the founder confirmed on the review screen, with its status.
+  // A file that failed its checks never reaches here: importBatchFields refuses
+  // it. Returns whether it was saved.
+  const saveImport = async ({ report, accountLabel, decisions = [], note = {} }) => {
     setUploadStatus(""); setUploadErr(""); setUploadBusy(true);
-    const fileCur = fileCurrency || cur;
+    const fileCur = report.currency || cur;
     if (!fileCur) {
       setUploadErr("Choose the currency this file is in, then upload it again.");
       setUploadBusy(false);
-      return;
+      return false;
     }
     // With nothing on file yet, the first file decides the business currency,
     // whatever was set before: no figures depend on the old one, so nothing
@@ -2392,42 +2625,37 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
       if (!(await saveBaseCurrency(fileCur))) {
         setUploadErr("Your business currency could not be saved, so the file was not uploaded. Try again.");
         setUploadBusy(false);
-        return;
+        return false;
       }
       base = fileCur;
     }
-    // The session-only figures may be shown only when they are in the
-    // business currency; a file in another currency is stored, not shown.
-    if (fileCur === base) { setData(parsedRows); setDataSource(source); }
     try {
-      const parsed = parseTransactions(rawText, { currency: fileCur });
-      if (!parsed || parsed.transactions.length === 0) {
-        setUploadErr("This file loaded for the current session, but no dated transactions could be added to your permanent history.");
-        setUploadBusy(false);
-        return;
-      }
-      const { transactions, mode: parserMode } = parsed;
+      const { transactions, parserMode, closingRecord: cb } = report;
       const dates = transactions.map(t => t.txn_date).sort();
-      // The file's own closing balance, when it is in this file's currency,
-      // is saved with the upload; runway uses the newest balance on file.
-      const cb = parsed.closingBalance && (!parsed.closingBalance.currency || parsed.closingBalance.currency === fileCur) ? parsed.closingBalance : null;
+      const account = accountKey(accountLabel);
+      // Checked again here, not trusted from the review screen: another tab
+      // may have saved rows since.
+      const { fresh } = await compareWithStored(transactions, await loadStored(), account);
 
       const { data: batch, error: batchErr } = await supabase.from("upload_batches").insert({
-        user_id: user.id, filename: source, row_count: transactions.length,
+        user_id: user.id, filename: report.fileName, row_count: transactions.length,
         period_start: dates[0], period_end: dates[dates.length - 1], parser_mode: parserMode, currency: fileCur,
-        closing_balance: cb ? cb.amount : null, closing_balance_on: cb ? cb.date : null,
+        closing_balance: cb && (!cb.currency || cb.currency === fileCur) ? cb.amount : null,
+        closing_balance_on: cb && (!cb.currency || cb.currency === fileCur) ? cb.date : null,
+        ...importBatchFields(report, accountLabel),
       }).select().single();
       if (batchErr) throw batchErr;
 
       // Only real columns go to the database. `occurrence` (a repeat of an
-      // identical row) exists to make the hash and must not be sent.
-      const hashed = await Promise.all(transactions.map(async t => ({
+      // identical row) and `reviewed` exist for the hash and the review, and
+      // must not be sent.
+      const hashed = await Promise.all(fresh.map(async t => ({
         txn_date: t.txn_date, description: t.description, amount: t.amount, category: t.category,
         counterparty: t.counterparty, currency: t.currency,
-        user_id: user.id, source_batch_id: batch.id, dedupe_hash: await computeDedupeHash(t),
+        user_id: user.id, source_batch_id: batch.id, dedupe_hash: await computeDedupeHash({ ...t, account }),
       })));
 
-      const { data: inserted, error: insertErr } = await supabase
+      const { data: inserted, error: insertErr } = hashed.length === 0 ? { data: [], error: null } : await supabase
         .from("transactions")
         .upsert(hashed, { onConflict: "user_id,dedupe_hash", ignoreDuplicates: true })
         .select("id");
@@ -2446,6 +2674,19 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
         .eq("id", batch.id);
       if (countErr) console.error("Failed to record upload counts:", countErr);
 
+      // What the founder decided on the review screen, as rules for every
+      // transaction described alike, now and in future uploads.
+      const { rows: ruleChoices, unsaved } = reviewRuleRows(decisions);
+      if (unsaved > 0) setActionErr(`The file was saved, but ${unsaved === 1 ? "one of your choices" : `${unsaved} of your choices`} could not be kept: either two choices disagreed about one description, or the description is only numbers. Set ${unsaved === 1 ? "it" : "them"} under All transactions.`);
+      if (ruleChoices.length > 0) {
+        const ruleRows = ruleChoices.map(r => ({ ...r, user_id: user.id, updated_at: new Date().toISOString() }));
+        const { error: ruleErr } = await supabase.from("transaction_rules").upsert(ruleRows, { onConflict: "user_id,scope,match_key" });
+        if (ruleErr) {
+          console.error("Failed to save review choices:", ruleErr);
+          setActionErr("The file was saved, but your choices about what its money is were not. Set them under All transactions.");
+        } else await loadRules();
+      }
+
       const otherCurrency = transactions.filter(t => t.currency !== base).length;
       const kinds = summarizeKinds(transactions.filter(t => t.currency === base), ruleIndex);
       const keptOut = [
@@ -2457,22 +2698,23 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
         : `Of this file's transactions, ${keptOut.length === 1 ? keptOut[0] : `${keptOut.slice(0, -1).join(", ")} and ${keptOut[keptOut.length - 1]}`}. ${kinds.refund.count && !kinds.financing.count && !kinds.transfer.count ? "Refunds are netted against revenue or costs" : "These are kept out of revenue and costs (refunds are netted against them)"}; check them under All transactions.`;
       setUploadStatus([
         `Added ${insertedCount} new transaction${insertedCount === 1 ? "" : "s"}. ${duplicateCount} already on file.`,
-        fileCurrencyNote(currencyNote, fileCur),
+        report.reconciliationStatus === "verified" ? "Every balance in this file agreed with its transactions." : "This file is NOT RECONCILED: nothing in it could check its transactions.",
+        fileCurrencyNote(note, fileCur),
         otherCurrency > 0 ? `${otherCurrency} ${otherCurrency === 1 ? "is" : "are"} in a currency other than ${base}, so ${otherCurrency === 1 ? "it is" : "they are"} stored but not added to your figures.` : "",
-        parsed.unreadable > 0 ? `${parsed.unreadable} amount${parsed.unreadable === 1 ? "" : "s"} could not be read as a number and ${parsed.unreadable === 1 ? "was" : "were"} skipped.` : "",
-        parsed.skippedDates > 0 ? `${parsed.skippedDates} row${parsed.skippedDates === 1 ? " had a date that could not be read and was" : "s had dates that could not be read and were"} skipped.` : "",
-        dateOrderNote(parsed.dateOrder),
         keptOutText,
         cb && fileCur === base ? `The file's closing balance, ${fmt(cb.amount, base)} on ${cb.date}, is saved. Runway uses the newest balance on file; on the same date, one you entered yourself comes first.` : "",
       ].filter(Boolean).join(" "));
-      await loadHistory(base);
       await loadBatches();
+      await loadHistory();
       await loadObligations(base);
+      setUploadBusy(false);
+      return true;
     } catch (e) {
       console.error("Failed to save transaction history:", e);
-      setUploadErr("Your file was read for this session, but saving it to your permanent history failed. The numbers are accurate for now; upload the file again to save them.");
+      setUploadErr("This file could not be saved, so nothing has changed. Try again.");
+      setUploadBusy(false);
+      return false;
     }
-    setUploadBusy(false);
   };
 
   const deleteBatch = async (batchId) => {
@@ -2482,10 +2724,10 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
   };
 
   // ── Metrics ──
-  // Persisted history is the source of truth once it exists; a fresh
-  // upload's session-only `data` is only shown as an optimistic bridge
-  // until loadHistory() catches up. Manual entry never touches either.
-  const rows = history.length > 0 ? history : (data && data.length > 0 ? data : null);
+  // Saved history is the only source of uploaded figures: a file counts once
+  // it has been reviewed and stored, with its status. Manual entry never
+  // touches it.
+  const rows = history.length > 0 ? history : null;
   const m = computeMetrics(
     rows, { mRev, mExp, mCash: 0, mCac, mLtv, mLeads, mClose }, mode,
     { lastTxnDate: history.length > 0 ? lastTxnDate : null, revenueConcentration: concentrationData, currency: cur,
@@ -2497,7 +2739,7 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
     concentration, concentrationReliable, breakEven, proj90, hasData, hasConversionData, cashFlowPositive,
     dataConfidence, growth, risk, trends, hasCashData, runwayConfidence, breakEvenConfidence, proj90Confidence,
     hiringCapacityConfidence, ltvcacConfidence, growthConfidence, seasonalPattern, historicalConfidence, founderNarrative,
-    avgFinOut, partialMonths, totFinIn, totFinOut, totTrIn, totTrOut, totRefIn, totRefOut,
+    avgFinOut, partialMonths, totFinIn, totFinOut, totTrIn, totTrOut, totRefIn, totRefOut, totUnconfirmedIn, figuresOpen,
   } = m;
   const metrics = { margin, vel, conv, sov, free, burnMonths, concentration, concentrationReliable, ltvcac, cashFlowPositive, n };
 
@@ -2511,7 +2753,7 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
   // project against.
   // Counted down from a positive balance only: an account already at or
   // below zero has no runway left to count, whatever the bills.
-  const forwardRunway = (hasCashData && activeCash > 0 && activeObligations.length > 0)
+  const forwardRunway = (hasCashData && activeCash > 0 && activeObligations.length > 0 && !figuresOpen)
     ? computeForwardRunway({ currentCash: activeCash, avgRev, avgExp, avgFinOut, obligations: activeObligations, fromDate: todayStr, horizonDays: 365 })
     : null;
   // Surfaced only when it tells the founder something average burn
@@ -2525,9 +2767,9 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
     const monthlyCost = Number(affordInput);
     setAffordAmount(monthlyCost > 0 ? monthlyCost : null);
   };
-  const affordResult = affordAmount
-    ? checkAffordability({ currentCash: activeCash, cashKnown: hasCashData, avgRev, avgExp, avgFinOut, obligations: activeObligations, monthlyCost: affordAmount, fromDate: todayStr, currency: cur })
-    : null;
+  const affordResult = !affordAmount ? null
+    : figuresOpen ? { affordable: false, pendingReview: true, message: "This cannot be answered yet, because much of your money in is not confirmed. Confirm it under All transactions, then check again." }
+    : checkAffordability({ currentCash: activeCash, cashKnown: hasCashData, avgRev, avgExp, avgFinOut, obligations: activeObligations, monthlyCost: affordAmount, fromDate: todayStr, currency: cur });
 
   const scenario = runScenario(
     { revenue: latest.revenue, expenses: latest.expenses, cash: activeCash, cac: activeCac, ltv: activeLtv, leads: 0, closures: 0,
@@ -2545,7 +2787,7 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
   // can never disagree.
   const currentDirective = hasData
     ? computeDirective({ margin, burnMonths, free, vel, conv, ltvcac, months: n, concentration: concentrationData, currency: cur,
-        runwayKnown: hasCashData, cashFlowPositive })
+        runwayKnown: hasCashData, cashFlowPositive, figuresOpen, unconfirmedIn: totUnconfirmedIn })
     : null;
 
   // Persist a directive only when it genuinely differs from the most
@@ -2653,6 +2895,10 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
           nonOperating: { financingIn: Math.round(totFinIn), financingOut: Math.round(totFinOut), transferIn: Math.round(totTrIn),
             transferOut: Math.round(totTrOut), refundsIn: Math.round(totRefIn), refundsOut: Math.round(totRefOut) },
           partialMonths,
+          // Whether the files behind these figures reconciled. The function
+          // uses this in its prompt and checks the reply against it.
+          dataVerification: verification,
+          unconfirmedIn: Math.round(totUnconfirmedIn),
           latestMonth: rows ? latest.month || null : null,
           // Real payer-based concentration — null when extraction confidence
           // is low, so the model never narrates a percentage the parser
@@ -2757,9 +3003,10 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
   const statusLine = !hasData
     ? (historyLoading ? "Loading your history" : "No data connected")
     : [
-        history.length > 0 ? `${(txns.length - excludedByCurrency.reduce((sum, e) => sum + e.count, 0)).toLocaleString()} transactions` : (dataSource || "Manual entry"),
+        history.length > 0 ? `${(txns.length - excludedByCurrency.reduce((sum, e) => sum + e.count, 0)).toLocaleString()} transactions` : "Manual entry",
         history.length > 0 ? periodLabel : null,
         `${capitalize(dataConfidence)} confidence`,
+        verificationInfo?.title,
       ].filter(Boolean).join(" · ");
 
   // With a known balance, runway is a number even at zero: an overdraft or an
@@ -2772,24 +3019,26 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
   const tiles = {
     revenue: { key:"revenue", lbl:"Monthly revenue", val:fmtCompact(latest.revenue, cur), title:fmt(latest.revenue, cur),
       sub:`${latest.month ? `${monthLabel(latest)}, ` : ""}${vel >= 0 ? "+" : ""}${pc(vel)} vs prior month`, col:C.text },
-    margin:  { key:"margin", lbl:"Profit margin", val:pc(margin), col: margin > 0 ? C.positive : C.danger,
-      sub:`${fmtCompact(totPro, cur)} net in period` },
-    free:    { key:"free", lbl:"Profit after reserves", val:fmtCompact(free, cur), title:fmt(free, cur), col: free >= 0 ? C.platinum : C.danger,
-      sub:"Profit less tax and safety reserves" },
+    margin:  { key:"margin", lbl:"Profit margin", val: figuresOpen ? "---" : pc(margin), col: figuresOpen ? C.text3 : margin > 0 ? C.positive : C.danger,
+      sub: figuresOpen ? "Confirm your money in first" : `${fmtCompact(totPro, cur)} net in period` },
+    free:    { key:"free", lbl:"Profit after reserves", val: figuresOpen ? "---" : fmtCompact(free, cur), title: figuresOpen ? undefined : fmt(free, cur), col: figuresOpen ? C.text3 : free >= 0 ? C.platinum : C.danger,
+      sub: figuresOpen ? "Confirm your money in first" : "Profit less tax and safety reserves" },
     runway:  { key:"runway", lbl:"Runway", val:runwayText, conf:runwayConfidence,
       col: cashFlowPositive || burnMonths >= 6 ? C.positive : burnMonths >= 3 ? C.warning : runwayText === "---" ? C.text3 : C.danger,
-      sub: cashFlowPositive ? (avgFinOut > 0 ? "Revenue covers costs and repayments" : "Revenue covers costs") : !runwayConfidence.shown ? "Add a cash balance to calculate"
+      sub: cashFlowPositive ? (avgFinOut > 0 ? "Revenue covers costs and repayments" : "Revenue covers costs") : !runwayConfidence.shown ? (figuresOpen ? "Confirm your money in first" : "Add a cash balance to calculate")
         : activeCash < 0 ? "Overdrawn" : burnMonths <= 0 ? "Cash does not cover a month of burn" : burnMonths >= 6 ? "Above the 6-month threshold" : burnMonths >= 3 ? "Build toward 6 months" : "Below 3 months" },
-    risk:    { key:"risk", lbl:"Risk score", val:risk.score.toFixed(0), unit:"/100",
-      col: risk.label === "Low" ? C.positive : risk.label === "Watch" ? C.platinum : risk.label === "Elevated" ? C.warning : C.danger,
-      sub:`${risk.label}. Weighted from runway, margin and trend` },
+    risk:    { key:"risk", lbl:"Risk score", val: figuresOpen ? "---" : risk.score.toFixed(0), unit: figuresOpen ? null : "/100",
+      col: figuresOpen ? C.text3 : risk.label === "Low" ? C.positive : risk.label === "Watch" ? C.platinum : risk.label === "Elevated" ? C.warning : C.danger,
+      sub: figuresOpen ? "Confirm your money in first" : `${risk.label}. Weighted from runway, margin and trend` },
     hiring:  { key:"hiring", lbl:"Hiring capacity", conf:hiringCapacityConfidence,
       val: !hiringCapacityConfidence.shown ? "---" : hiringCapacity > 0 ? fmtCompact(hiringCapacity, cur) : "None",
       unit: hiringCapacityConfidence.shown && hiringCapacity > 0 ? "/mo" : null, title: fmt(hiringCapacity, cur),
-      col: hiringCapacity > 0 ? C.positive : C.warning,
-      sub: hiringCapacity > 0 ? "Fully-loaded cost profit covers" : avgFinOut > 0 ? "Costs and repayments use up revenue" : "Costs exceed revenue on average" },
+      col: figuresOpen ? C.text3 : hiringCapacity > 0 ? C.positive : C.warning,
+      sub: figuresOpen ? "Confirm your money in first" : hiringCapacity > 0 ? "Fully-loaded cost profit covers" : avgFinOut > 0 ? "Costs and repayments use up revenue" : "Costs exceed revenue on average" },
   };
-  const hero = safe(free) < 0
+  const hero = figuresOpen
+    ? { ...tiles.revenue, lbl:"Confirmed monthly revenue", sev:"warning", sub:`${fmt(totUnconfirmedIn, cur)} more money in is not confirmed yet.` }
+    : safe(free) < 0
     ? { ...tiles.free, sev:"critical", sub:"A loss for the period: costs are higher than revenue. Act on this first." }
     : (!cashFlowPositive && runwayConfidence.shown && safe(burnMonths) < 3)
       ? { ...tiles.runway, sev:"critical", sub:"Below the 3-month danger line. Protect cash now." }
@@ -2800,6 +3049,7 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
 
   const reportSummary = [
     [latest.month ? `Latest month revenue, ${monthLabel(latest)}` : "Latest month revenue", fmt(latest.revenue, cur)],
+    ...(figuresOpen ? [["Figures incomplete", "Much of the money in is not confirmed, so profit, margin, runway and risk are not final"]] : []),
     ["Profit margin", pc(margin)],
     ["Net profit", fmt(totPro, cur)],
     ["Profit after reserves", fmt(free, cur)],
@@ -2810,24 +3060,25 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
     ["Break-even monthly revenue", breakEvenConfidence.shown && breakEven > 0 ? fmt(breakEven, cur) : "Not enough data"],
     ["90-day revenue projection", proj90Confidence.shown && proj90 > 0 ? fmt(proj90, cur) : "Not enough data"],
     ["Hiring capacity", hiringCapacityConfidence.shown ? (hiringCapacity > 0 ? `${fmt(hiringCapacity, cur)}/month` : "None from profit") : "Not enough data"],
-    ["Risk score", `${risk.score.toFixed(0)}/100 (${risk.label})`],
+    ["Risk score", figuresOpen ? "Not known yet" : `${risk.score.toFixed(0)}/100 (${risk.label})`],
     ["Growth score", `${growth.score.toFixed(0)}/100 (${growth.label})`],
     ["Largest client share", concentrationData?.shown ? pc(concentrationData.largestPct) : "Not enough data"],
     ["Data confidence", capitalize(dataConfidence)],
+    ...(totUnconfirmedIn > 0 ? [["Money in not yet confirmed, left out of revenue", fmt(totUnconfirmedIn, cur)]] : []),
     ["Reserve mode", mode === "safe" ? "Safe (30% tax, 20% safety)" : "Growth (25% tax, 10% safety)"],
   ];
 
   const ctx = {
     user, profile, plan, userName, onUpgrade, onBuyDiagnostic, onProfileChange, go, mode, setMode,
     cur, excludedByCurrency, saveBaseCurrency, relabelBatch,
-    rows, txns, history, historyLoading, batches, dataSource, statusLine, periodLabel, todayStr,
+    rows, txns: markedTxns, history, historyLoading, batches, statusLine, periodLabel, todayStr, verificationInfo,
     m, metrics, hero, supporting, tiles, runwayText, concentrationData, obligations, activeObligations, missedObligations, upcoming,
     forwardRunway, showForwardRunway, currentDirective, directives, directivesLoading, latestDirective, needsAcknowledgement,
     ackNote, setAckNote, acknowledgeDirective, setObligationActive,
     affordInput, setAffordInput, setAffordAmount, affordResult, checkAfford,
     scenario, scenarioRunway, scRevPct, setScRevPct, scExpPct, setScExpPct, scHire, setScHire, scCash, setScCash,
     manual: { mRev, setMRev, mExp, setMExp, mCac, setMCac, mLtv, setMLtv, mLeads, setMLeads, mClose, setMClose },
-    handleDataLoaded, uploadBusy, uploadStatus, uploadErr, deleteBatch,
+    saveImport, compareFile, accounts, uploadBusy, uploadStatus, uploadErr, deleteBatch,
     txQuery, setTxQuery, txDirection, setTxDirection, txKind, setTxKind, txLimit, setTxLimit,
     ruleIndex, saveKindRule, clearKindRule, cashBalance, saveCashBalance,
     aiRec, aiError, aiLoad, runAI, reportSummary,
@@ -2851,7 +3102,7 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
           <span className="brand-name app-brand-txt">Command Ledger</span>
         </a>
         <div className="app-crumb" aria-label="Breadcrumb">{groupLabel} <span aria-hidden="true">/</span> <b>{current.label}</b></div>
-        <HeaderSearch transactions={txns} onNavigate={go} onShowTransactions={showTransactions}
+        <HeaderSearch transactions={markedTxns} onNavigate={go} onShowTransactions={showTransactions}
           mobileOpen={mobileSearchOpen} onMobileClose={closeMobileSearch} inputRef={searchRef}/>
         <div className="hdr-tools">
           <button className="hdr-icon-btn hdr-search-toggle" aria-label="Search" onClick={() => setMobileSearchOpen(true)}><Icon name="search"/></button>
@@ -2880,6 +3131,7 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
         )}
         {!cur && <CurrencyPrompt onSave={saveBaseCurrency}/>}
         <CurrencyNotice cur={cur} excluded={excludedByCurrency} onReview={section === "transactions" ? null : () => go("transactions")}/>
+        <VerificationNotice info={verificationInfo} unconfirmedIn={totUnconfirmedIn} figuresOpen={figuresOpen} cur={cur} onReview={() => { setTxKind(totUnconfirmedIn > 0 ? "unconfirmed" : "all"); setTxLimit(100); go("transactions"); }}/>
         {section === "dashboard"    && <DashboardHome ctx={ctx}/>}
         {section === "transactions" && <TransactionsSection ctx={ctx}/>}
         {section === "financials"   && <FinancialsSection ctx={ctx}/>}
@@ -2903,7 +3155,7 @@ function DashboardHome({ ctx }) {
   const { m, hero, supporting, go, mode, setMode, statusLine, historyLoading, rows, concentrationData,
     currentDirective, needsAcknowledgement, missedObligations, showForwardRunway, forwardRunway, upcoming,
     directives, plan, onUpgrade, onBuyDiagnostic, growth, growthConfidence, risk, trends, seasonalPattern } = ctx;
-  const { hasData, dataConfidence, cashFlowPositive, burnMonths } = m;
+  const { hasData, dataConfidence, cashFlowPositive, burnMonths, figuresOpen } = m;
 
   if (!hasData) {
     return (
@@ -2972,10 +3224,12 @@ function DashboardHome({ ctx }) {
               <Ring score={growth.score} size={76} sw={5}/>
               <div><div className="card-lbl">Growth</div><div className="traj-lbl">{growth.label}</div></div>
             </div>
-            <div className="traj-cell">
-              <Ring score={100 - risk.score} size={76} sw={5}/>
-              <div><div className="card-lbl">Safety</div><div className="traj-lbl">{risk.label} risk</div></div>
-            </div>
+            {!figuresOpen && (
+              <div className="traj-cell">
+                <Ring score={100 - risk.score} size={76} sw={5}/>
+                <div><div className="card-lbl">Safety</div><div className="traj-lbl">{risk.label} risk</div></div>
+              </div>
+            )}
           </div>
           <div className="traj-note">
             {growth.seasonallyAdjusted && seasonalPattern
@@ -3075,7 +3329,8 @@ const KIND_HELP = {
   financing: "Not revenue or a cost, so profit and margin leave it out. Money going out, a repayment or money the owner takes, still counts toward burn and runway. If a repayment includes interest you want counted as a cost, keep it as a cost.",
   refund: "Money returned. A refund you pay reduces revenue; one you receive reduces costs.",
 };
-const kindLabel = (kind, amount) => kind === "transfer" ? "Own transfer"
+const kindLabel = (kind, amount) => kind === "unconfirmed" ? "Not confirmed"
+  : kind === "transfer" ? "Own transfer"
   : kind === "financing" ? "Loan or owner money"
   : kind === "refund" ? (amount > 0 ? "Refund received" : "Refund paid")
   : amount > 0 ? "Revenue" : "Cost";
@@ -3087,7 +3342,7 @@ function KindEditor({ txn, kind, source, txns, onSave, onReset, onClose }) {
   const canSingle = !!txn.dedupe_hash;
   const canSimilar = !!key;
   const alike = useMemo(() => key ? txns.filter(t => classificationKey(t.description) === key).length : 0, [key, txns]);
-  const [draft, setDraft] = useState(kind);
+  const [draft, setDraft] = useState(kind === "unconfirmed" ? "operating" : kind);
   // Every transaction like it, unless the description is too generic to
   // say anything ("EFT", "Cash deposit"): then only this one.
   const [scope, setScope] = useState(canSimilar && (!canSingle || !isGenericCounterparty(key)) ? "similar" : "single");
@@ -3162,7 +3417,7 @@ function CashBalancePanel({ cur, cashBalance, profile, onSave, todayStr, cashFlo
           <p className="panel-copy">
             {cashBalance.source === "entered"
               ? `Entered by you, true on ${cashBalance.on}.`
-              : `The closing balance of ${cashBalance.filename || "an uploaded file"} on ${cashBalance.on}. That is one account: if the business has others, enter the total below.`}
+              : `The closing balance of ${cashBalance.filename || "an uploaded file"} on ${cashBalance.on}${cashBalance.verified ? ", proved by that file's own balances" : ""}. That is one account: if the business has others, enter the total below.`}
             {cashBalance.amount < 0 ? (cashFlowPositive ? " The account is overdrawn." : " The account is overdrawn, so runway is 0 months.") : ""}
             {days > 45 ? ` It is ${days} days old, so runway is less certain until you update it.` : ""}
           </p>
@@ -3190,7 +3445,7 @@ function CashBalancePanel({ cur, cashBalance, profile, onSave, todayStr, cashFlo
 }
 
 function TransactionsSection({ ctx }) {
-  const { txns, history, historyLoading, batches, handleDataLoaded, uploadBusy, uploadStatus, uploadErr, deleteBatch,
+  const { txns, history, historyLoading, batches, saveImport, compareFile, accounts, uploadBusy, uploadStatus, uploadErr, deleteBatch,
     txQuery, setTxQuery, txDirection, setTxDirection, txKind, setTxKind, txLimit, setTxLimit, periodLabel, manual, go, m, cur, relabelBatch,
     ruleIndex, saveKindRule, clearKindRule, cashBalance, saveCashBalance, profile, todayStr } = ctx;
   const [editing, setEditing] = useState(null);
@@ -3226,7 +3481,7 @@ function TransactionsSection({ ctx }) {
 
       <div className="row row-21">
         <Panel title="Upload a file or sync a sheet">
-          <DataUpload hasData={m.hasData} onDataLoaded={handleDataLoaded} currency={cur} rules={ruleIndex}/>
+          <DataUpload hasData={m.hasData} currency={cur} rules={ruleIndex} accounts={accounts} onCompare={compareFile} onSave={saveImport} busy={uploadBusy}/>
           {uploadBusy && (
             <div className="busy-line"><span className="spinner"/>Saving to your transaction history...</div>
           )}
@@ -3250,7 +3505,12 @@ function TransactionsSection({ ctx }) {
                     <div className="batch-name">{b.filename || "Untitled upload"}</div>
                     <div className="batch-meta">
                       {new Date(b.uploaded_at).toLocaleDateString()} · {b.period_start} to {b.period_end} · {b.inserted_count ?? "pending"} added, {b.duplicate_count ?? "pending"} duplicate
+                      {b.account_label ? ` · ${b.account_label}` : ""}
                       {b.currency !== cur && cur ? " · not in your figures" : ""}
+                    </div>
+                    <div style={{ marginTop:6 }}>
+                      <SeverityTag {...RECONCILIATION_TAG[batchVerification(b)]}/>
+                      {!b.reconciliation_status && <span className="batch-meta"> Uploaded before files were checked</span>}
                     </div>
                   </div>
                   <CurrencySelect compact ariaLabel={`Currency of ${b.filename || "this upload"}`} value={b.currency}
@@ -3271,7 +3531,7 @@ function TransactionsSection({ ctx }) {
       <CashBalancePanel cur={cur} cashBalance={cashBalance} profile={profile} onSave={saveCashBalance} todayStr={todayStr} cashFlowPositive={m.cashFlowPositive}/>
 
       <Panel title="All transactions">
-        <p className="panel-copy" style={{ marginBottom:12 }}>Each transaction counts as revenue or a cost unless its description shows it is a loan or the owner's own money, a transfer between your own accounts, or a refund. Those are kept out of revenue and costs. Use Change on any row to correct one.</p>
+        <p className="panel-copy" style={{ marginBottom:12 }}>Each transaction counts as revenue or a cost unless its description shows it is a loan or the owner's own money, a transfer between your own accounts, or a refund. Those are kept out of revenue and costs. Money in that could not be identified is not counted until you confirm it. Use Change on any row to correct one.</p>
         <div className="tx-tools">
           <input className="di" type="search" placeholder="Filter by description, category, date or amount" aria-label="Filter transactions"
             value={txQuery} onChange={e => { setTxQuery(e.target.value); setTxLimit(100); }} style={{ flex:"1 1 260px" }}/>
@@ -3286,6 +3546,7 @@ function TransactionsSection({ ctx }) {
             <option value="financing">Loans and owner money</option>
             <option value="transfer">Own transfers</option>
             <option value="refund">Refunds</option>
+            <option value="unconfirmed">Not confirmed</option>
           </select>
           <div className="tx-sum">
             {filtered.length.toLocaleString()} shown · <span style={{ color:C.positive }}>{fmt(totIn, cur)} in</span> · <span>{fmt(totOut, cur)} out</span>
@@ -3577,13 +3838,13 @@ function AdvisorSection({ ctx }) {
 // downloadable as CSV or printed to PDF from the browser.
 function ReportsSection({ ctx }) {
   const { cur } = ctx;
-  const { m, rows, reportSummary, periodLabel, todayStr, profile, userName, plan, statusLine, go } = ctx;
+  const { m, rows, reportSummary, periodLabel, todayStr, profile, userName, plan, statusLine, go, verificationInfo } = ctx;
   if (!m.hasData) return <><PageHead title="Reports" meta={statusLine}/><EmptyData go={go}/></>;
 
   const monthly = rows || [];
   const totals = monthly.reduce((a, r) => ({ rev:a.rev + (r.revenue || 0), exp:a.exp + (r.expenses || 0) }), { rev:0, exp:0 });
   const downloadCsv = () => {
-    const csv = buildReportCsv({ periodLabel, generatedAt: todayStr, rows: monthly, summary: reportSummary, currency: cur });
+    const csv = buildReportCsv({ periodLabel, generatedAt: todayStr, rows: monthly, summary: reportSummary, currency: cur, verification: verificationInfo });
     const url = URL.createObjectURL(new Blob([csv], { type:"text/csv;charset=utf-8" }));
     const a = document.createElement("a");
     a.href = url; a.download = `command-ledger-summary-${todayStr}.csv`;
@@ -3606,6 +3867,7 @@ function ReportsSection({ ctx }) {
           </div>
           <div className="page-meta">Command Ledger</div>
         </div>
+        {verificationInfo && <p className="panel-copy" style={{ marginTop:10 }}><strong>{verificationInfo.title}.</strong> {verificationInfo.detail}</p>}
         <div className="row row-12" style={{ marginTop:16 }}>
           <div>
             <h2 className="panel-title" style={{ marginBottom:10 }}>Key metrics</h2>
@@ -3728,6 +3990,7 @@ function ForecastsSection({ ctx }) {
           <div className="big-num">{m.hasCashData && m.activeCash <= 0 ? "0 mo" : !forwardRunway ? "---" : forwardRunway.crossesZero ? `${forwardRunway.monthsUntilCross} mo` : "12+ mo"}</div>
           <p className="panel-copy">
             {m.hasCashData && m.activeCash <= 0 ? "Your cash balance is already at or below zero, so there is no cash to count down against your bills."
+              : m.figuresOpen ? "Confirm your money in first."
               : !forwardRunway ? "Needs a cash balance and at least one detected recurring obligation."
               : forwardRunway.crossesZero ? `Cash reaches zero around ${forwardRunway.crossDate}, counting recurring bills on their real dates.`
               : "Cash holds for the next 12 months against your recurring bills on their real dates."}
@@ -3783,7 +4046,7 @@ function ForecastsSection({ ctx }) {
               value={affordInput} onChange={e => { setAffordInput(e.target.value); setAffordAmount(null); }} onKeyDown={e => e.key === "Enter" && checkAfford()}/>
             <button className="btn btn-primary btn-md" onClick={checkAfford}>Check</button>
           </div>
-          {affordResult && <div className={`d-alert ${affordResult.affordable ? "ok" : "crit"}`} style={{ marginTop:12 }}>{affordResult.message}</div>}
+          {affordResult && <div className={`d-alert ${affordResult.pendingReview ? "warn" : affordResult.affordable ? "ok" : "crit"}`} style={{ marginTop:12 }}>{affordResult.message}</div>}
           <p className="panel-copy" style={{ marginTop:10 }}>Tested over 12 months against your cash and recurring bills on their real dates.{hiringCapacity > 0 ? ` Your average profit alone covers up to ${fmt(hiringCapacity, cur)}/month.` : ""}</p>
         </Panel>
 
@@ -3802,7 +4065,7 @@ function ForecastsSection({ ctx }) {
               </div>
             ))}
           </div>
-          <div className="kpi4" style={{ gap:12 }}>
+          {m.figuresOpen ? <p className="panel-copy">Scenarios start from your latest revenue, so they wait until your money in is confirmed.</p> : <div className="kpi4" style={{ gap:12 }}>
             {[
               { lbl:"Margin", before:pc(scenario.before.margin), after:pc(scenario.after.margin), better: scenario.after.margin >= scenario.before.margin },
               { lbl:"Profit after reserves", before:fmt(scenario.before.free, cur), after:fmt(scenario.after.free, cur), better: scenario.after.free >= scenario.before.free },
@@ -3816,7 +4079,7 @@ function ForecastsSection({ ctx }) {
                 <div className="scenario-after" style={{ color: row.better ? C.positive : C.danger }}>→ {row.after}</div>
               </div>
             ))}
-          </div>
+          </div>}
           <p className="panel-copy" style={{ marginTop:10 }}>Nothing here is saved. It reruns your real calculation engine on a hypothetical month.</p>
         </Panel>
       </div>
@@ -4292,9 +4555,14 @@ function HeroDemo() {
     if (!file) return;
     if (!/\.csv$/i.test(file.name)) { setErr("Choose a .csv export from your bank or accounting software."); return; }
     try {
-      const parsed = parseAnyCSV(decodeTextFile(await file.arrayBuffer()));
-      if (!parsed || parsed.rows.length === 0) { setErr("No revenue or expense columns were found in that file."); return; }
-      setErr(""); setOwn({ rows: parsed.rows, label: file.name, currency: parsed.currency });
+      // The same checks as a real upload: a file that cannot be read safely
+      // shows its reason, never figures.
+      const report = verifyImport(decodeTextFile(await file.arrayBuffer()), { fileName: file.name, skipCurrency: true });
+      if (report.importStatus !== "accepted") { setErr(report.rejections[0]?.message || "That file could not be read."); return; }
+      if (!report.canSave) { setErr(report.discrepancies[0]?.message || "That file failed its balance check."); return; }
+      const fileRows = aggregateTransactionsByMonth(report.transactions.filter(t => !report.currency || !t.currency || t.currency === report.currency));
+      if (report.closingRecord) Object.assign(fileRows[fileRows.length - 1], { cash: report.closingRecord.amount, cashKnown: true });
+      setErr(""); setOwn({ rows: fileRows, label: file.name, currency: report.currency, status: report.reconciliationStatus, unconfirmedIn: report.unconfirmedIn });
     } catch { setErr("That file could not be read."); }
   };
   const rows = own ? own.rows : SAMPLE.rows;
@@ -4328,7 +4596,7 @@ function HeroDemo() {
         </div>
       </div>
       <div className="mk-demo-foot">
-        <span>{own ? "Computed from your file in this browser tab. Nothing was uploaded." : "Computed live by the Command Ledger engine from three months of sample transactions."}</span>
+        <span>{own ? `Computed from your file in this browser tab. Nothing was uploaded.${own.status === "not_reconciled" ? " NOT RECONCILED: this file has no balances to check it against." : ""}${own.unconfirmedIn > 0 ? ` ${fmt(own.unconfirmedIn, own.currency)} of money in could not be identified, so it is not counted as revenue.` : ""}` : "Computed live by the Command Ledger engine from three months of sample transactions."}</span>
         <span>
           <input type="file" id="mk-demo-file" accept=".csv" className="sr-only" onChange={e => handleFile(e.target.files[0])}/>
           {own ? <button className="btn-link" onClick={() => setOwn(null)}>Back to the sample</button>
@@ -4349,7 +4617,7 @@ const MK_FAQ = [
   ["Who should use it?",
     "Founders and owners of businesses with steady revenue who have outgrown a spreadsheet. Agencies, consultancies, SaaS and e-commerce businesses are typical. It is most useful once you have three or more months of transactions to analyse."],
   ["What financial data can I upload?",
-    "CSV or Excel files (.csv, .xlsx, .xls) exported from your bank, QuickBooks, Xero or Wave, or any spreadsheet with dates and amounts. You can also sync a Google Sheet published as CSV. Columns are detected automatically, and uploading an overlapping file again does not create duplicates."],
+    "CSV or Excel files (.csv, .xlsx, .xls) exported from your bank, or any spreadsheet with dates and signed amounts. You can also pull in a Google Sheet published as CSV. Each file is checked and you review it before it is saved. A file with a Balance column is checked to the cent, and one without is marked Not Reconciled. Files that cannot be read safely, such as accounting reports and card statements, are refused with the reason."],
   ["How does Command Ledger calculate financial metrics?",
     "Every metric comes from a published formula applied to your transactions. Runway is your cash balance divided by average monthly net burn. Profit after reserves is net profit less a reserve for tax and a safety buffer. Loans, owner money and transfers between your own accounts are kept out of revenue and costs. Each figure shows how confident it is, based on how much recent data stands behind it, and a figure without enough data is shown as missing rather than as zero."],
   ["Is my financial information secure?",

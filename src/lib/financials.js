@@ -85,18 +85,18 @@ export function effectiveCashBalance({ profile, batches, baseCurrency }) {
   const found = [];
   const entered = finiteOrNull(profile?.cash_balance);
   if (entered !== null && profile.cash_balance_on && profile.cash_balance_currency === baseCurrency) {
-    found.push({ amount: entered, on: String(profile.cash_balance_on).slice(0, 10), source: "entered", filename: null, rank: 1, at: "" });
+    found.push({ amount: entered, on: String(profile.cash_balance_on).slice(0, 10), source: "entered", filename: null, rank: 1, at: "", verified: false });
   }
   (batches || []).forEach(b => {
     const closing = finiteOrNull(b?.closing_balance);
     if (closing !== null && b.closing_balance_on && b.currency === baseCurrency) {
-      found.push({ amount: closing, on: String(b.closing_balance_on).slice(0, 10), source: "upload", filename: b.filename || null, rank: 0, at: String(b.uploaded_at || "") });
+      found.push({ amount: closing, on: String(b.closing_balance_on).slice(0, 10), source: "upload", filename: b.filename || null, rank: 0, at: String(b.uploaded_at || ""), verified: b.reconciliation_status === "verified" });
     }
   });
   if (found.length === 0) return null;
   found.sort((a, b) => b.on.localeCompare(a.on) || b.rank - a.rank || b.at.localeCompare(a.at));
-  const { amount, on, source, filename } = found[0];
-  return { amount, on, source, filename, currency: baseCurrency };
+  const { amount, on, source, filename, verified } = found[0];
+  return { amount, on, source, filename, currency: baseCurrency, ...(verified ? { verified } : {}) };
 }
 
 // Splits stored transactions into those in the base currency, which every
@@ -125,14 +125,19 @@ const EXPENSE_CATEGORIES = {
   rent:      ["rent","lease","property","office","premises","landlord"],
   marketing: ["facebook","google ads","instagram","advertising","marketing","ads","tiktok","media buy","promotion","campaign"],
   utilities: ["electricity","water","internet","vodacom","mtn","telkom","cell","airtime","wifi"],
-  software:  ["subscription","saas","software","app","license","adobe","microsoft","slack","zoom","aws","hosting"],
+  software:  ["subscription","saas","software","app store","license","adobe","microsoft","slack","zoom","aws","hosting"],
   banking:   ["bank fee","service fee","transaction fee","monthly fee","admin fee","charge"],
   cogs:      ["supplier","stock","inventory","cost of goods","materials","printing","shipping","courier","delivery"],
   tax:       ["sars","vat","tax","paye","uif","sdl"],
 };
 
+// Checked first: "Transaction Fee Headoffice" contains "office", which filed a
+// real statement's 46 bank fees under rent.
+const BANK_FEE_WORDS = /\b(transaction|bank|service|monthly|admin|account)\s+(fee|fees|charge|charges)\b/i;
+
 export const detectExpenseCategory = (description) => {
   if (!description) return "other";
+  if (BANK_FEE_WORDS.test(description)) return "banking";
   const d = description.toLowerCase();
   for (const [cat, keywords] of Object.entries(EXPENSE_CATEGORIES)) {
     if (keywords.some(k => d.includes(k))) return cat;
@@ -214,6 +219,23 @@ export function classifyTransaction(description) {
   return "operating";
 }
 
+// Money in from a file that went through the import review counts as revenue
+// only when its description says so, or the founder does. A name alone proves
+// nothing: "EFT from K Ndlovu" may be a client, the owner or a lender, and a
+// R300,000 owner top-up read as revenue nearly trebled hiring capacity. Until
+// someone decides, it is `unconfirmed`: counted in no figure, and shown.
+// Files uploaded before the review existed keep the older reading.
+// Only words a customer payment carries. Words a bank prints on any incoming
+// row prove nothing: Absa puts "Settlement" on every PayShap line, and treating
+// that as revenue counted 83% of a real statement's money in, whoever sent it.
+const REVENUE_WORDS = /\b(invoice|invoices|inv|client|clients|customer|customers|sale|sales|revenue|income|turnover|takings|merchant|subscription|subscriptions|retainer)\b/;
+export function looksLikeRevenue(description) {
+  const d = normalizeDescription(description);
+  // A processor's name alone proves nothing: "Takealot" on its own may be a
+  // purchase. A payout from one is customers' money arriving.
+  return REVENUE_WORDS.test(d) || (isAggregatorCounterparty(d) && PAYOUT_WORDS.test(d));
+}
+
 // A rule for "every transaction like this one" matches the description with
 // its digits removed, so "Loan repayment 0123" and "LOAN REPAYMENT #0456"
 // share one rule. A description of digits only has no key, so only a rule
@@ -254,7 +276,9 @@ export function resolveKind(txn, rules) {
     const similar = key ? index.similar.get(key) : undefined;
     if (similar) return { kind: similar, source: "similar" };
   }
-  return { kind: classifyTransaction(txn?.description), source: "auto" };
+  const kind = classifyTransaction(txn?.description);
+  if (kind === "operating" && txn?.reviewed && Number(txn.amount) > 0 && !looksLikeRevenue(txn.description)) return { kind: "unconfirmed", source: "auto" };
+  return { kind, source: "auto" };
 }
 
 export const transactionKind = (txn, rules) => resolveKind(txn, rules).kind;
@@ -264,7 +288,8 @@ export const transactionKind = (txn, rules) => resolveKind(txn, rules).kind;
 export function summarizeKinds(transactions, rules) {
   const index = asRuleIndex(rules);
   const out = {};
-  TRANSACTION_KINDS.forEach(k => { out[k] = { count: 0, moneyIn: 0, moneyOut: 0 }; });
+  const kinds = [...TRANSACTION_KINDS, "unconfirmed"];
+  kinds.forEach(k => { out[k] = { count: 0, moneyIn: 0, moneyOut: 0 }; });
   (transactions || []).forEach(t => {
     const amt = Number(t.amount) || 0;
     if (!amt) return;
@@ -272,7 +297,7 @@ export function summarizeKinds(transactions, rules) {
     s.count++;
     if (amt > 0) s.moneyIn += amt; else s.moneyOut -= amt;
   });
-  TRANSACTION_KINDS.forEach(k => {
+  kinds.forEach(k => {
     out[k].moneyIn = Math.round(out[k].moneyIn * 100) / 100;
     out[k].moneyOut = Math.round(out[k].moneyOut * 100) / 100;
   });
@@ -1201,6 +1226,7 @@ const HEADER_ROLES = {
   debit:       ["debit", "debits", "debit amount", "money out", "paid out", "withdrawal", "withdrawals", "payment", "payments", "out", "dr", "outflow", "spent", "charges"],
   credit:      ["credit", "credits", "credit amount", "money in", "paid in", "deposit", "deposits", "in", "cr", "inflow", "received", "receipts"],
   balance:     ["balance", "running balance", "closing balance", "available balance", "ledger balance", "current balance", "account balance"],
+  fee:         ["fee", "fees", "fee amount", "bank fee", "bank fees", "service fee", "service fees", "transaction fee", "transaction fees", "bank charges", "service charges"],
   revenue:     ["revenue", "income", "sales", "turnover", "gross sales", "total income", "total revenue", "receipts earned"],
   expense:     ["expenses", "expense", "costs", "cost", "total expenses", "total expense", "expenditure", "overheads", "total costs"],
   currency:    CURRENCY_HEADERS,
@@ -1230,6 +1256,35 @@ function mapColumns(rawHeaders) {
     if (idx !== -1) { roles[role] = idx; used.add(idx); }
   }
   return roles;
+}
+
+// Rows that describe the statement rather than a movement of money. Counting
+// them added an opening balance of R100,000 to revenue. "Total" must be the
+// whole label, so a payee such as Total Energies stays a transaction.
+// "Bal" is how real statements print it: Absa's first row is "Bal Brought
+// Forward", and missing that refused a valid 266-transaction statement.
+const OPENING_ROW = /^(?:(?:opening|beginning|starting)\s+(?:account\s+|statement\s+)?(?:balance|bal\b)|(?:balance|bal\.?)\s+(?:brought|b\/?f\b)|brought\s+(?:forward|down)\b)/i;
+const CLOSING_ROW = /^(?:(?:closing|ending|final|statement)\s+(?:account\s+|statement\s+)?(?:balance|bal\b)|(?:balance|bal\.?)\s+(?:carried|c\/?f\b)|carried\s+(?:forward|down)\b)/i;
+const TOTAL_ROW = /^(?:(?:sub\s*)?totals?|grand\s+total|total\s+(?:debits?|credits?|money\s+in|money\s+out|in|out|fees|charges|transactions|payments|deposits|withdrawals)|net\s+(?:movement|change))\s*:?$/i;
+function summaryRowKind(label) {
+  const s = String(label ?? "").trim();
+  if (OPENING_ROW.test(s)) return "opening";
+  if (CLOSING_ROW.test(s)) return "closing";
+  if (TOTAL_ROW.test(s)) return "total";
+  return null;
+}
+// A card payment the bank lists before it clears. It has no balance, it may
+// never post, and it comes back under another description when it does, so
+// counting it now would count it twice.
+const PENDING_ROW = /^(?:\(\s*pending\s*\)|pending\s*[:-])/i;
+// The balance a summary row states, from the first money column that has one.
+function summaryValue(row, cols, readAmount) {
+  for (const c of cols) {
+    if (c === -1 || String(row[c] ?? "").trim() === "") continue;
+    const a = readAmount(row, c);
+    if (a.ok) return Math.round(a.value * 100) / 100;
+  }
+  return null;
 }
 
 const hasMoneyColumns = r => r.amount !== undefined || (r.debit !== undefined && r.credit !== undefined) || (r.revenue !== undefined && r.expense !== undefined);
@@ -1327,7 +1382,12 @@ export function parseMonthValue(value) {
 // separate events. Each repeat carries its position (`occurrence`), so its
 // duplicate-upload hash differs from the first while a re-upload of the
 // same file still matches row for row.
-export const parseTransactions = (text, options = {}) => {
+//
+// `options.feesIncluded`: a Fee column is already inside the money-out column,
+// so it adds no transaction. `options.debitIsMoneyIn`: the file is a ledger
+// view of a bank account, where Debit is money in. verifyImport() sets these
+// only when the file's own running balance proves them.
+function readStatement(text, options = {}) {
   const source = String(text ?? "").replace(/^﻿/, "");
   const lines = source.split(/\r?\n/).filter(l => l.trim() !== "").slice(0, MAX_HEADER_SCAN + 30);
   if (lines.length < 2) return null;
@@ -1335,6 +1395,7 @@ export const parseTransactions = (text, options = {}) => {
   const header = findHeaderRow(allRows);
   if (!header) return null;
   const { roles } = header;
+  const headerRow = allRows[header.index];
   const dataRows = allRows.slice(header.index + 1);
   const col = role => roles[role] ?? -1;
 
@@ -1367,6 +1428,13 @@ export const parseTransactions = (text, options = {}) => {
   const transactions = [];
   const seen = {};
   let skippedDates = 0;
+  // What became of every row, for verifyImport(). `row` counts data rows.
+  const rowLog = [];
+  const log = (i, kind, detail = {}) => rowLog.push({ row: i + 1, kind, ...detail });
+  const splitSigns = { credit: { neg: false, pos: false }, debit: { neg: false, pos: false } };
+  // A second date column (posting beside transaction date) can be the one a
+  // running balance follows.
+  const otherDateCol = headerRow.findIndex((h, i) => i !== roles.date && /\bdate\b/.test(normalizeHeader(h)));
   const datedRows = []; // [rowIndex, date] for the closing balance
   const push = (txnDate, description, amount, currency) => {
     const rounded = Math.round(amount * 100) / 100;
@@ -1385,27 +1453,68 @@ export const parseTransactions = (text, options = {}) => {
 
   dataRows.forEach((row, i) => {
     if (row.every(c => c === "")) return;
+    if (headerRow.every((h, c) => normalizeHeader(row[c]) === normalizeHeader(h))) { log(i, "heading", { label: "Repeated heading" }); return; }
     const rawDesc = roles.description !== undefined ? (row[roles.description] || "") : "";
+    const label = rawDesc || row.find(c => /[a-z]/i.test(c)) || "";
+    const summary = summaryRowKind(label);
+    if (summary) { log(i, summary, { label, value: summaryValue(row, [col("balance"), col("amount"), col("credit"), col("debit")], readAmount) }); return; }
+    if (PENDING_ROW.test(label)) { log(i, "pending", { label }); return; }
     const currency = rowDeclaredCurrency(row, col("currency"), amountCols) || options.currency || null;
-    let parts;
+    const unreadableBefore = unreadable;
+    let parts, moneyCols, bothSides = false;
     if (mode === "named") {
+      moneyCols = [col("revenue"), col("expense")];
       const revenue = Math.abs(toNum(row, col("revenue")));
       const expenses = Math.abs(toNum(row, col("expense")));
       parts = [[revenue, rawDesc || "Revenue"], [-expenses, rawDesc || "Expenses"]];
     } else if (mode === "split") {
-      parts = [[Math.abs(toNum(row, col("credit"))) - Math.abs(toNum(row, col("debit"))), rawDesc || "Transaction"]];
+      moneyCols = [col("credit"), col("debit")];
+      const creditCell = toNum(row, col("credit")), debitCell = toNum(row, col("debit"));
+      [["credit", creditCell], ["debit", debitCell]].forEach(([side, v]) => { if (v > 0) splitSigns[side].pos = true; if (v < 0) splitSigns[side].neg = true; });
+      const credit = Math.abs(creditCell), debit = Math.abs(debitCell);
+      bothSides = credit !== 0 && debit !== 0;
+      parts = [[options.debitIsMoneyIn ? debit - credit : credit - debit, rawDesc || "Transaction"]];
     } else {
+      moneyCols = [col("amount")];
       parts = [[withDirection(toNum(row, col("amount")), row, col("direction")), rawDesc || "Transaction"]];
     }
+    // A fee in a column of its own is real money out. Its own record keeps it
+    // visible, and its description marks it as a cost of banking.
+    const fee = col("fee") === -1 ? 0 : Math.abs(toNum(row, col("fee")));
+    if (fee !== 0 && !options.feesIncluded) parts.push([-fee, `${rawDesc || "Transaction"} (bank fee)`]);
     parts = parts.filter(([amount]) => amount !== 0);
-    if (parts.length === 0) return;
+    const badAmount = unreadable > unreadableBefore;
+    const rawDate = String(row[col("date")] ?? "").trim();
     const txnDate = dateOf(row[col("date")]);
-    if (!txnDate) { skippedDates++; return; } // no reliable date: can't place it in the timeline honestly
+    if (parts.length === 0) {
+      const blank = [...moneyCols, col("fee")].every(c => c === -1 || String(row[c] ?? "").trim() === "");
+      log(i, badAmount ? "bad_amount" : !blank ? "zero" : rawDate ? "no_amount" : "note", {
+        label, date: txnDate, rawDate, bothSides,
+        hasBalance: roles.balance !== undefined && String(row[roles.balance] ?? "").trim() !== "",
+      });
+      return;
+    }
+    if (!txnDate) { skippedDates++; log(i, "no_date", { label, rawDate }); return; } // no reliable date: can't place it in the timeline honestly
     datedRows.push([i, txnDate, currency]);
     parts.forEach(([amount, description]) => push(txnDate, description, amount, currency));
+    const balanceCell = roles.balance === undefined ? "" : String(row[roles.balance] ?? "").trim();
+    const balance = balanceCell === "" ? null : readAmount(row, roles.balance);
+    log(i, "transaction", {
+      date: txnDate, otherDate: otherDateCol === -1 ? null : parseDateValue(row[otherDateCol], dateOrder.order),
+      description: rawDesc || "Transaction", badAmount, bothSides,
+      amount: Math.round(parts.reduce((s, [a]) => s + a, 0) * 100) / 100,
+      balance: balance?.ok ? Math.round(balance.value * 100) / 100 : null,
+      directionStated: col("direction") !== -1 && directionSign(row[col("direction")]) !== 0,
+    });
   });
 
-  if (transactions.length === 0) return null;
+  // Banks list events that moved no money, such as a declined card attempt,
+  // with no amount and no balance. A running balance proves it: had money
+  // moved, the next balance would not follow. With no balance to prove it, the
+  // row stays a missing amount.
+  if (rowLog.some(r => r.kind === "transaction" && r.balance !== null)) {
+    rowLog.forEach(r => { if (r.kind === "no_amount" && !r.hasBalance) r.kind = "no_money"; });
+  }
 
   // The balance after the most recent transaction. Exports run newest first
   // or oldest first; on the last day, the final balance is the first such
@@ -1426,7 +1535,15 @@ export const parseTransactions = (text, options = {}) => {
     transactions, mode, unreadable, skippedDates, closingBalance,
     dateOrder: { ...dateOrder, monthOnly, numeric: dateValues.some(v => NUMERIC_DATE.test(String(v ?? "").trim())) },
     columns: Object.keys(roles),
+    roles, rowLog, headerRow, preamble: allRows.slice(0, header.index), splitSigns,
   };
+}
+
+// The transactions in a file, or null when it holds none it can read.
+// verifyImport() below decides whether they can be trusted.
+export const parseTransactions = (text, options = {}) => {
+  const read = readStatement(text, options);
+  return read && read.transactions.length > 0 ? read : null;
 };
 
 // ─── WHICH CURRENCY A FILE IS IN ─────────────────────────────────
@@ -1576,6 +1693,474 @@ export const parseAnyCSV = (text, options = {}) => {
   };
 };
 
+// ─── VERIFIED IMPORTS ───────────────────────────────────────────
+// A file that was read is not a file that is right. Reading used to be the
+// only test, so a card export, an unsigned list or an opening-balance row
+// became confident wrong figures with no warning. Every upload now passes
+// through verifyImport() and the founder sees the result before anything is
+// saved. Two separate answers come back:
+//
+//   importStatus          accepted   the file's structure and direction of
+//                                    money are understood
+//                         rejected   they are not, and `rejections` says why
+//   reconciliationStatus  verified   its balances prove every transaction
+//                         not_reconciled   read safely, but nothing proves it
+//                         failed     it could not be read, or a balance failed
+//
+// `verified` only ever means the file's own balances agree with its own
+// transactions, to the cent. It does not mean a bank confirmed anything, and
+// no figure is ever adjusted to make it agree. A failed file cannot be saved.
+export const NOT_RECONCILED_MESSAGE = "Command Ledger has interpreted this file, but it has not verified the transactions against a bank running balance. Figures are based on the uploaded transaction data.";
+
+const FORMAT_LABELS = {
+  signed_amount: "Signed amount column",
+  direction_column: "Amount with a Dr/Cr column",
+  debit_credit: "Separate debit and credit columns",
+  money_in_out: "Separate money in and money out columns",
+  monthly_summary: "Monthly revenue and expenses",
+};
+const EXCLUDED_REASONS = {
+  heading: "Repeated heading", opening: "Opening balance row", closing: "Closing balance row",
+  total: "Total row", zero: "Zero amount", note: "No date or amount",
+  no_money: "No money moved", pending: "Pending, not yet cleared",
+};
+const cents = v => Math.round(Number(v) * 100);
+const round2 = v => Math.round(Number(v) * 100) / 100;
+const plural = (n, one, many) => `${n.toLocaleString("en-US")} ${n === 1 ? one : many}`;
+
+// Words that belong to a card statement or an accounting ledger, read only from
+// the file's headings and the lines above them: "Credit card payment" in a
+// bank statement's descriptions is ordinary. On a card export a positive amount
+// is a purchase, and in a ledger Debit means money into the bank.
+const CARD_FILE_WORDS = /\b(credit card|card number|card no|card member|cardmember|card statement|credit limit|minimum (?:payment|amount) due|available credit)\b/i;
+const CARD_PAYMENT_ROW = /\bpayment\b.*\bthank\s*you\b|\bthank\s*you\b.*\bpayment\b|\bautopay\b|\bautomatic payment\b/i;
+const LEDGER_WORDS = /\b(general ledger|trial balance|journal|account transactions|nominal ledger|chart of accounts|account code)\b/i;
+const LEDGER_HEADERS = new Set(["source", "account code", "account name", "journal", "split"]);
+// Words that say money left, seen on a positive amount.
+const MONEY_OUT_WORDS = /\b(pos purchase|card purchase|purchase|debit order|atm withdrawal|cash withdrawal|withdrawal|bank charges?|service fee|monthly fee|account fee)\b/i;
+// Money out that may be a transfer, a card settlement or borrowing, not a cost.
+const REVIEW_OUT_WORDS = /\b(transfer|transfers|trf|tfr|xfer|credit card|card payment|instalment|installment|finance|drawing|drawings|overdraft|facility)\b/;
+
+// Two columns that could each be the amount: picking one would be a guess.
+function columnConflict(headerRow, roles) {
+  const names = headerRow.map(normalizeHeader);
+  const taken = new Set([roles.fee, roles.balance, roles.debit, roles.credit]);
+  const amountLike = headerRow.filter((_, i) => !taken.has(i) && (HEADER_ROLES.amount.includes(names[i]) || /\bamount\b/.test(names[i])));
+  if (amountLike.length > 1) return `The columns ${amountLike.map(h => `"${h}"`).join(" and ")} could each be the amount, so this file cannot be read safely. Export it with one amount column.`;
+  if (roles.amount !== undefined && (roles.debit !== undefined || roles.credit !== undefined)) {
+    return "This file has an amount column and debit or credit columns, so it is not clear which to read. Export it with one or the other.";
+  }
+  if (roles.amount !== undefined && roles.revenue !== undefined && roles.expense !== undefined) {
+    return "This file has an amount column and revenue and expense columns, so it is not clear which to read.";
+  }
+  return null;
+}
+
+// Why no table could be found: the first failure a founder can act on.
+function explainNoTable(source) {
+  const lines = source.split(/\r?\n/).filter(l => l.trim() !== "").slice(0, MAX_HEADER_SCAN + 30);
+  const seen = tokenize(source, detectDelimiter(lines)).slice(0, MAX_HEADER_SCAN).map(mapColumns);
+  if (seen.some(r => r.date !== undefined && hasMoneyColumns(r))) return ["no_transactions", "This file has column headings but no transactions."];
+  if (seen.some(hasMoneyColumns)) return ["missing_date", "No date column was found. Every transaction needs a date."];
+  if (seen.some(r => r.date !== undefined)) return ["missing_amount", "No amount column was found. A file needs an amount column, or separate money in and money out columns."];
+  return ["no_columns", "No date and amount columns were found. Check this is a transaction export, not a report or summary."];
+}
+
+// Opening and closing balances the file states, in its rows or above the table.
+function statedBalances(read) {
+  const found = { opening: null, closing: null };
+  read.preamble.forEach(row => {
+    const m = row.join(" ").match(/\b(opening|closing)\s+balance\b[^\d(-]*(.+)$/i);
+    if (!m) return;
+    const a = parseAmount(m[2].trim(), detectDecimalStyle([m[2].trim()]));
+    if (a.ok) found[m[1].toLowerCase()] = round2(a.value);
+  });
+  read.rowLog.forEach(r => {
+    if ((r.kind === "opening" || r.kind === "closing") && r.value !== null) found[r.kind] = r.value;
+  });
+  return found;
+}
+
+function discrepancy(type, r, fields, message) {
+  return { type, row: r?.row ?? null, date: r?.date ?? null, description: r?.description ?? null, amount: r?.amount ?? null, ...fields, message };
+}
+
+// Walks balances in time order: expected = previous balance + amount, to the
+// cent. After a mismatch the file's own figure carries on, so one wrong balance
+// is reported where it happened rather than on every row after it.
+function walkBalances(seq, stated) {
+  const out = [];
+  const first = seq[0];
+  const opening = stated.opening !== null ? stated.opening : (cents(first.balance) - cents(first.amount)) / 100;
+  let previous = cents(opening);
+  seq.forEach(r => {
+    const expected = previous + cents(r.amount);
+    const actual = cents(r.balance);
+    if (expected !== actual) {
+      out.push(discrepancy("balance", r, { expected: expected / 100, stated: actual / 100, difference: (actual - expected) / 100 },
+        `On ${r.date}, "${r.description}" of ${round2(r.amount).toFixed(2)} should leave a balance of ${(expected / 100).toFixed(2)}, but the file says ${(actual / 100).toFixed(2)}.`));
+    }
+    previous = actual;
+  });
+  if (stated.closing !== null && cents(stated.closing) !== previous) {
+    out.push(discrepancy("closing_balance", null, { expected: previous / 100, stated: stated.closing, difference: round2(stated.closing - previous / 100) },
+      `The last transaction leaves a balance of ${(previous / 100).toFixed(2)}, but the file states a closing balance of ${Number(stated.closing).toFixed(2)}.`));
+  }
+  return { discrepancies: out, opening, closing: previous / 100 };
+}
+
+// { status: "verified" | "failed" | "none", ... }. "none" means the file holds
+// nothing to check against, which is not a failure.
+function reconcileStatement(read) {
+  const tx = read.rowLog.filter(r => r.kind === "transaction");
+  const stated = statedBalances(read);
+  const hasRunning = tx.some(r => r.balance !== null);
+  if (!hasRunning) {
+    if (stated.opening === null || stated.closing === null) return { status: "none", opening: stated.opening, closing: stated.closing, discrepancies: [], derivedOpening: false };
+    const expected = cents(stated.opening) + tx.reduce((s, r) => s + cents(r.amount), 0);
+    if (expected === cents(stated.closing)) return { status: "verified", opening: stated.opening, closing: stated.closing, discrepancies: [], derivedOpening: false };
+    return { status: "failed", opening: stated.opening, closing: stated.closing, derivedOpening: false, discrepancies: [
+      discrepancy("closing_balance", null, { expected: expected / 100, stated: stated.closing, difference: round2(stated.closing - expected / 100) },
+        `The opening balance plus these transactions comes to ${(expected / 100).toFixed(2)}, but the file states a closing balance of ${Number(stated.closing).toFixed(2)}.`),
+    ] };
+  }
+  const missing = tx.filter(r => r.balance === null);
+  if (missing.length > 0) {
+    return { status: "failed", opening: stated.opening, closing: stated.closing, derivedOpening: false,
+      discrepancies: missing.map(r => discrepancy("missing_balance", r, {}, `On ${r.date}, "${r.description}" has no balance, so the running balance cannot be followed past it.`)) };
+  }
+  // One transaction with nothing before it proves nothing: its opening balance
+  // would be worked out from the same row it is meant to check.
+  if (tx.length < 2 && stated.opening === null && stated.closing === null) return { status: "none", opening: null, closing: null, discrepancies: [], derivedOpening: false };
+  const inOrder = list => list.every((d, i) => i === 0 || d >= list[i - 1]) || list.every((d, i) => i === 0 || d <= list[i - 1]);
+  const usable = tx.every(r => r.otherDate) && !inOrder(tx.map(r => r.date)) && inOrder(tx.map(r => r.otherDate));
+  const dates = tx.map(r => (usable ? r.otherDate : r.date));
+  const ascending = dates.every((d, i) => i === 0 || d >= dates[i - 1]);
+  const descending = dates.every((d, i) => i === 0 || d <= dates[i - 1]);
+  if (!ascending && !descending) {
+    const firstTurn = tx.findIndex((r, i) => i > 1 && Math.sign(r.date.localeCompare(tx[i - 1].date)) !== 0
+      && Math.sign(r.date.localeCompare(tx[i - 1].date)) !== Math.sign(tx[1].date.localeCompare(tx[0].date)));
+    const at = tx[firstTurn > 0 ? firstTurn : tx.length - 1];
+    return { status: "failed", opening: stated.opening, closing: stated.closing, derivedOpening: false,
+      discrepancies: [discrepancy("order", at, {}, `The transactions are out of date order at ${at.date}, "${at.description}", so the running balance cannot be followed.`)] };
+  }
+  // Oldest first or newest first, as the dates say. A file all on one day is
+  // tried both ways. Rows are never re-sorted any other way.
+  const orders = ascending && descending ? [tx, [...tx].reverse()] : ascending ? [tx] : [[...tx].reverse()];
+  const results = orders.map(seq => walkBalances(seq, stated));
+  const best = results.find(r => r.discrepancies.length === 0) || results[0];
+  return { status: best.discrepancies.length === 0 ? "verified" : "failed", opening: best.opening, closing: best.closing, discrepancies: best.discrepancies, derivedOpening: stated.opening === null };
+}
+
+function formatOf(read) {
+  if (read.mode === "named") return "monthly_summary";
+  if (read.mode === "bank") return read.rowLog.some(r => r.directionStated) ? "direction_column" : "signed_amount";
+  const label = `${read.headerRow[read.roles.debit] ?? ""} ${read.headerRow[read.roles.credit] ?? ""}`;
+  return /debit|credit|\bdr\b|\bcr\b/i.test(label) ? "debit_credit" : "money_in_out";
+}
+
+// The money worth a founder's attention, grouped by what it is called, so one
+// choice covers every payment described alike.
+function groupMoney(transactions, rules, keep) {
+  const groups = new Map();
+  transactions.forEach(t => {
+    if (!keep(t)) return;
+    const key = classificationKey(t.description) || String(t.description);
+    const g = groups.get(key) || { key, description: t.description, total: 0, count: 0, kind: transactionKind(t, rules) };
+    g.total = round2(g.total + Math.abs(t.amount));
+    g.count++;
+    groups.set(key, g);
+  });
+  return [...groups.values()].sort((a, b) => b.total - a.total);
+}
+
+function emptyReport(fileName) {
+  return {
+    fileName, format: null, formatLabel: null, currency: null,
+    importStatus: "rejected", reconciliationStatus: "failed", canSave: false,
+    rejections: [], warnings: [], discrepancies: [], excluded: [], excludedRows: 0,
+    transactions: [], transactionRows: 0, moneyIn: 0, moneyOut: 0, netMovement: 0, otherCurrencyRows: 0,
+    dateFrom: null, dateTo: null, openingBalance: null, openingDerived: false, closingBalance: null, closingRecord: null,
+    largestMoneyIn: [], otherUnconfirmed: [], reviewOut: [], unconfirmedIn: 0, dateOrder: null, parserMode: null,
+  };
+}
+
+// `options`: currency (what the founder or the file settled on), fileName,
+// otherSheets (sheets of a workbook that were not read), rules (the founder's
+// rule index), skipCurrency (the public demo, which saves nothing).
+export function verifyImport(text, options = {}) {
+  const { fileName = "", rules = null, otherSheets = [], skipCurrency = false } = options;
+  const report = emptyReport(fileName);
+  const reject = (code, message) => report.rejections.push({ code, message });
+  const source = String(text ?? "").replace(/^﻿/, "");
+  if (!source.trim()) { reject("empty_file", "This file is empty."); return report; }
+
+  const detected = options.currency ? null : detectFileCurrency(source);
+  const currency = options.currency || detected?.currency || null;
+  let read = readStatement(source, { currency });
+  if (!read) { reject(...explainNoTable(source)); return report; }
+
+  const conflict = columnConflict(read.headerRow, read.roles);
+  if (conflict) { reject("ambiguous_columns", conflict); return report; }
+
+  const rowsOf = kind => read.rowLog.filter(r => r.kind === kind);
+  const example = label => `"${label || "a row"}"`;
+  const noDate = rowsOf("no_date"), noAmount = rowsOf("no_amount");
+  if (noDate.length > 0) reject("missing_date", `${plural(noDate.length, "row has", "rows have")} an amount but no date that can be read, such as ${example(noDate[0].label)}. A date cannot be guessed, so fix the file and upload it again.`);
+  if (noAmount.length > 0) reject("missing_amount", `${plural(noAmount.length, "row has", "rows have")} a date but no amount, such as ${example(noAmount[0].label)} on ${noAmount[0].date || noAmount[0].rawDate}.`);
+  const unreadable = [...rowsOf("bad_amount"), ...rowsOf("transaction").filter(r => r.badAmount)];
+  if (unreadable.length > 0) reject("unreadable_amount", `${plural(unreadable.length, "amount", "amounts")} could not be read as a number, such as on ${example(unreadable[0].label || unreadable[0].description)}.`);
+
+  const tx = rowsOf("transaction");
+  if (tx.length === 0 && report.rejections.length === 0) reject("no_transactions", "This file holds only headings and summary rows. No transactions were found.");
+  if (read.rowLog.some(r => r.bothSides)) reject("both_sides", "A row has both a debit and a credit, as a journal entry does. This file cannot be read as money in and money out.");
+
+  const { resolved, conflicting, numeric, monthOnly } = read.dateOrder;
+  if (numeric && !monthOnly && (conflicting || !resolved)) {
+    reject("date_order_unknown", conflicting
+      ? "Some dates put the day first and others the month first, so the months cannot be trusted. Export the dates as YYYY-MM-DD and upload the file again."
+      : "Every date in this file could be read day first or month first, so the months cannot be trusted. Export the dates as YYYY-MM-DD and upload the file again.");
+  }
+  report.dateOrder = read.dateOrder;
+
+  const headingText = [...read.preamble.map(r => r.join(" ")), read.headerRow.join(" ")].join(" ");
+  if (CARD_FILE_WORDS.test(headingText) || tx.some(r => r.amount < 0 && CARD_PAYMENT_ROW.test(r.description))) {
+    reject("card_statement", "This looks like a credit card statement. On a card, a positive amount is a purchase, so it cannot be read as money in. Card statements are not supported yet.");
+  }
+
+  report.format = formatOf(read);
+  report.formatLabel = FORMAT_LABELS[report.format];
+  report.parserMode = read.mode;
+  const hasRunning = tx.some(r => r.balance !== null);
+
+  if (read.mode === "bank") {
+    const stated = tx.filter(r => r.directionStated).length;
+    if (stated > 0 && tx.some(r => !r.directionStated && r.amount > 0)) {
+      reject("direction_unknown", "The direction column does not say which way the money moved on every row, and an unsigned amount cannot be guessed.");
+    } else if (stated === 0 && tx.length > 0 && !tx.some(r => r.amount < 0) && !hasRunning) {
+      reject("direction_unknown", "Every amount is positive and nothing in the file says which are money in and which are money out. Export it with signed amounts, or with separate money in and money out columns.");
+    }
+    if (report.format === "signed_amount" && !hasRunning) {
+      const positives = tx.filter(r => r.amount > 0 && classifyTransaction(r.description) !== "refund");
+      const against = positives.filter(r => MONEY_OUT_WORDS.test(r.description));
+      if (against.length >= 2 && against.length / positives.length >= 0.3) {
+        reject("direction_contradicted", `Positive amounts are described as money going out, such as "${against[0].description}", so the signs may be reversed. This file cannot be read safely.`);
+      }
+    }
+  }
+  if (read.mode === "split" && !hasRunning) {
+    if (Object.values(read.splitSigns).some(side => side.pos && side.neg)) {
+      reject("direction_unknown", "A money column holds both positive and negative amounts, and no balance shows what they mean.");
+    }
+    const ledger = LEDGER_WORDS.test(headingText) || read.headerRow.some(h => LEDGER_HEADERS.has(normalizeHeader(h)));
+    if (report.format === "debit_credit" && ledger) {
+      reject("ledger_export", "This looks like an accounting ledger, where Debit and Credit mean the opposite of a bank statement. With no running balance to prove which way the money moved, it cannot be read safely.");
+    }
+  }
+
+  if (report.rejections.length > 0) return report;
+
+  // The file's own balances settle anything its layout leaves open. A reading
+  // is used only when every balance agrees with it.
+  let recon = reconcileStatement(read);
+  const tryReading = (extra, note) => {
+    const again = readStatement(source, { currency, ...extra });
+    const result = reconcileStatement(again);
+    if (result.status !== "verified") return;
+    read = again; recon = result; report.warnings.push(note);
+  };
+  if (recon.status === "failed" && read.roles.fee !== undefined) {
+    tryReading({ feesIncluded: true }, "The Fee column is already inside the money out column, as the balances show, so fees were not added again.");
+  }
+  if (recon.status === "failed" && report.format === "debit_credit") {
+    tryReading({ debitIsMoneyIn: true }, "Debit was read as money in, because this file's balances show it is an accounting view of the account.");
+  }
+  if (read.roles.fee !== undefined && recon.status === "none") {
+    report.warnings.push("Fees were added as separate costs. With no running balance, this cannot show they are not already inside the money out column.");
+  }
+  const pending = read.rowLog.filter(r => r.kind === "pending").length;
+  if (pending > 0) {
+    report.warnings.push(`${plural(pending, "pending transaction was", "pending transactions were")} left out because they have not cleared. They will count once a later file shows them cleared.`);
+  }
+  if (otherSheets.length > 0) {
+    report.warnings.push(`Only the first sheet was read. ${plural(otherSheets.length, "other sheet holds", "other sheets hold")} data that was not imported: ${otherSheets.join(", ")}. Upload each as its own file.`);
+  }
+
+  if (!currency && !skipCurrency) { reject("currency_unknown", "This file does not say what currency it is in, and nothing in it proves one. Choose its currency."); return report; }
+
+  report.currency = currency;
+  report.importStatus = "accepted";
+  report.reconciliationStatus = recon.status === "verified" ? "verified" : recon.status === "failed" ? "failed" : "not_reconciled";
+  report.canSave = report.reconciliationStatus !== "failed";
+  report.discrepancies = recon.discrepancies;
+  report.openingBalance = recon.opening;
+  report.openingDerived = recon.derivedOpening;
+  report.closingBalance = recon.closing;
+
+  const reviewable = read.mode !== "named";
+  report.transactions = read.transactions.map(t => (reviewable ? { ...t, reviewed: true } : t));
+  report.transactionRows = read.transactions.length;
+  const inCurrency = report.transactions.filter(t => !t.currency || !currency || t.currency === currency);
+  report.otherCurrencyRows = report.transactions.length - inCurrency.length;
+  if (report.otherCurrencyRows > 0) report.warnings.push(`${plural(report.otherCurrencyRows, "row is", "rows are")} in another currency. They are stored but not added to your figures.`);
+  report.moneyIn = inCurrency.reduce((s, t) => s + Math.max(0, cents(t.amount)), 0) / 100;
+  report.moneyOut = inCurrency.reduce((s, t) => s + Math.max(0, -cents(t.amount)), 0) / 100;
+  report.netMovement = round2(report.moneyIn - report.moneyOut);
+  const dates = read.transactions.map(t => t.txn_date).sort();
+  report.dateFrom = dates[0];
+  report.dateTo = dates[dates.length - 1];
+
+  report.excluded = read.rowLog.filter(r => EXCLUDED_REASONS[r.kind]).map(r => ({ row: r.row, label: r.label || "", reason: EXCLUDED_REASONS[r.kind] }));
+  report.excludedRows = report.excluded.length;
+
+  const moneyIn = groupMoney(inCurrency, rules, t => t.amount > 0);
+  report.largestMoneyIn = moneyIn.slice(0, 8).map(g => ({ ...g, needsDecision: g.kind === "unconfirmed" }));
+  // The rest are decided together, so a business with many clients is not
+  // left confirming them one at a time.
+  report.otherUnconfirmed = moneyIn.slice(8).filter(g => g.kind === "unconfirmed");
+  report.unconfirmedIn = round2(moneyIn.filter(g => g.kind === "unconfirmed").reduce((s, g) => s + g.total, 0));
+  report.reviewOut = groupMoney(inCurrency, rules, t => t.amount < 0 && transactionKind(t, rules) === "operating" && REVIEW_OUT_WORDS.test(normalizeDescription(t.description))).slice(0, 5);
+  // A card export with no card wording looks like any signed file, and even a
+  // running balance only proves its arithmetic. Its tell is money in that
+  // nothing identifies, so the founder is told what that may mean.
+  if (report.moneyIn > 0 && report.unconfirmedIn / report.moneyIn >= 0.8) {
+    report.warnings.push("Most of the money in this file could not be identified. If this is a credit card statement, its purchases are showing as money in and its payments as costs, so do not save it.");
+  }
+
+  // A balance is saved only from a file that proved it.
+  if (report.reconciliationStatus === "verified") report.closingRecord = { amount: recon.closing, date: report.dateTo, currency };
+  return report;
+}
+
+// What is stored with an upload, so the status survives a refresh and a new
+// sign-in. A failed file is never saved, so asking is a mistake worth catching.
+export function importBatchFields(report, accountLabel) {
+  if (!report?.canSave) throw new Error("A file that failed verification cannot be saved.");
+  return {
+    import_status: report.importStatus,
+    reconciliation_status: report.reconciliationStatus,
+    // The table allows 120 characters. accountKey reads only the first 80, so
+    // cutting the name here never moves a row's duplicate hash.
+    account_label: String(accountLabel || "").trim().slice(0, 120).trim() || null,
+    reconciliation_detail: {
+      format: report.format, excludedRows: report.excludedRows, openingBalance: report.openingBalance,
+      openingDerived: report.openingDerived, closingBalance: report.closingBalance, warnings: report.warnings,
+    },
+  };
+}
+
+// The founder's choices on the review screen, as rows for transaction_rules.
+// A rule covers every description alike, in both directions, and Postgres
+// refuses a whole save that touches one rule twice, which would lose every
+// choice in the file. So choices that agree become one rule. Choices that
+// disagree are both left out, because one rule cannot honour both and picking
+// one would be a guess. A description of digits only has no rule to hold it.
+// `unsaved` counts what was chosen but not kept, so the founder can be told.
+export function reviewRuleRows(decisions) {
+  const byKey = new Map();
+  let unsaved = 0;
+  (decisions || []).forEach(d => {
+    const key = classificationKey(d.description);
+    if (!key) { unsaved++; return; }
+    byKey.set(key, [...(byKey.get(key) || []), d.kind]);
+  });
+  const rows = [];
+  byKey.forEach((kinds, key) => {
+    if (new Set(kinds).size > 1) { unsaved += kinds.length; return; }
+    rows.push({ kind: kinds[0], scope: "similar", match_key: key, description_key: null });
+  });
+  return { rows, unsaved };
+}
+
+// An upload from before these checks has no status, and nothing proved it.
+export const batchVerification = batch => (batch?.reconciliation_status === "verified" ? "verified" : "not_reconciled");
+
+// The status of what the figures on screen rest on: only the files that
+// actually contribute transactions, each keeping its own status. One file that
+// is not reconciled means the whole is not.
+export function summarizeVerification(batches, transactions) {
+  const used = new Set((transactions || []).map(t => t.source_batch_id).filter(Boolean));
+  const files = (batches || []).filter(b => used.has(b.id));
+  const notReconciledFiles = files.filter(b => batchVerification(b) !== "verified").length;
+  const status = files.length === 0 ? "none" : notReconciledFiles === 0 ? "verified" : "not_reconciled";
+  return { status, totalFiles: files.length, notReconciledFiles };
+}
+
+export function verificationNotice(summary) {
+  if (!summary || summary.status === "none") return null;
+  if (summary.status === "verified") {
+    return { status: "verified", title: "Reconciled", detail: "Every source file passed its balance check. That checks each file against its own balances, not against your bank." };
+  }
+  const { notReconciledFiles: n, totalFiles: total } = summary;
+  return {
+    status: "not_reconciled", title: "NOT RECONCILED",
+    detail: `${n} of ${plural(total, "source file has", "source files have")} not been verified against a bank running balance. Figures are based on the uploaded transaction data.`,
+  };
+}
+
+// The short name of a bank account for matching: the same account should get
+// the same key however its name is typed.
+export const accountKey = label => normalizeDescription(label).slice(0, 80);
+
+// The account a file names above its table, as its last four digits. The full
+// number is not needed, so it is not kept.
+export function detectAccountLabel(text) {
+  const lines = String(text ?? "").split(/\r?\n/).slice(0, MAX_HEADER_SCAN);
+  for (const line of lines) {
+    const m = line.match(/\bacc(?:ount|t)?\b[^\d\n]{0,20}(\d[\d -]{5,})/i);
+    if (m) return `Account ending ${m[1].replace(/\D/g, "").slice(-4)}`;
+  }
+  return "";
+}
+
+// What a file's rows are, against what is already stored. `stored` is every
+// saved row's dedupe_hash, date, description and amount. A row saved before
+// accounts were recorded has the older hash, and still counts as a duplicate.
+// `matchesOtherAccount` counts rows that are new here but look the same as
+// saved rows under another account: right for two accounts, and a double count
+// if the same file went under the wrong name, so the founder is told.
+export async function compareWithStored(transactions, stored, account) {
+  const hashes = new Set((stored || []).map(r => r.dedupe_hash));
+  const plain = new Set((stored || []).map(r => dedupeHashInput({ txn_date: String(r.txn_date).slice(0, 10), description: r.description, amount: r.amount })));
+  const fresh = [];
+  let duplicates = 0, matchesOtherAccount = 0;
+  for (const t of transactions || []) {
+    const own = await computeDedupeHash({ ...t, account });
+    const older = await computeDedupeHash({ ...t, account: undefined });
+    if (hashes.has(own) || hashes.has(older)) { duplicates++; continue; }
+    fresh.push(t);
+    if (plain.has(dedupeHashInput({ ...t, account: undefined, occurrence: undefined }))) matchesOtherAccount++;
+  }
+  return { newRows: fresh.length, duplicates, matchesOtherAccount, fresh };
+}
+
+// A workbook as text for the same reader as any other file. Date cells are
+// written as YYYY-MM-DD from their day count, so no time zone can move them.
+// Numbers are written as stored: a cell shown as 1,235 may hold 1234.56, and
+// the displayed text was once what got imported.
+function sheetHasData(ws) {
+  return Object.keys(ws || {}).some(a => a[0] !== "!" && ws[a]?.v !== undefined && ws[a]?.v !== "");
+}
+function sheetToText(XLSX, ws) {
+  for (const addr of Object.keys(ws)) {
+    if (addr[0] === "!") continue;
+    const c = ws[addr];
+    if (c.t === "n" && c.z && XLSX.SSF.is_date(c.z)) {
+      const d = XLSX.SSF.parse_date_code(c.v);
+      if (d && d.y > 1900) {
+        const iso = `${d.y}-${String(d.m).padStart(2, "0")}-${String(d.d).padStart(2, "0")}`;
+        c.t = "s"; c.v = iso; c.w = iso;
+      }
+    }
+  }
+  return XLSX.utils.sheet_to_csv(ws, { rawNumbers: true });
+}
+export function workbookToText(XLSX, wb) {
+  const withData = wb.SheetNames.filter(n => sheetHasData(wb.Sheets[n]));
+  const [first, ...rest] = withData.length > 0 ? withData : wb.SheetNames;
+  return { text: sheetToText(XLSX, wb.Sheets[first]), sheetName: first, otherSheets: withData.length > 0 ? rest : [] };
+}
+
 // ─── DEDUPLICATION ──────────────────────────────────────────────
 // Overlapping uploads (Jan-Jun, then later Apr-Sep) must not double-count
 // April-June. Two transactions are the same event if they share a date, a
@@ -1593,8 +2178,11 @@ export function normalizeDescription(desc) {
 // gets its own hash, so two genuine R50 sales on one day are both kept. The
 // first occurrence keeps the original form, so hashes already stored still
 // match.
+// `account` keeps one bank account's rows from matching another's: the same
+// R69 fee on the same day on two accounts is two fees. Without it the hash is
+// the form every stored row before accounts were recorded has.
 export function dedupeHashInput(txn) {
-  const base = `${txn.txn_date}|${normalizeDescription(txn.description)}|${Number(txn.amount).toFixed(2)}`;
+  const base = `${txn.txn_date}|${normalizeDescription(txn.description)}|${Number(txn.amount).toFixed(2)}${txn.account ? `|acct:${txn.account}` : ""}`;
   return txn.occurrence > 1 ? `${base}|#${txn.occurrence}` : base;
 }
 
@@ -1668,7 +2256,7 @@ export function aggregateTransactionsByMonth(transactions, options = {}) {
     const key = date.slice(0, 7);
     if (!buckets[key]) buckets[key] = {
       revenue:0, expenses:0, payroll:0, marketing:0, cogs:0, rent:0, software:0,
-      financingIn:0, financingOut:0, transferIn:0, transferOut:0, refundsIn:0, refundsOut:0,
+      financingIn:0, financingOut:0, transferIn:0, transferOut:0, refundsIn:0, refundsOut:0, unconfirmedIn:0,
       firstDate: date, lastDate: date,
     };
     const b = buckets[key];
@@ -1678,7 +2266,9 @@ export function aggregateTransactionsByMonth(transactions, options = {}) {
     if (amt === 0) return;
     const abs = Math.abs(amt);
     const kind = transactionKind(t, rules);
-    if (kind === "transfer") {
+    if (kind === "unconfirmed") {
+      b.unconfirmedIn += abs;
+    } else if (kind === "transfer") {
       if (amt > 0) b.transferIn += abs; else b.transferOut += abs;
     } else if (kind === "financing") {
       if (amt > 0) b.financingIn += abs; else b.financingOut += abs;
@@ -1722,6 +2312,7 @@ export function aggregateTransactionsByMonth(transactions, options = {}) {
       financingIn: wholeUnits(b.financingIn), financingOut: wholeUnits(b.financingOut),
       transferIn: wholeUnits(b.transferIn), transferOut: wholeUnits(b.transferOut),
       refundsIn: wholeUnits(b.refundsIn), refundsOut: wholeUnits(b.refundsOut),
+      unconfirmedIn: wholeUnits(b.unconfirmedIn),
       leads: 0, closures: 0, cac: 0, ltv: 0,
     };
   });
@@ -1938,6 +2529,10 @@ export function detectTrends(rows, seasonalPattern = null, currency = "USD") {
 //     it isn't calculable, and must be suppressed rather than defaulting
 //     to a zero that reads as a real answer.
 const CONFIDENCE_RECENCY_DAYS = 45;
+// The share of money in, left unidentified, at which anything built on revenue
+// stops being a fair answer. A judgement, set by hand: a small gap barely moves
+// profit, and a large one can turn a surplus into an announced loss.
+const UNCONFIRMED_MATERIAL_SHARE = 0.1;
 
 export function computeConfidence(months, lastTxnDate) {
   const n = Math.max(0, months || 0);
@@ -2021,6 +2616,12 @@ export function computeMetrics(rows, manual, mode, context = {}) {
   const totFinOut = rows ? sumOf("financingOut") : (Number(mFinOut) || 0);
   const totTrIn   = sumOf("transferIn"),  totTrOut  = sumOf("transferOut");
   const totRefIn  = sumOf("refundsIn"),   totRefOut = sumOf("refundsOut");
+  // Money in nobody has identified yet: in no figure until someone decides.
+  const totUnconfirmedIn = sumOf("unconfirmedIn");
+  // Unidentified money is a gap, not a zero. Counted as nothing, a real file
+  // read as a R5,662 loss at critical risk when it had taken in more than it
+  // spent. While the gap is material, what rests on revenue waits for it.
+  const figuresOpen = totUnconfirmedIn > 0 && totUnconfirmedIn >= UNCONFIRMED_MATERIAL_SHARE * (Math.max(0, totRev) + totUnconfirmedIn);
   // A balance belongs to the newest row, complete or not.
   const lastRow    = rows ? rows[rows.length - 1] : null;
   const knownCash  = cash && finiteOrNull(cash.amount) !== null ? Number(cash.amount)
@@ -2144,8 +2745,8 @@ export function computeMetrics(rows, manual, mode, context = {}) {
   const hasUnitEconomicsData = activeCac > 0 && activeLtv > 0;
 
   const runwayBase = metricConfidence(
-    cashFlowPositive || hasCashData,
-    "no cash balance entered. Add it under Transactions to calculate runway",
+    (cashFlowPositive || hasCashData) && !figuresOpen,
+    figuresOpen ? "money in is not confirmed yet" : "no cash balance entered. Add it under Transactions to calculate runway",
     n, lastTxnDate
   );
   // A balance from weeks ago says little about today's runway: one level
@@ -2159,15 +2760,15 @@ export function computeMetrics(rows, manual, mode, context = {}) {
       }
     : runwayBase;
   const breakEvenConfidence = metricConfidence(hasData, "no revenue/expense data yet", n, lastTxnDate);
-  const proj90Confidence    = metricConfidence(hasData, "no revenue/expense data yet", n, lastTxnDate);
-  const hiringCapacityConfidence = metricConfidence(hasData, "no revenue/expense data yet", n, lastTxnDate);
+  const proj90Confidence    = metricConfidence(hasData && !figuresOpen, figuresOpen ? "money in is not confirmed yet" : "no revenue/expense data yet", n, lastTxnDate);
+  const hiringCapacityConfidence = metricConfidence(hasData && !figuresOpen, figuresOpen ? "money in is not confirmed yet" : "no revenue/expense data yet", n, lastTxnDate);
   const ltvcacConfidence    = metricConfidence(hasUnitEconomicsData, "enter both CAC and LTV to calculate", n, lastTxnDate);
-  const growthConfidence    = metricConfidence(hasData, "no revenue data yet", n, lastTxnDate);
+  const growthConfidence    = metricConfidence(hasData && !figuresOpen, figuresOpen ? "money in is not confirmed yet" : "no revenue data yet", n, lastTxnDate);
 
   return {
     tr, sr, latest, prev, totRev, totExp, totCogs, totMkt, totL, totC,
     hasConversionData, avgRev, netBurn, cashFlowPositive, dataConfidence,
-    totFinIn, totFinOut, totTrIn, totTrOut, totRefIn, totRefOut, avgFinOut, avgCashOut, partialMonths,
+    totFinIn, totFinOut, totTrIn, totTrOut, totRefIn, totRefOut, totUnconfirmedIn, figuresOpen, avgFinOut, avgCashOut, partialMonths,
     activeCash, activeCac, activeLtv, n, totPro, margin, vel, conv, ltvcac,
     cogsRatio, mktRatio, sov, sovLbl, taxV, safV, free, avgExp, burnMonths,
     hiringCapacity, concentration, concentrationReliable, revenueConcentration,
@@ -2402,8 +3003,14 @@ export function buildFounderNarrative(trajectory, currentMargin) {
 // `runwayKnown` (a cash balance is known) and `cashFlowPositive` tell a
 // runway of 0 months (no cash left to burn) from one that was never
 // measured; without them, 0 is read as unmeasured, as before.
-export function computeDirective({ margin, burnMonths, free, vel, conv, ltvcac, months, concentration, currency = "USD", runwayKnown = false, cashFlowPositive = false }) {
+export function computeDirective({ margin, burnMonths, free, vel, conv, ltvcac, months, concentration, currency = "USD", runwayKnown = false, cashFlowPositive = false, figuresOpen = false, unconfirmedIn = 0 }) {
   const raw = (() => {
+    // Nothing else here can be judged while much of the money in is unknown.
+    if (figuresOpen) return {
+      text: "Confirm your money in before acting on these figures.",
+      reason: `${fmt(unconfirmedIn, currency)} of money in has not been identified. It may be revenue, a loan or your own money, so profit, runway and risk cannot be judged yet.`,
+      severity: "warn", rule: "unconfirmed_money_in", targetMetric: null,
+    };
     // Reserves come out of profit only, so this is a loss for the period.
     // The rule keeps its stored name.
     if (safe(free) < 0) return {
@@ -2685,11 +3292,12 @@ function csvCell(v) {
   return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
-export function buildReportCsv({ title = "Command Ledger financial summary", periodLabel = "", generatedAt = "", rows = [], summary = [], currency = "USD" } = {}) {
+export function buildReportCsv({ title = "Command Ledger financial summary", periodLabel = "", generatedAt = "", rows = [], summary = [], currency = "USD", verification = null } = {}) {
   // Every amount in the file is in one currency, named in its own row and in
   // each money column, so a spreadsheet total can never mix currencies.
   const unit = currency || "no currency chosen";
-  const lines = [[title], ["Period", periodLabel], ["Currency", unit], ["Generated", generatedAt], [],
+  const lines = [[title], ["Period", periodLabel], ["Currency", unit], ["Generated", generatedAt],
+    ...(verification ? [["Data status", `${verification.title}: ${verification.detail}`]] : []), [],
     ["Month", `Revenue (${unit})`, `Expenses (${unit})`, `Net (${unit})`, "Margin %"]];
   let rev = 0, exp = 0;
   (rows || []).forEach(r => {
