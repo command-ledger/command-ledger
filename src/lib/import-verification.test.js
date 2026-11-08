@@ -777,6 +777,49 @@ describe("What the live database will accept", () => {
   });
 });
 
+// Two gaps a real live upload found. Every tile hid a loss built on unconfirmed
+// money, but the advisor's brief still carried it, held back only by a line in
+// its prompt. And a declined prompt in Settings left the dropdown showing a
+// currency that was never saved, with no message. These read the source, as the
+// checks above do, because the wiring is the rule.
+describe("What the live upload found", () => {
+  const app = readFileSync(new URL("../App.jsx", import.meta.url), "utf8");
+  const advisor = app.slice(app.indexOf("function AdvisorSection"), app.indexOf("function ReportsSection"));
+  const settings = app.slice(app.indexOf("function SettingsSection"), app.indexOf('<Panel title="Plan and billing">'));
+
+  it("sends the advisor nothing while figures are on hold", () => {
+    expect(app.match(/functions\.invoke\("analyze-finances"/g)).toHaveLength(1);
+    expect(app).toMatch(/const runAI = async \(\) => \{\s*(?:\/\/[^\n]*\s*)*if \(figuresOpen\) return;/);
+  });
+
+  it("closes the advisor button while figures are on hold, and says why", () => {
+    expect(advisor).toMatch(/disabled=\{aiLoad \|\| !m\.hasData \|\| m\.figuresOpen\}/);
+    expect(advisor).toMatch(/Confirm your money in first/);
+    expect(advisor).toMatch(/fmt\(m\.totUnconfirmedIn, cur\)/);
+  });
+
+  it("does not leave an older brief on screen once figures go on hold", () => {
+    const hold = advisor.indexOf("m.figuresOpen ? (");
+    expect(hold).toBeGreaterThan(-1);
+    expect(hold).toBeLessThan(advisor.indexOf("aiRec ? ("));
+  });
+
+  it("puts the dropdown back and says so when the currency prompt is declined", () => {
+    const declined = settings.slice(settings.indexOf("!window.confirm("), settings.indexOf("setSaving(true)"));
+    expect(declined).toMatch(/setBaseCur\(profile\.base_currency\)/);
+    expect(declined).toMatch(/Not changed\. Your business currency is still \$\{profile\.base_currency\}/);
+    expect(declined).toMatch(/return;/);
+  });
+
+  it("says a currency change is not saved until it is", () => {
+    expect(settings).toMatch(/\{currencyChanged && <[^\n]*Not saved yet/);
+  });
+
+  it("clears an old Saved message when the currency changes again", () => {
+    expect(settings).toMatch(/onChange=\{v => \{ setBaseCur\(v\); setMsg\(null\); \}\}/);
+  });
+});
+
 describe("E. Duplicates", () => {
   const FILE = rows("Date,Description,Amount", "2026-05-31,Monthly account fee,-69.00", "2026-05-31,Client payment,1000.00");
   const hashed = async (report, label) => Promise.all(report.transactions.map(async t => ({

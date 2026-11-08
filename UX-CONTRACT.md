@@ -44,8 +44,8 @@ a defect, however good it looks. Visual rules live in `DESIGN.md`.
     bank-verified. A file that fails its balances cannot be saved, and its
     figures are never adjusted to agree. Money in nobody has identified is
     shown, and is not counted as revenue until someone decides. While much of
-    it is undecided, figures built on revenue show `---`, never an alarm: a gap
-    in the data is not a loss.
+    it is undecided, figures built on revenue show `---`, never an alarm, and
+    the AI advisor waits: a gap in the data is not a loss.
 
 ## Accessibility
 

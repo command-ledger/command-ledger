@@ -2858,6 +2858,9 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
 
   // ── AI advisor ──
   const runAI = async () => {
+    // While much of the money in is unconfirmed, the brief would carry a profit
+    // or loss the screen holds back. Nothing is sent, so nothing can be misread.
+    if (figuresOpen) return;
     setAiLoad(true); setAiRec(null); setAiError("");
     // Aggregate expense categories from uploaded bank data if available
     const totPayroll  = rows ? rows.reduce((s,d) => s + (d.payroll   || 0), 0) : 0;
@@ -3798,19 +3801,24 @@ function EmptyData({ go }) {
 
 // ─── SECTION: AI ADVISOR ──────────────────────────────────────
 function AdvisorSection({ ctx }) {
-  const { aiRec, aiError, aiLoad, runAI, m, go } = ctx;
+  const { aiRec, aiError, aiLoad, runAI, m, go, cur, setTxKind, setTxLimit } = ctx;
   return (
     <>
       <PageHead title="AI Advisor" meta="A structured brief from your real numbers, generated on request"/>
       <div className="card" style={{ padding:0 }}>
         <div className="ai-top">
           <div className="ai-lbl"><div className="ai-glow"/>Command Ledger Intelligence - Powered by Claude</div>
-          <button className="ai-btn" onClick={runAI} disabled={aiLoad || !m.hasData}>{aiLoad ? "Analyzing..." : "Generate Brief"}</button>
+          <button className="ai-btn" onClick={runAI} disabled={aiLoad || !m.hasData || m.figuresOpen}>{aiLoad ? "Analyzing..." : "Generate Brief"}</button>
         </div>
-        <div className="ai-body" style={{ padding: aiRec ? 0 : undefined }}>
+        <div className="ai-body" style={{ padding: aiRec && !m.figuresOpen ? 0 : undefined }}>
           {aiLoad ? (
             <div style={{ display:"flex", alignItems:"center", gap:12, color:C.text3, fontSize:12, fontFamily:"'JetBrains Mono',monospace", padding:"20px" }}>
               <div className="ai-dots"><span/><span/><span/></div>Analyzing your financial position...
+            </div>
+          ) : m.figuresOpen ? (
+            <div className="ai-txt" style={{ padding:"20px" }}>
+              <p>Confirm your money in first. {fmt(m.totUnconfirmedIn, cur)} of money in has not been identified, so a brief would rest on figures that cannot be judged yet.</p>
+              <button className="panel-link" style={{ marginTop:8 }} onClick={() => { setTxKind("unconfirmed"); setTxLimit(100); go("transactions"); }}>Review this money<Icon name="arrow" size={14}/></button>
             </div>
           ) : aiRec ? (
             <AIRecommendation rec={aiRec}/>
@@ -4183,7 +4191,13 @@ function SettingsSection({ ctx }) {
     // Changing the currency converts nothing. Say what happens to the
     // transactions already on file before it is saved.
     if (currencyChanged && profile?.base_currency && !window.confirm(
-      `Change your business currency from ${profile.base_currency} to ${baseCur}? Nothing is converted. Transactions in ${profile.base_currency} will be left out of your figures until you change the currency of their upload under Transactions.`)) return;
+      `Change your business currency from ${profile.base_currency} to ${baseCur}? Nothing is converted. Transactions in ${profile.base_currency} will be left out of your figures until you change the currency of their upload under Transactions.`)) {
+      // A declined prompt, or a browser that blocks prompts, saves nothing. Left
+      // alone, the dropdown would look switched when it is not.
+      setBaseCur(profile.base_currency);
+      setMsg({ t:"note", text:`Not changed. Your business currency is still ${profile.base_currency}.` });
+      return;
+    }
     setSaving(true); setMsg(null);
     // plan, status and paypal_subscription_id are never sent: the database
     // guard would discard them anyway, and only the PayPal webhook sets them.
@@ -4214,7 +4228,8 @@ function SettingsSection({ ctx }) {
             </div>
             <div className="input-group">
               <label className="di-lbl" htmlFor="set-currency">Business currency</label>
-              <CurrencySelect id="set-currency" value={baseCur} onChange={setBaseCur}/>
+              <CurrencySelect id="set-currency" value={baseCur} onChange={v => { setBaseCur(v); setMsg(null); }}/>
+              {currencyChanged && <p className="panel-copy" role="status" style={{ marginTop:6 }}>Not saved yet. Press Save changes to switch to {baseCur}.</p>}
             </div>
             <div className="input-group">
               <label className="di-lbl" htmlFor="set-email">Email</label>
@@ -4222,7 +4237,7 @@ function SettingsSection({ ctx }) {
             </div>
             <div style={{ display:"flex", alignItems:"center", gap:12 }}>
               <button className="btn btn-primary btn-md" type="submit" disabled={saving || !dirty}>{saving ? "Saving..." : "Save changes"}</button>
-              {msg && <span role="status" style={{ fontSize:12.5, color: msg.t === "ok" ? C.positive : C.danger }}>{msg.text}</span>}
+              {msg && <span role="status" style={{ fontSize:12.5, color: msg.t === "ok" ? C.positive : msg.t === "note" ? C.warning : C.danger }}>{msg.text}</span>}
             </div>
           </form>
         </Panel>
