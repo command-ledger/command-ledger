@@ -84,9 +84,8 @@ describe("computeMetrics — manual entry", () => {
     const burning = { mRev: 30000, mExp: 40000, mCash: 100000, mCac: 0, mLtv: 0, mLeads: 0, mClose: 0 };
     const m = computeMetrics(null, burning, "safe");
     const netBurn = 40000 - 30000; // 10000
-    const safetyBuffer = netBurn * 0.20; // one month's burn * sr, safe mode
-    expect(m.cashFlowPositive).toBe(false);
-    expect(m.burnMonths).toBeCloseTo((100000 - safetyBuffer) / netBurn, 5); // 9.8 months
+        expect(m.cashFlowPositive).toBe(false);
+    expect(m.burnMonths).toBeCloseTo(100000 / netBurn, 5); // 10 months
   });
 
   it("sizes hiring capacity to the business, not to a fixed salary", () => {
@@ -200,8 +199,8 @@ describe("computeMetrics — uploaded CSV rows", () => {
     const burnRow = { revenue: 20000, expenses: 30000, cash: 60000, cogs: 0, marketing: 0, leads: 0, closures: 0, cac: 0, ltv: 0 };
     const threeMonths = computeMetrics([burnRow, burnRow, burnRow], manual, "safe");
     const fortyEight  = computeMetrics(Array(48).fill(burnRow), manual, "safe");
-    expect(threeMonths.burnMonths).toBeCloseTo(5.8, 5); // (60000 - 10000*0.2) / 10000
-    expect(fortyEight.burnMonths).toBeCloseTo(5.8, 5);  // was negative: 20% of a $480k cumulative loss outweighed the cash
+    expect(threeMonths.burnMonths).toBeCloseTo(6, 5); // 60000 / 10000
+    expect(fortyEight.burnMonths).toBeCloseTo(6, 5);    // was negative once: 20% of a $480k cumulative loss outweighed the cash
   });
 
   it("has medium data confidence for a short uploaded history, and high confidence at 3+ months", () => {

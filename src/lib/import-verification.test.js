@@ -553,6 +553,113 @@ describe("D. Status after saving", () => {
     expect(guardVerificationClaims(rec, "verified")).toEqual(rec);
   });
 
+// Passing a running-balance check means a file agrees with itself. No bank has
+// confirmed anything, because Command Ledger has no bank connection, and an
+// estimate of today's cash is neither reconciled nor confirmed. The guard used
+// to step aside entirely when every file reconciled.
+describe("D9 AI wording never claims bank confirmation", () => {
+  const BANK = /bank[- ]?(?:verified|confirmed)|(?:verified|confirmed|validated|certified)\s+(?:by|with)\s+(?:the\s+|your\s+|a\s+)?bank/i;
+  const guard = (text, status) => guardVerificationClaims({ whatHappened: text, riskLevel: "Watch", confidenceReason: "6 months of data" }, status);
+
+  for (const status of ["verified", "not_reconciled", "none", undefined]) {
+    describe(`files ${status ?? "with no status"}`, () => {
+      it("removes bank-verified and confirmed-by-the-bank claims", () => {
+        for (const text of [
+          "Your figures are bank-verified.", "Your bank verified balance is healthy.", "These balances were confirmed by the bank.",
+          "Your cash was verified by your bank.", "The totals are bank-confirmed.", "Figures validated with the bank show growth.",
+        ]) expect(guard(text, status).whatHappened).not.toMatch(BANK);
+      });
+
+      it("removes a claim that estimated cash is bank-verified or reconciled", () => {
+        for (const text of [
+          "Your estimated cash today of R 293 430 is bank-verified.",
+          "Estimated cash today has been confirmed by the bank.",
+          "The estimate of today's cash is reconciled.",
+          "Your estimated cash is verified.",
+        ]) {
+          const out = guard(text, status);
+          expect(out.whatHappened).not.toMatch(BANK);
+          expect(out.whatHappened).not.toMatch(/(?<!\b(?:not|never)\s+)\b(?:verified|reconciled|confirmed)\b/i);
+          expect(out.confidenceReason).toMatch(/estimate.*not a bank balance/i);
+        }
+      });
+
+      it("keeps true statements that something is not confirmed", () => {
+        const text = "Estimated cash is not bank-verified, and it has not been confirmed by the bank. R 6 305 of money in is unconfirmed.";
+        expect(guard(text, status).whatHappened).toBe(text);
+      });
+
+      it("touches only the wording, never a level or a number", () => {
+        const out = guard("Your figures are bank-verified: R 293 430.", status);
+        expect(out.riskLevel).toBe("Watch");
+        expect(out.whatHappened).toMatch(/R 293 430/);
+      });
+    });
+  }
+
+  it("keeps reconciliation as reconciliation when every file reconciled", () => {
+    const out = guard("Every file reconciled to the cent. Your figures are bank-verified.", "verified");
+    expect(out.whatHappened).toBe("Every file reconciled to the cent. Your figures are reconciled.");
+    expect(out.confidenceReason).toMatch(/no bank has confirmed them/i);
+  });
+
+  it("keeps a reconciled sentence apart from an estimate in the same reply", () => {
+    const out = guard("Your files are reconciled. Your estimated cash today is reconciled.", "verified");
+    expect(out.whatHappened).toBe("Your files are reconciled. Your estimated cash today is estimated.");
+  });
+
+  it("still calls unreconciled figures unreconciled", () => {
+    const out = guard("Your figures are bank-verified and reconciled.", "not_reconciled");
+    expect(out.whatHappened).toBe("Your figures are unreconciled and unreconciled.");
+    expect(out.confidenceReason).toMatch(/Figures are not reconciled to a bank running balance/);
+  });
+
+  it("adds no note when there was nothing to correct", () => {
+    expect(guardVerificationClaims({ whatHappened: "Cash fell.", confidenceReason: "x" }, "verified")).toEqual({ whatHappened: "Cash fell.", confidenceReason: "x" });
+  });
+});
+
+// No rule can catch every way of saying a bank or other institution confirmed the
+// figures: "confirmed by Absa" passes the guard above. So the app itself states
+// the truth under every brief. This renders the real AIRecommendation component,
+// taken from App.jsx, with the guard's output in front of it.
+describe("D10 every AI brief carries the app's own statement on where its figures come from", () => {
+  const STATEMENT = "These figures come from your uploaded statements. Command Ledger has no bank connection, so no bank or other institution has independently confirmed them.";
+  const app = readFileSync(new URL("../App.jsx", import.meta.url), "utf8");
+  const start = app.indexOf("function AIRecommendation");
+  const source = app.slice(start, app.indexOf("// ─── METRIC CONFIDENCE", start));
+  const render = async rec => {
+    const esbuild = await import("esbuild"), R = await import("react"), S = await import("react-dom/server");
+    const React = R.default || R;
+    const code = (esbuild.default || esbuild).transformSync(source, { loader: "jsx", jsx: "transform" }).code;
+    const AIRecommendation = new Function("React", "C", "RISK_CHIP_COLOR", `${code}\nreturn AIRecommendation;`)(React, { text3: "#888", platinum: "#ccc" }, {});
+    return (S.default || S).renderToStaticMarkup(React.createElement(AIRecommendation, { rec }));
+  };
+  const brief = { whatHappened: "Your balance is confirmed by Absa.", whyItHappened: "Cash fell.", businessImpact: "Less room.", recommendedAction: "Cut costs.",
+    expectedOutcome: "Longer runway.", riskLevel: "Watch", confidenceScore: 70, confidenceReason: "6 months of data" };
+
+  for (const status of ["verified", "not_reconciled"]) {
+    it(`shows it under a brief that says "confirmed by Absa", files ${status}`, async () => {
+      const html = await render(guardVerificationClaims(brief, status));
+      expect(html).toContain("confirmed by Absa");
+      expect(html).toContain(STATEMENT);
+      expect(html.indexOf(STATEMENT)).toBeGreaterThan(html.indexOf("confirmed by Absa"));
+    });
+  }
+
+  it("shows it whatever the brief contains, even nothing", async () => {
+    expect(await render({})).toContain(STATEMENT);
+    expect(await render({ riskLevel: "Critical", confidenceReason: "These figures are confirmed by your bank." })).toContain(STATEMENT);
+  });
+
+  it("is written by the app, and every brief on screen goes through it", () => {
+    expect(source).toContain(STATEMENT);
+    expect(app.split(STATEMENT).length - 1).toBe(1);
+    expect(app.match(/<AIRecommendation\b/g)).toHaveLength(1);
+    expect(app.replace(source, "").match(/whatHappened|recommendedAction/g)).toBeNull();
+  });
+});
+
   it("D6 does not turn a missing cash balance into a verified zero", () => {
     expect(effectiveCashBalance({ profile: {}, batches: [], baseCurrency: "ZAR" })).toBeNull();
     const m = computeMetrics([{ month: "May 26", revenue: 100, expenses: 200 }], { mRev:0, mExp:0, mCash:0, mCac:0, mLtv:0, mLeads:0, mClose:0 }, "safe", { currency: "ZAR" });

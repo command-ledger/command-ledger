@@ -50,7 +50,7 @@ describe("runway from a known balance", () => {
     const m = computeMetrics(months, NO_MANUAL, "safe", { cash: { amount: 10000, on: "2026-11-04" }, today: "2026-11-04" });
     expect(m.cashKnown).toBe(true);
     expect(m.cashOn).toBe("2026-11-04");
-    expect(m.burnMonths).toBeCloseTo(9.8, 6); // (10,000 - 1,000 x 0.20) / 1,000
+    expect(m.burnMonths).toBeCloseTo(10, 6); // 10,000 / 1,000
     expect(m.runwayConfidence).toMatchObject({ shown: true, level: "moderate" }); // 3 months of data
   });
 
@@ -64,8 +64,9 @@ describe("runway from a known balance", () => {
     }
   });
 
-  it("never reports negative runway when cash is below the safety share", () => {
-    const m = computeMetrics(months, { ...NO_MANUAL, mCash: 100 }, "safe"); // (100 - 200) / 1,000 would be -0.1
+  it("takes no safety share off a small balance, and never reports negative runway", () => {
+    expect(computeMetrics(months, { ...NO_MANUAL, mCash: 100 }, "safe").burnMonths).toBeCloseTo(0.1, 6); // 100 / 1,000
+    const m = computeMetrics(months, NO_MANUAL, "safe", { cash: { amount: -500, on: "2026-11-04" }, today: "2026-11-04" });
     expect(m.burnMonths).toBe(0);
   });
 
@@ -98,7 +99,7 @@ describe("the runway directive", () => {
   it("fires at zero runway once a balance is known", () => {
     const d = computeDirective({ ...base, runwayKnown: true, cashFlowPositive: false });
     expect(d.rule).toBe("low_runway");
-    expect(d.reason).toContain("no longer covers a month of net burn");
+    expect(d.reason).toContain("at or below zero");
   });
 
   it("stays silent about runway when no balance is known, or nothing burns", () => {
@@ -149,6 +150,6 @@ describe("scenarios from a known balance", () => {
     expect(before.activeCash).toBe(-2000);
     expect(before.burnMonths).toBe(0);
     expect(after.activeCash).toBe(13000);
-    expect(after.burnMonths).toBeCloseTo(12.8, 6); // (13,000 - 1,000 x 0.20) / 1,000
+    expect(after.burnMonths).toBeCloseTo(13, 6); // 13,000 / 1,000
   });
 });

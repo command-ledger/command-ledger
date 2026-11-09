@@ -30,7 +30,11 @@ a defect, however good it looks. Visual rules live in `DESIGN.md`.
    trends or the latest-month figures.
 10. **A known cash balance is real, even at or below zero.** An overdraft or
     an empty account is 0 months of runway, not `---`. The balance shows its
-    date and source, and a stale one lowers runway's confidence.
+    date and source, and a stale one lowers runway's confidence. Runway counts
+    down from estimated cash today at the current burn, shows its working, and
+    is the same whatever period is selected. Only transactions prove an
+    overdraft: if only the estimate says the money has gone, runway shows `---`
+    and asks for today's balance.
 11. **One currency per figure, never converted.** Every figure is in the
    business currency, set by the first file or in Settings, and carries its
    symbol. A file's currency is read from the file; one that does not state

@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo, Fragment } from "react";
 import { createClient } from "@supabase/supabase-js";
-import { fmt, pc, safe, parseAnyCSV, verifyImport, NOT_RECONCILED_MESSAGE, importBatchFields, reviewRuleRows, batchVerification, summarizeVerification, verificationNotice, accountKey, detectAccountLabel, compareWithStored, workbookToText, computeMetrics, runScenario, parseTransactions, computeDedupeHash, aggregateTransactionsByMonth, computeRevenueConcentration, detectRecurringObligations, computeForwardRunway, checkAffordability, detectMissedObligations, projectForwardCalendar, summarizeCalendarByWeek, computeDirective, getDirectiveMetricValue, describeDirectiveOutcome, checkoutBlockReason, computeConfidence, fmtCompact, filterTransactions, searchWorkspace, buildAlerts, buildReportCsv, SUPPORTED_CURRENCIES, isSupportedCurrency, currencySymbol, currencyName, partitionByCurrency, decodeTextFile, detectFileCurrency, resolveFileCurrency, buildRuleIndex, resolveKind, classificationKey, summarizeKinds, periodStartDate, effectiveCashBalance, monthLabel, isGenericCounterparty } from "./lib/financials.js";
+import { fmt, pc, safe, parseAnyCSV, verifyImport, NOT_RECONCILED_MESSAGE, importBatchFields, reviewRuleRows, cashMovementSince, cashTodayNote, batchVerification, summarizeVerification, verificationNotice, accountKey, detectAccountLabel, compareWithStored, workbookToText, computeMetrics, runScenario, parseTransactions, computeDedupeHash, aggregateTransactionsByMonth, computeRevenueConcentration, detectRecurringObligations, computeForwardRunway, checkAffordability, detectMissedObligations, projectForwardCalendar, summarizeCalendarByWeek, computeDirective, getDirectiveMetricValue, describeDirectiveOutcome, checkoutBlockReason, computeConfidence, fmtCompact, filterTransactions, searchWorkspace, buildAlerts, buildReportCsv, SUPPORTED_CURRENCIES, isSupportedCurrency, currencySymbol, currencyName, partitionByCurrency, decodeTextFile, detectFileCurrency, resolveFileCurrency, buildRuleIndex, resolveKind, classificationKey, summarizeKinds, periodStartDate, effectiveCashBalance, monthLabel, isGenericCounterparty } from "./lib/financials.js";
 
 const supabase = createClient(
   import.meta.env.VITE_SUPABASE_URL,
@@ -780,6 +780,9 @@ function AIRecommendation({ rec }) {
           {rec.confidenceReason && <span>{rec.confidenceReason}</span>}
         </span>
       </div>
+      {/* Written by the app, never by the AI, under every brief: no rule can catch
+          every way of saying a bank or other institution confirmed the figures. */}
+      <p className="panel-copy" style={{ margin:0, padding:"12px 22px 16px", fontSize:13.5, color:C.text2 }}>These figures come from your uploaded statements. Command Ledger has no bank connection, so no bank or other institution has independently confirmed them.</p>
     </div>
   );
 }
@@ -2285,7 +2288,7 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
   // Financial Memory Engine — persisted transaction history, read fresh on
   // every load and every period-filter change. Nothing here is computed
   // client-side and stored back; `history` is raw monthly aggregates only.
-  const [txns, setTxns] = useState([]);
+  const [allTxns, setAllTxns] = useState([]);
   // The founder's own rules for what a transaction is (see TRANSACTION
   // KINDS in financials.js). Bills are not detected until they have
   // loaded, so the first detection already follows them.
@@ -2352,8 +2355,17 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
   // counts as revenue only once it is identified. A monthly summary's Revenue
   // column already says what it is, and older uploads keep their first reading.
   const reviewedBatches = useMemo(() => new Set(batches.filter(b => b.reconciliation_status && b.parser_mode !== "named").map(b => b.id)), [batches]);
-  const markedTxns = useMemo(() => txns.map(t => (reviewedBatches.has(t.source_batch_id) ? { ...t, reviewed:true } : t)), [txns, reviewedBatches]);
+  const allMarkedTxns = useMemo(() => allTxns.map(t => (reviewedBatches.has(t.source_batch_id) ? { ...t, reviewed:true } : t)), [allTxns, reviewedBatches]);
+  // The whole history is loaded once and the period on screen is a filter over
+  // it, so burn and cash can read every month and one business has one runway.
+  // The period starts on the 1st of a month, so "the last 3 months" is three
+  // whole months plus this one so far, never a first month cut short.
+  const periodCutoff = periodStartDate(periodFilter, todayStr);
+  const markedTxns = useMemo(() => (periodCutoff ? allMarkedTxns.filter(t => t.txn_date >= periodCutoff) : allMarkedTxns), [allMarkedTxns, periodCutoff]);
+  const txns = markedTxns;
   const { included: baseTxns, excluded: excludedByCurrency } = useMemo(() => partitionByCurrency(markedTxns, cur), [markedTxns, cur]);
+  const { included: allBaseTxns } = useMemo(() => partitionByCurrency(allMarkedTxns, cur), [allMarkedTxns, cur]);
+  const runRateRows = useMemo(() => aggregateTransactionsByMonth(allBaseTxns, { rules: ruleIndex, today: todayStr }), [allBaseTxns, ruleIndex, todayStr]);
   // What the figures on screen rest on: only files that contribute to them.
   const verification = useMemo(() => summarizeVerification(batches, baseTxns), [batches, baseTxns]);
   const verificationInfo = verificationNotice(verification);
@@ -2365,6 +2377,7 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
   // The cash balance runway is measured from: the newest of the founder's
   // own entry and the closing balances of uploaded files.
   const cashBalance = useMemo(() => effectiveCashBalance({ profile, batches, baseCurrency: cur }), [profile, batches, cur]);
+  const cashMoved = useMemo(() => (cashBalance ? cashMovementSince(allBaseTxns, cashBalance.on, ruleIndex) : null), [allBaseTxns, cashBalance, ruleIndex]);
   const userName  = profile?.name || user?.user_metadata?.full_name || user?.email?.split("@")[0] || "Founder";
   const userAvatar = user?.user_metadata?.avatar_url;
 
@@ -2402,8 +2415,6 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
   useEffect(() => { if (mobileSearchOpen) searchRef.current?.focus(); }, [mobileSearchOpen]);
 
   // ── Data loading ──
-  // The period starts on the 1st of a month, so "the last 3 months" is
-  // three whole months plus this one so far, never a first month cut short.
   const loadHistory = useCallback(async () => {
     setHistoryLoading(true);
     try {
@@ -2411,21 +2422,16 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
       // concentration can be computed from payer names (that only exists
       // at the transaction level, never in a monthly bucket), and
       // `dedupe_hash` so a rule set on one transaction finds it again.
-      const cutoff = periodStartDate(periodFilter, new Date().toISOString().slice(0, 10));
-      const list = await selectAll(() => {
-        let query = supabase.from("transactions").select("id, txn_date, amount, category, description, currency, dedupe_hash, source_batch_id")
-          .order("txn_date", { ascending: true }).order("id", { ascending: true });
-        if (cutoff) query = query.gte("txn_date", cutoff);
-        return query;
-      });
-      setTxns(list);
+      const list = await selectAll(() => supabase.from("transactions").select("id, txn_date, amount, category, description, currency, dedupe_hash, source_batch_id")
+        .order("txn_date", { ascending: true }).order("id", { ascending: true }));
+      setAllTxns(list);
     } catch (e) {
       console.error("Failed to load transaction history:", e);
-      setTxns([]);
+      setAllTxns([]);
       setActionErr("Your transaction history could not be loaded. Refresh to try again.");
     }
     setHistoryLoading(false);
-  }, [periodFilter]);
+  }, []);
 
   const loadRules = useCallback(async () => {
     try {
@@ -2731,7 +2737,8 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
   const m = computeMetrics(
     rows, { mRev, mExp, mCash: 0, mCac, mLtv, mLeads, mClose }, mode,
     { lastTxnDate: history.length > 0 ? lastTxnDate : null, revenueConcentration: concentrationData, currency: cur,
-      cash: cashBalance ? { amount: cashBalance.amount, on: cashBalance.on } : null, today: todayStr }
+      cash: cashBalance ? { amount: cashBalance.amount, on: cashBalance.on, recorded: cashMoved?.recorded, lastDataOn: cashMoved?.lastDate } : null,
+      runRateRows, today: todayStr }
   );
   const {
     tr, sr, latest, totRev, totExp, totCogs, activeCash, activeCac, activeLtv, n, totPro, margin, vel, conv, ltvcac,
@@ -2740,6 +2747,7 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
     dataConfidence, growth, risk, trends, hasCashData, runwayConfidence, breakEvenConfidence, proj90Confidence,
     hiringCapacityConfidence, ltvcacConfidence, growthConfidence, seasonalPattern, historicalConfidence, founderNarrative,
     avgFinOut, partialMonths, totFinIn, totFinOut, totTrIn, totTrOut, totRefIn, totRefOut, totUnconfirmedIn, figuresOpen,
+    runRev, runExp, runFinOut, cashToday, burnOpen, burnShort,
   } = m;
   const metrics = { margin, vel, conv, sov, free, burnMonths, concentration, concentrationReliable, ltvcac, cashFlowPositive, n };
 
@@ -2753,8 +2761,8 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
   // project against.
   // Counted down from a positive balance only: an account already at or
   // below zero has no runway left to count, whatever the bills.
-  const forwardRunway = (hasCashData && activeCash > 0 && activeObligations.length > 0 && !figuresOpen)
-    ? computeForwardRunway({ currentCash: activeCash, avgRev, avgExp, avgFinOut, obligations: activeObligations, fromDate: todayStr, horizonDays: 365 })
+  const forwardRunway = (hasCashData && activeCash > 0 && activeObligations.length > 0 && !burnOpen && !burnShort)
+    ? computeForwardRunway({ currentCash: activeCash, avgRev: runRev, avgExp: runExp, avgFinOut: runFinOut, obligations: activeObligations, fromDate: todayStr, horizonDays: 365 })
     : null;
   // Surfaced only when it tells the founder something average burn
   // doesn't — a lumpy bill landing soon that a flat monthly rate, smoothing
@@ -2768,8 +2776,10 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
     setAffordAmount(monthlyCost > 0 ? monthlyCost : null);
   };
   const affordResult = !affordAmount ? null
-    : figuresOpen ? { affordable: false, pendingReview: true, message: "This cannot be answered yet, because much of your money in is not confirmed. Confirm it under All transactions, then check again." }
-    : checkAffordability({ currentCash: activeCash, cashKnown: hasCashData, avgRev, avgExp, avgFinOut, obligations: activeObligations, monthlyCost: affordAmount, fromDate: todayStr, currency: cur });
+    : burnOpen ? { affordable: false, pendingReview: true, message: "This cannot be answered yet, because much of your money in is not confirmed. Confirm it under All transactions, then check again." }
+    : burnShort ? { affordable: false, pendingReview: true, message: "This cannot be answered yet: there is less than a month of data. Upload at least 28 days of transactions, then check again." }
+    : cashToday && !cashToday.usable ? { affordable: false, pendingReview: true, message: "This cannot be answered until you enter today's cash balance under Transactions: your last one may have run out, or is too old to use." }
+    : checkAffordability({ currentCash: activeCash, cashKnown: hasCashData, avgRev: runRev, avgExp: runExp, avgFinOut: runFinOut, obligations: activeObligations, monthlyCost: affordAmount, fromDate: todayStr, currency: cur });
 
   const scenario = runScenario(
     { revenue: latest.revenue, expenses: latest.expenses, cash: activeCash, cac: activeCac, ltv: activeLtv, leads: 0, closures: 0,
@@ -2787,7 +2797,7 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
   // can never disagree.
   const currentDirective = hasData
     ? computeDirective({ margin, burnMonths, free, vel, conv, ltvcac, months: n, concentration: concentrationData, currency: cur,
-        runwayKnown: hasCashData, cashFlowPositive, figuresOpen, unconfirmedIn: totUnconfirmedIn })
+        runwayKnown: hasCashData && !burnOpen && !burnShort, cashFlowPositive, figuresOpen, unconfirmedIn: totUnconfirmedIn })
     : null;
 
   // Persist a directive only when it genuinely differs from the most
@@ -2894,6 +2904,11 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
           // came from; null when no balance is known.
           cashBalance: cashBalance ? { amount: Math.round(cashBalance.amount), on: cashBalance.on, source: cashBalance.source }
             : hasCashData ? { amount: Math.round(activeCash), on: "the last date in the uploaded file", source: "upload" } : null,
+          // What runway actually counts down from, when that differs from the
+          // saved balance; null when the balance stands as it is.
+          cashToday: cashToday?.usable && (cashToday.recorded || cashToday.estimated)
+            ? { amount: Math.round(cashToday.amount), recorded: Math.round(cashToday.recorded), estimated: Math.round(cashToday.estimated), daysEstimated: cashToday.gapDays }
+            : null,
           // Money kept out of revenue and costs in the period.
           nonOperating: { financingIn: Math.round(totFinIn), financingOut: Math.round(totFinOut), transferIn: Math.round(totTrIn),
             transferOut: Math.round(totTrOut), refundsIn: Math.round(totRefIn), refundsOut: Math.round(totRefOut) },
@@ -3028,8 +3043,8 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
       sub: figuresOpen ? "Confirm your money in first" : "Profit less tax and safety reserves" },
     runway:  { key:"runway", lbl:"Runway", val:runwayText, conf:runwayConfidence,
       col: cashFlowPositive || burnMonths >= 6 ? C.positive : burnMonths >= 3 ? C.warning : runwayText === "---" ? C.text3 : C.danger,
-      sub: cashFlowPositive ? (avgFinOut > 0 ? "Revenue covers costs and repayments" : "Revenue covers costs") : !runwayConfidence.shown ? (figuresOpen ? "Confirm your money in first" : "Add a cash balance to calculate")
-        : activeCash < 0 ? "Overdrawn" : burnMonths <= 0 ? "Cash does not cover a month of burn" : burnMonths >= 6 ? "Above the 6-month threshold" : burnMonths >= 3 ? "Build toward 6 months" : "Below 3 months" },
+      sub: cashFlowPositive ? (runFinOut > 0 ? "Revenue covers costs and repayments" : "Revenue covers costs") : !runwayConfidence.shown ? (burnOpen ? "Confirm your money in first" : burnShort ? "Needs at least 28 days of data" : cashToday && !cashToday.usable ? "Enter today's balance to calculate" : "Add a cash balance to calculate")
+        : activeCash < 0 ? "Overdrawn" : burnMonths <= 0 ? "No cash left" : burnMonths >= 6 ? "Above the 6-month threshold" : burnMonths >= 3 ? "Build toward 6 months" : "Below 3 months" },
     risk:    { key:"risk", lbl:"Risk score", val: figuresOpen ? "---" : risk.score.toFixed(0), unit: figuresOpen ? null : "/100",
       col: figuresOpen ? C.text3 : risk.label === "Low" ? C.positive : risk.label === "Watch" ? C.platinum : risk.label === "Elevated" ? C.warning : C.danger,
       sub: figuresOpen ? "Confirm your money in first" : `${risk.label}. Weighted from runway, margin and trend` },
@@ -3057,6 +3072,7 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
     ["Net profit", fmt(totPro, cur)],
     ["Profit after reserves", fmt(free, cur)],
     ["Cash balance", cashBalance ? `${fmt(cashBalance.amount, cur)} on ${cashBalance.on}` : "Not entered"],
+    ...(cashToday?.usable && (cashToday.recorded || cashToday.estimated) ? [["Estimated cash today", fmt(cashToday.amount, cur)]] : []),
     ["Runway", cashFlowPositive ? "No burn" : runwayConfidence.shown ? `${safe(burnMonths).toFixed(1)} months` : "Not enough data"],
     ...(totFinIn > 0 ? [["Loans and owner money in", fmt(totFinIn, cur)]] : []),
     ...(totFinOut > 0 ? [["Loan repayments and owner withdrawals", fmt(totFinOut, cur)]] : []),
@@ -3211,7 +3227,7 @@ function DashboardHome({ ctx }) {
         </div>
         {showForwardRunway && (
           <div className="d-alert warn" style={{ marginTop:12 }}>
-            {cashFlowPositive ? "No burn on average, but " : `${safe(burnMonths).toFixed(1)} months on average burn. `}
+            {cashFlowPositive ? "No burn at the current rate, but " : `${safe(burnMonths).toFixed(1)} months at the current burn. `}
             {forwardRunway.monthsUntilCross.toFixed(1)} months against your known obligations (around {forwardRunway.crossDate}). The second is the real number.
           </div>
         )}
@@ -3389,7 +3405,7 @@ function KindEditor({ txn, kind, source, txns, onSave, onReset, onClose }) {
 // The cash runway is measured from: the founder's own figure, or the
 // closing balance of an uploaded file with a Balance column. Saved, with
 // the date it was true.
-function CashBalancePanel({ cur, cashBalance, profile, onSave, todayStr, cashFlowPositive }) {
+function CashBalancePanel({ cur, cashBalance, cashToday, profile, onSave, todayStr, cashFlowPositive }) {
   const [amount, setAmount] = useState("");
   const [on, setOn] = useState(todayStr);
   const [busy, setBusy] = useState(false);
@@ -3424,6 +3440,8 @@ function CashBalancePanel({ cur, cashBalance, profile, onSave, todayStr, cashFlo
             {cashBalance.amount < 0 ? (cashFlowPositive ? " The account is overdrawn." : " The account is overdrawn, so runway is 0 months.") : ""}
             {days > 45 ? ` It is ${days} days old, so runway is less certain until you update it.` : ""}
           </p>
+          {cashTodayNote(cashToday, cur) && <p className="panel-copy" style={{ marginTop:8 }}>{cashTodayNote(cashToday, cur)} Runway counts down from this.</p>}
+          {cashToday && !cashToday.usable && <p className="panel-copy" style={{ marginTop:8 }}>{cashToday.reason === "too_old" ? `There is no data for the last ${cashToday.gapDays} days, which is too long to estimate across.` : "At your current burn, this balance may have run out."} Enter today's balance below so runway can be measured.</p>}
         </>
       ) : (
         <p className="panel-copy">No cash balance yet, so runway cannot be measured. Enter the total in your business accounts below, or upload a bank statement that has a Balance column.</p>
@@ -3531,7 +3549,7 @@ function TransactionsSection({ ctx }) {
         </Panel>
       </div>
 
-      <CashBalancePanel cur={cur} cashBalance={cashBalance} profile={profile} onSave={saveCashBalance} todayStr={todayStr} cashFlowPositive={m.cashFlowPositive}/>
+      <CashBalancePanel cur={cur} cashBalance={cashBalance} cashToday={m.cashToday} profile={profile} onSave={saveCashBalance} todayStr={todayStr} cashFlowPositive={m.cashFlowPositive}/>
 
       <Panel title="All transactions">
         <p className="panel-copy" style={{ marginBottom:12 }}>Each transaction counts as revenue or a cost unless its description shows it is a loan or the owner's own money, a transfer between your own accounts, or a refund. Those are kept out of revenue and costs. Money in that could not be identified is not counted until you confirm it. Use Change on any row to correct one.</p>
@@ -3989,16 +4007,17 @@ function ForecastsSection({ ctx }) {
           <p className="panel-copy">Monthly revenue in three months at your trailing growth rate ({pc(vel)} last month), capped at ±50% a month.</p>
           <ConfidenceLine c={proj90Confidence}/>
         </Panel>
-        <Panel title="Runway on average burn">
+        <Panel title="Runway at current burn">
           <div className="big-num">{runwayText}</div>
-          <p className="panel-copy">Cash divided by average monthly net burn (costs, loan repayments and owner withdrawals, less revenue), less the reserve mode's safety share.{cashBalance ? ` Cash: ${fmt(cashBalance.amount, cur)} on ${cashBalance.on}.` : ""}</p>
+          <p className="panel-copy">Estimated cash today divided by current monthly net burn: your last 3 complete months of costs, loan repayments and owner withdrawals, less revenue. Before any month is complete, burn is measured per day across at least 28 days of data. The period on screen does not change it.{m.cashToday && cashTodayNote(m.cashToday, cur) ? ` ${cashTodayNote(m.cashToday, cur)}` : cashBalance ? ` Cash: ${fmt(cashBalance.amount, cur)} on ${cashBalance.on}.` : ""}</p>
           <ConfidenceLine c={runwayConfidence}/>
         </Panel>
         <Panel title="Runway against known bills">
           <div className="big-num">{m.hasCashData && m.activeCash <= 0 ? "0 mo" : !forwardRunway ? "---" : forwardRunway.crossesZero ? `${forwardRunway.monthsUntilCross} mo` : "12+ mo"}</div>
           <p className="panel-copy">
             {m.hasCashData && m.activeCash <= 0 ? "Your cash balance is already at or below zero, so there is no cash to count down against your bills."
-              : m.figuresOpen ? "Confirm your money in first."
+              : m.burnOpen ? "Confirm your money in first."
+              : m.burnShort ? "Needs at least 28 days of data."
               : !forwardRunway ? "Needs a cash balance and at least one detected recurring obligation."
               : forwardRunway.crossesZero ? `Cash reaches zero around ${forwardRunway.crossDate}, counting recurring bills on their real dates.`
               : "Cash holds for the next 12 months against your recurring bills on their real dates."}
@@ -4353,7 +4372,7 @@ function PasswordPanel({ user }) {
 
 // ─── SECTION: HELP & SUPPORT ──────────────────────────────────
 const HELP_FAQ = [
-  ["How is runway calculated?", "Your cash balance divided by average monthly net burn (costs, loan repayments and owner withdrawals, less revenue), less the reserve mode's safety share. If revenue covers all of that, there is no burn and runway shows \"No burn\". An overdraft or an empty account shows 0 months. Forecasts also shows runway against your recurring bills on their real dates, which catches a large bill landing soon."],
+  ["How is runway calculated?", "Your estimated cash today divided by your current monthly net burn. Current burn is your last 3 complete months of costs, loan repayments and owner withdrawals, less revenue, whatever period is on screen. Before any month is complete, it is measured per day across the days your data covers, and only once there are at least 28. Cash today starts from your saved balance, adds what is recorded since (transfers between your own accounts are left out), and estimates burn for any days with no data; the working is shown under Transactions. If revenue covers all of that, there is no burn and runway shows \"No burn\". An overdraft or an empty account shows 0 months. Forecasts also shows runway against your recurring bills on their real dates, which catches a large bill landing soon."],
   ["Where does the cash balance come from?", "The newest of two: a balance you enter under Transactions, with the date it was true, or the closing balance of an uploaded file that has a Balance column. A file's balance covers that one account, so enter the total if the business has several. Enter an overdraft as a negative number. A balance more than 45 days old lowers runway's confidence."],
   ["What is Profit after reserves?", "Net profit for the selected period, less the reserve mode's tax and safety shares. It is a profit figure, not the money in your bank: your cash balance is under Transactions. A loss reserves nothing, so a loss shows in full."],
   ["What is Hiring Capacity?", "The largest fully-loaded monthly cost (salary, payroll tax, benefits) your average monthly profit covers, after loan repayments, owner withdrawals and the safety share. It scales with your business. To test a specific salary against your cash and bills, use Can I afford it? under Forecasts."],
@@ -4634,7 +4653,7 @@ const MK_FAQ = [
   ["What financial data can I upload?",
     "CSV or Excel files (.csv, .xlsx, .xls) exported from your bank, or any spreadsheet with dates and signed amounts. You can also pull in a Google Sheet published as CSV. Each file is checked and you review it before it is saved. A file with a Balance column is checked to the cent, and one without is marked Not Reconciled. Files that cannot be read safely, such as accounting reports and card statements, are refused with the reason."],
   ["How does Command Ledger calculate financial metrics?",
-    "Every metric comes from a published formula applied to your transactions. Runway is your cash balance divided by average monthly net burn. Profit after reserves is net profit less a reserve for tax and a safety buffer. Loans, owner money and transfers between your own accounts are kept out of revenue and costs. Each figure shows how confident it is, based on how much recent data stands behind it, and a figure without enough data is shown as missing rather than as zero."],
+    "Every metric comes from a published formula applied to your transactions. Runway is your estimated cash today divided by your current monthly net burn. Profit after reserves is net profit less a reserve for tax and a safety buffer. Loans, owner money and transfers between your own accounts are kept out of revenue and costs. Each figure shows how confident it is, based on how much recent data stands behind it, and a figure without enough data is shown as missing rather than as zero."],
   ["Is my financial information secure?",
     "Data is encrypted in transit. Your transactions are stored in a private history that only your login can read, enforced by the database itself. The uploaded file is not kept, and deleting an upload deletes every transaction it added. An AI brief, sent only when you request one, includes your computed metrics and the names of your largest payers and recurring costs, never your transaction list. Card payments are handled entirely by PayPal."],
   ["Does Command Ledger connect directly to my bank?",

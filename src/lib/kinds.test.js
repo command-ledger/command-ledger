@@ -229,7 +229,7 @@ describe("loan repayments and owner withdrawals in the metrics", () => {
     expect(m.margin).toBeCloseTo(20, 6);           // (20,000 - 16,000) / 20,000
     expect(m.netBurn).toBe(3000);                  // 8,000 + 5,000 - 10,000
     expect(m.cashFlowPositive).toBe(false);
-    expect(m.burnMonths).toBeCloseTo(9.8, 6);      // (30,000 - 3,000 x 0.20) / 3,000
+    expect(m.burnMonths).toBeCloseTo(10, 6);       // 30,000 / 3,000
     expect(m.hiringCapacity).toBe(0);              // nothing left after the repayments
   });
 
@@ -255,7 +255,7 @@ describe("loan repayments and owner withdrawals in the metrics", () => {
     const m = computeMetrics(null, manual, "safe");
     expect(m.margin).toBeCloseTo(20, 6);
     expect(m.netBurn).toBe(1000);                  // 8,000 + 3,000 - 10,000
-    expect(m.burnMonths).toBeCloseTo(49.8, 6);     // (50,000 - 1,000 x 0.20) / 1,000
+    expect(m.burnMonths).toBeCloseTo(50, 6);       // 50,000 / 1,000
   });
 
   it("run the forward cash simulation down", () => {

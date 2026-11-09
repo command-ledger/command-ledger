@@ -2571,6 +2571,96 @@ export function capSeverityForVolume(severity, months) {
   return severity;
 }
 
+// ─── CURRENT BURN AND CASH TODAY ────────────────────────────────
+// Runway is estimated cash today divided by current monthly burn. Averaging
+// burn over the selected period once showed 16.9 months for a business with 7.5
+// left, gave the same business a different runway for each period, and passed a
+// new cost that would have run it dry. Treating an old balance as today's cash
+// showed 4.8 months where 1.4 remained.
+const RUN_RATE_MONTHS = 3;
+const DAYS_PER_MONTH = 30.44;
+// How many days with no data an estimate will cross. A judgement, set by hand:
+// past this, the arithmetic is still possible but no longer says anything.
+const MAX_ESTIMATED_DAYS = 90;
+// With no complete month, burn is measured per day, and only across at least
+// this many days: the shortest month, so a full statement cycle qualifies.
+const MIN_DAYS_FOR_DAILY_RATE = 28;
+
+// Whether burn can be trusted is judged on the months burn comes from, by the
+// same line as figuresOpen. Judged on the period on screen, one business read
+// 15.0 months in one view and --- in another.
+const unidentifiedOpen = (revenue, unconfirmedIn) => unconfirmedIn > 0 && unconfirmedIn >= UNCONFIRMED_MATERIAL_SHARE * (Math.max(0, revenue) + unconfirmedIn);
+// Rounded to the cent, so a business that breaks even reads 0, not a rounding
+// leftover: 0.0000000000145 once read as burn, and runway as 3.4 quadrillion months.
+const toCents = v => round2(v) || 0;
+
+// The last 3 complete months, or what there is. A month in progress is not a
+// month of spending. `rows` is aggregateTransactionsByMonth's output.
+export function currentRunRate(rows) {
+  const all = rows || [];
+  const complete = all.filter(r => !r.partial);
+  if (complete.length === 0 && all.length > 0) {
+    // No complete month: a part month's spending is not a month's. A 30-day
+    // statement from the 10th read as half a month of burn, and runway as twice
+    // as long. Burn is measured per day across the days the data covers, scaled
+    // to a month, and not at all across fewer than 28 days.
+    const from = all[0].coveredFrom, to = all[all.length - 1].coveredTo;
+    const days = from && to ? daysBetween(from, to) + 1 : 0;
+    const none = { months: 0, historyMonths: 0, revenue: 0, expenses: 0, financingOut: 0, unconfirmedIn: 0, open: false, burn: 0 };
+    if (days < MIN_DAYS_FOR_DAILY_RATE) return { ...none, days, tooShort: true };
+    const monthly = f => (all.reduce((s, r) => s + (Number(r[f]) || 0), 0) / days) * DAYS_PER_MONTH;
+    const revenue = monthly("revenue"), expenses = monthly("expenses"), financingOut = monthly("financingOut"), unconfirmedIn = monthly("unconfirmedIn");
+    return { ...none, days, revenue, expenses, financingOut, unconfirmedIn, open: unidentifiedOpen(revenue, unconfirmedIn), burn: toCents(expenses + financingOut - revenue) };
+  }
+  const recent = complete.slice(-RUN_RATE_MONTHS);
+  const average = f => (recent.length ? recent.reduce((s, r) => s + (Number(r[f]) || 0), 0) / recent.length : 0);
+  const revenue = average("revenue"), expenses = average("expenses"), financingOut = average("financingOut"), unconfirmedIn = average("unconfirmedIn");
+  return { months: recent.length, historyMonths: complete.length, revenue, expenses, financingOut, unconfirmedIn, open: unidentifiedOpen(revenue, unconfirmedIn), burn: toCents(expenses + financingOut - revenue) };
+}
+
+// What the bank recorded after a balance's date. Transfers between the
+// business's own accounts are left out, because the total did not change. Money
+// nobody has identified counts: whatever it is, it reached the bank. A balance
+// is taken as the end of its day, so that day's rows are already in it.
+export function cashMovementSince(transactions, on, rules) {
+  let recorded = 0, lastDate = null;
+  (transactions || []).forEach(t => {
+    const date = String(t.txn_date).slice(0, 10);
+    if (!lastDate || date > lastDate) lastDate = date;
+    if (!on || date <= on || transactionKind(t, rules) === "transfer") return;
+    recorded += Number(t.amount) || 0;
+  });
+  return { recorded: round2(recorded), lastDate };
+}
+
+// The saved balance, plus what is recorded since, less burn for the days with no
+// data. Only a loss is ever estimated: income that has not been seen is not
+// assumed. An overdraft the records prove is real. One only an estimate reaches,
+// or a gap too long to estimate across, is not known either way (`usable` false),
+// and the founder is asked for today's balance rather than told the money is gone.
+export function estimateCashToday({ amount, on = null, recorded = 0, lastDataOn = null, burn = 0, today = null, burnOnHold = false }) {
+  const balance = Number(amount) || 0;
+  const moved = Number(recorded) || 0;
+  const known = round2(balance + moved);
+  const from = on && lastDataOn && lastDataOn > on ? lastDataOn : on;
+  const gapDays = from && today ? Math.max(0, daysBetween(from, today)) : 0;
+  const result = { balance, on, recorded: moved, gapDays, estimated: 0, amount: known, usable: true, reason: null };
+  if (burn <= 0 || burnOnHold || known <= 0 || gapDays === 0) return result;
+  if (gapDays > MAX_ESTIMATED_DAYS) return { ...result, usable: false, reason: "too_old" };
+  const estimated = round2((burn * gapDays) / DAYS_PER_MONTH);
+  const remaining = round2(known - estimated);
+  return remaining > 0 ? { ...result, estimated, amount: remaining } : { ...result, estimated, amount: remaining, usable: false, reason: "may_have_run_out" };
+}
+
+// The working behind an estimate, in words, or nothing when no working was needed.
+export function cashTodayNote(c, currency) {
+  if (!c || !c.usable || (!c.recorded && !c.estimated)) return "";
+  const parts = [`About ${fmt(c.amount, currency)} today: ${fmt(c.balance, currency)}${c.on ? ` on ${c.on}` : ""}`];
+  if (c.recorded) parts.push(`${c.recorded < 0 ? "less" : "plus"} ${fmt(Math.abs(c.recorded), currency)} recorded since`);
+  if (c.estimated) parts.push(`less about ${fmt(c.estimated, currency)} estimated for the ${c.gapDays} day${c.gapDays === 1 ? "" : "s"} with no data`);
+  return `${parts.join(", ")}.`;
+}
+
 // ─── FINANCIAL METRICS ENGINE ──────────────────────────────────
 // Pure derivation of every ratio/indicator shown on the Dashboard, from
 // either parsed CSV rows (monthly buckets) or manually entered numbers.
@@ -2583,11 +2673,14 @@ export function capSeverityForVolume(severity, months) {
 // outside this function because it needs transaction descriptions, which
 // monthly-aggregated `rows` never carry.
 export function computeMetrics(rows, manual, mode, context = {}) {
-  // `context.cash` ({ amount, on }, from effectiveCashBalance) is a known
-  // balance: used as it is, an overdraft or zero included. Without it the
-  // older inputs stand: a file's closing balance on the newest row, or the
-  // manual figure, where 0 means "not entered".
-  const { lastTxnDate = null, revenueConcentration = null, currency = "USD", cash = null } = context;
+  // `context.cash` ({ amount, on }, from effectiveCashBalance, with `recorded`
+  // and `lastDataOn` from cashMovementSince) is a known balance: rolled forward
+  // to `context.today`, an overdraft or zero included. Without it the older
+  // inputs stand: a file's closing balance on the newest row, or the manual
+  // figure, where 0 means "not entered".
+  // `context.runRateRows` is every month on file, so burn does not depend on
+  // the period on screen. Without it, burn reads `rows`.
+  const { lastTxnDate = null, revenueConcentration = null, currency = "USD", cash = null, runRateRows = null, today = null } = context;
   const { mRev, mExp, mCash, mCac, mLtv, mLeads, mClose, mFinOut = 0 } = manual;
 
   const tr = mode === "safe" ? 0.30 : 0.25;
@@ -2622,12 +2715,29 @@ export function computeMetrics(rows, manual, mode, context = {}) {
   // read as a R5,662 loss at critical risk when it had taken in more than it
   // spent. While the gap is material, what rests on revenue waits for it.
   const figuresOpen = totUnconfirmedIn > 0 && totUnconfirmedIn >= UNCONFIRMED_MATERIAL_SHARE * (Math.max(0, totRev) + totUnconfirmedIn);
+  // Runway must reflect net burn (cash out less revenue), not gross expenses:
+  // dividing cash by gross expenses tells a profitable company it is about to
+  // run out of money. Loan repayments and owner withdrawals are not costs, but
+  // they empty the bank just the same, so they count here; a loan received does
+  // not offset burn, because it is a one-off addition to cash, not income.
+  const rate = rows
+    ? currentRunRate(runRateRows?.length ? runRateRows : rows)
+    : { months: 1, historyMonths: 1, revenue: Number(mRev) || 0, expenses: Number(mExp) || 0, financingOut: Number(mFinOut) || 0 };
+  const runRev = rate.revenue, runExp = rate.expenses, runFinOut = rate.financingOut;
+  const netBurn = toCents(runExp + runFinOut - runRev);
+  // Much of the money in those months is unidentified, so burn is not known.
+  const burnOpen = !!rate.open;
+  // Under 28 days of data and no complete month: burn has not been measured.
+  const burnShort = !!rate.tooShort;
   // A balance belongs to the newest row, complete or not.
   const lastRow    = rows ? rows[rows.length - 1] : null;
-  const knownCash  = cash && finiteOrNull(cash.amount) !== null ? Number(cash.amount)
+  const cashToday  = cash && finiteOrNull(cash.amount) !== null
+    ? estimateCashToday({ amount: cash.amount, on: cash.on, recorded: cash.recorded, lastDataOn: cash.lastDataOn, burn: netBurn, today, burnOnHold: burnOpen || burnShort })
+    : null;
+  const knownCash  = cashToday ? (cashToday.usable ? cashToday.amount : null)
     : lastRow?.cashKnown ? Number(lastRow.cash) || 0 : null;
   const cashKnown  = knownCash !== null;
-  const activeCash = cashKnown ? knownCash : rows ? (lastRow.cash || mCash) : mCash;
+  const activeCash = cashKnown ? knownCash : cashToday ? 0 : rows ? (lastRow.cash || mCash) : mCash;
   const activeCac  = rows ? (latest.cac  || mCac)  : mCac;
   const activeLtv  = rows ? (latest.ltv  || mLtv)  : mLtv;
 
@@ -2671,22 +2781,14 @@ export function computeMetrics(rows, manual, mode, context = {}) {
   // Everything that leaves the bank in an average month: costs, plus loan
   // repayments and money the owner takes out.
   const avgCashOut = avgExp + avgFinOut;
-  // Runway must reflect net burn (cash out less revenue), not gross
-  // expenses — dividing cash by gross expenses tells a profitable,
-  // cash-flow-positive company it's about to run out of money. When
-  // revenue already covers it there's no burn to measure against. Loan
-  // repayments and owner withdrawals are not costs, but they empty the bank
-  // just the same, so they count here; a loan received does not offset
-  // burn, because it is a one-off addition to cash, not income.
-  const netBurn        = avgCashOut - avgRev;
-  const cashFlowPositive = hasData && netBurn <= 0;
-  // The mode's safety share is held back from one month's burn. It used to
-  // be taken from the whole period's loss, so the same cash and burn read
-  // as a shorter runway the longer the selected history — and went negative
-  // ("---", maximum risk) on a long enough one.
-  // Never below zero: cash that does not cover the safety share, or an
-  // overdraft, is no runway, not negative runway.
-  const burnMonths = netBurn > 0 ? Math.max(0, (activeCash - netBurn * sr) / netBurn) : 0;
+  // When revenue already covers it there's no burn to measure against.
+  // Not claimed from a few days of data: takings can land before the month's bills.
+  const cashFlowPositive = hasData && netBurn <= 0 && !burnShort;
+  // The published formula: cash divided by burn. A safety share used to come
+  // off it, so the same business read 11.8 months in Safe mode, 11.9 in Growth
+  // and 12.0 by the formula on the site. Never below zero: an overdraft is no
+  // runway, not negative runway.
+  const burnMonths = netBurn > 0 && !burnOpen && !burnShort ? Math.max(0, activeCash / netBurn) : 0;
   // Hiring capacity: the largest new fully-loaded monthly cost (salary,
   // payroll tax, benefits) the business's own average monthly profit can
   // carry without drawing down cash, after holding back the mode's safety
@@ -2728,7 +2830,7 @@ export function computeMetrics(rows, manual, mode, context = {}) {
 
   const growth = computeGrowthScore(basis, vel, seasonalAdjustedVel);
   const trends = detectTrends(basis, seasonalPattern, currency);
-  const risk = computeRiskScore({ cashFlowPositive, burnMonths, runwayKnown: cashKnown || activeCash > 0, concentration, concentrationReliable, ltvcac, margin, trends, growthScore: growth.score });
+  const risk = computeRiskScore({ cashFlowPositive, burnMonths, runwayKnown: (cashKnown || activeCash > 0) && !burnOpen && !burnShort, concentration, concentrationReliable, ltvcac, margin, trends, growthScore: growth.score });
 
   // Long-run trajectory, seasonality, and a plain-language narrative —
   // same 13+/2+ month floors as the functions themselves. Every field
@@ -2744,11 +2846,16 @@ export function computeMetrics(rows, manual, mode, context = {}) {
   const hasCashData = cashKnown || activeCash > 0;
   const hasUnitEconomicsData = activeCac > 0 && activeLtv > 0;
 
-  const runwayBase = metricConfidence(
-    (cashFlowPositive || hasCashData) && !figuresOpen,
-    figuresOpen ? "money in is not confirmed yet" : "no cash balance entered. Add it under Transactions to calculate runway",
-    n, lastTxnDate
-  );
+  const runwayMissing = burnOpen ? "money in is not confirmed yet"
+    : burnShort ? `there is less than a month of data (${rate.days} day${rate.days === 1 ? "" : "s"}). At least 28 days are needed to measure burn`
+    : cashToday?.reason === "too_old" ? `your latest data is ${cashToday.gapDays} days old. Enter today's balance under Transactions to calculate runway`
+    : cashToday?.reason === "may_have_run_out" ? "at your current burn your last balance may have run out. Enter today's balance under Transactions to calculate runway"
+    : "no cash balance entered. Add it under Transactions to calculate runway";
+  const runwayMeasured = metricConfidence((cashFlowPositive || hasCashData) && !burnOpen && !burnShort, runwayMissing, rate.historyMonths, lastTxnDate);
+  // Measured per day, before any month is complete: low, and it says so.
+  const runwayBase = runwayMeasured.shown && rate.days
+    ? { ...runwayMeasured, level: "low", reason: runwayMeasured.reason.replace(/^based on \d+ months? of data/, `based on ${rate.days} days of data, with no complete month yet`) }
+    : runwayMeasured;
   // A balance from weeks ago says little about today's runway: one level
   // lower, and the reason says how old it is.
   const cashAgeDays = cash?.on ? Math.floor(((context.today ? Date.parse(context.today) : Date.now()) - Date.parse(cash.on)) / 86400000) : null;
@@ -2774,7 +2881,8 @@ export function computeMetrics(rows, manual, mode, context = {}) {
     hiringCapacity, concentration, concentrationReliable, revenueConcentration,
     breakEven, proj90, proj90GrowthRate, hasData,
     growth, risk, trends, seasonalPattern, trajectory, historicalConfidence, founderNarrative,
-    hasCashData, hasUnitEconomicsData, cashKnown, cashOn: cash?.on ?? null,
+    hasCashData, hasUnitEconomicsData, cashKnown, cashOn: cash?.on ?? null, cashToday,
+    runRev, runExp, runFinOut, runMonths: rate.months, runDays: rate.days ?? null, burnOpen, burnShort,
     runwayConfidence, breakEvenConfidence, proj90Confidence,
     hiringCapacityConfidence, ltvcacConfidence, growthConfidence,
   };
@@ -3022,7 +3130,7 @@ export function computeDirective({ margin, burnMonths, free, vel, conv, ltvcac, 
     if ((safe(burnMonths) > 0 && safe(burnMonths) < 3) || outOfRunway) return {
       text: "Protect your runway. You have less than 3 months.",
       reason: outOfRunway
-        ? "Your cash balance no longer covers a month of net burn after the safety share. Suspend all non-revenue-generating spend immediately."
+        ? "Your cash balance is at or below zero. Suspend all non-revenue-generating spend immediately."
         : `At current burn rate you have ${safe(burnMonths).toFixed(1)} months before the business runs dry. Suspend all non-revenue-generating spend immediately.`,
       severity: "critical", rule: "low_runway", targetMetric: "burnMonths",
     };

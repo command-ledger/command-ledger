@@ -133,7 +133,7 @@ serve(async (req: Request) => {
       payroll, rent, marketing, software, cogs,
       // The cash balance runway was measured from ({ amount, on, source }),
       // or null when none is known.
-      cashBalance,
+      cashBalance, cashToday,
       // Money kept out of revenue and costs for the period: loans and owner
       // money, transfers between the business's own accounts, and refunds
       // (which were netted against revenue or costs).
@@ -204,7 +204,7 @@ serve(async (req: Request) => {
       : `Not available — ${rc.reason || "payer names could not be reliably extracted from enough income transactions"}`
 
     // Forward cash calendar — a real, dated projection of recurring
-    // obligations, distinct from the smoothed average-burn figure above.
+    // obligations, distinct from the flat current-burn figure above.
     const fc = forwardCalendar || null
     const forwardCalendarSection = fc
       ? [
@@ -244,6 +244,11 @@ serve(async (req: Request) => {
     const cashBalanceLine = cb
       ? `- Cash Balance: ${fmt(cb.amount)} on ${cb.on}${cb.source === "upload" ? " (the closing balance of an uploaded bank file; one account only, unless the founder has entered a total)" : " (entered by the founder)"}${Number(cb.amount) < 0 ? " — the account is overdrawn" : ""}`
       : "- Cash Balance: Not available — no balance entered, and no uploaded file had a Balance column"
+    // What runway counts down from, when that differs from the saved balance.
+    const ct = cashToday && Number.isFinite(Number(cashToday.amount)) ? cashToday : null
+    const cashTodayLine = ct
+      ? `\n- Estimated Cash Today: ${fmt(ct.amount)} (an estimate, not a bank balance: the Cash Balance above${Number(ct.recorded) !== 0 ? `, ${Number(ct.recorded) < 0 ? "less" : "plus"} ${fmt(Math.abs(Number(ct.recorded)))} recorded since` : ""}${Number(ct.estimated) > 0 ? `, less about ${fmt(ct.estimated)} estimated for ${ct.daysEstimated} days with no data` : ""}). Burn Runway below counts down from this figure.`
+      : ""
 
     // Money that moved but is neither revenue nor a cost.
     const no = nonOperating || {}
@@ -293,7 +298,8 @@ Rules:
 - REPORTING PERIOD of 1 month cannot support "riskLevel": "Critical" — a single bad month may be a fluke, not a fire. Cap at "Watch" in that case and say the call needs more history to confirm.
 - If REVENUE CONCENTRATION below is "Not available," never state or imply a concentration percentage — say plainly that payer names couldn't be reliably read from the transaction data yet.
 - If REVENUE CONCENTRATION is marked MODERATE CONFIDENCE, hedge that specific figure the same way as any other moderate-confidence metric.
-- If FORWARD CASH CALENDAR shows an Obligation-Aware Runway that crosses zero, that is the real runway — lead with it over the smoothed Burn Runway figure above whenever the two disagree, and say plainly that a dated obligation (name it) is what actually breaks the cash position, not average burn.
+- If FORWARD CASH CALENDAR shows an Obligation-Aware Runway that crosses zero, that is the real runway — lead with it over the flat Burn Runway figure above whenever the two disagree, and say plainly that a dated obligation (name it) is what actually breaks the cash position, not the monthly burn rate.
+- Burn Runway is estimated cash today divided by current monthly burn, the last 3 complete months (or, before any month is complete, a daily rate across at least 28 days, at low confidence), so the reporting period does not change it. When Estimated Cash Today is given, it is an estimate and never a bank balance: say so, and say how to firm it up by entering today's balance.
 - If a Missed Obligation is listed, treat it as an active, first-priority signal — a bill that stopped appearing on schedule is often the earliest sign of a cash problem, worth flagging even ahead of other observations.
 - Read DECISION HISTORY below and reference it directly, not generically. If the founder ignored the same or a substantially similar directive twice, say so plainly — name it. If they acted and the outcome shows improvement, confirm it worked and state the measured change. If they disagreed, treat their note as a real input to weigh, not something to override by default — their reasoning may be correct.
 - Never shame the founder for an ignored directive. State the fact and the consequence, nothing more — e.g. "You have not reduced X since the Y directive; Z has since moved from A to B," never a judgment about the founder's choice.
@@ -327,7 +333,7 @@ CORE METRICS:
 
 CASH POSITION:
 - Profit After Reserves (net profit for the period less the tax and safety reserves; a profit figure, not a cash balance): ${fmt(reservesProfit)}
-${cashBalanceLine}
+${cashBalanceLine}${cashTodayLine}
 - Burn Runway: ${cashFlowPositive ? "Cash flow positive — revenue currently covers costs, loan repayments and owner withdrawals, so there is no cash burn to report" : describeMetric(burnRunway, conf.runway, (v) => `${v} months`)}
 - Break-Even Revenue Required: ${describeMetric(breakEven, conf.breakEven, fmt)}
 - 90-Day Revenue Projection: ${describeMetric(proj90, conf.proj90, fmt)}
@@ -346,7 +352,7 @@ ${nonOperatingSection || "None — every transaction in the period was revenue o
 REVENUE CONCENTRATION (by real paying client, extracted from transaction descriptions):
 ${concentrationSection}
 
-FORWARD CASH CALENDAR (recurring obligations — rent, payroll, tax, insurance — detected from transaction history and projected forward; this is the founder's real, dated cash picture, not the smoothed average burn above):
+FORWARD CASH CALENDAR (recurring obligations — rent, payroll, tax, insurance — detected from transaction history and projected forward; this is the founder's real, dated cash picture, not the flat current burn above):
 ${forwardCalendarSection}
 
 DECISION HISTORY (the last 3 directives issued, oldest listed last):
