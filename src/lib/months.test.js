@@ -2,12 +2,85 @@
 // part of, counts toward the period's totals but never stands in for a
 // whole month. Every expected figure below is worked out by hand.
 import { describe, it, expect } from "vitest";
-import { aggregateTransactionsByMonth, computeMetrics, periodStartDate } from "./financials.js";
+import { aggregateTransactionsByMonth, computeMetrics, periodStartDate, currentRunRate, sumCents } from "./financials.js";
 
 const NO_MANUAL = { mRev:0, mExp:0, mCash:0, mCac:0, mLtv:0, mLeads:0, mClose:0 };
 const TODAY = "2026-11-04";
 const txn = (txn_date, amount, description = amount > 0 ? "Client invoice" : "Supplier") => ({ txn_date, amount, description, category: null });
 const partialFlags = rows => rows.map(r => [r.period_month.slice(0, 7), r.partial]);
+
+// Defect 17 (correction plan, rank 17): monthly totals were rounded to whole
+// rand before any calculation, so small amounts were lost or invented. Cents are
+// kept through every calculation; only the display rounds. Expected figures are
+// worked by hand.
+describe("monthly totals are kept to the cent", () => {
+  it("adds three R0.40 fees to R1.20, not R1", () => {
+    const [row] = aggregateTransactionsByMonth([
+      txn("2026-06-01", -0.4, "Bank fee"), txn("2026-06-02", -0.4, "Bank fee"), txn("2026-06-03", -0.4, "Bank fee"),
+    ], { today: TODAY });
+    expect(row.expenses).toBe(1.2); // 0.40 + 0.40 + 0.40
+  });
+
+  it("keeps cents in every total the month carries", () => {
+    const [row] = aggregateTransactionsByMonth([
+      txn("2026-06-05", 1234.56, "Client invoice"),             // revenue
+      { txn_date: "2026-06-06", amount: -99.99, description: "Microsoft 365", category: "software" }, // a categorised cost
+      txn("2026-06-07", -500.25, "Loan repayment"),              // financing out
+    ], { today: TODAY });
+    expect(row.revenue).toBe(1234.56);
+    expect(row.software).toBe(99.99);
+    expect(row.expenses).toBe(99.99);
+    expect(row.financingOut).toBe(500.25);
+  });
+
+  // Adding cent amounts across months leaves floating-point remainders that
+  // whole rand never did: 100.10 + 200.20 is 300.29999999999995. A business that
+  // broke even to the cent then read a loss of 0.0000000000000568, and a critical
+  // directive. Totals across months are kept to the cent too.
+  it("adds months to the cent, so a break-even business reads exactly zero", () => {
+    const rows = aggregateTransactionsByMonth([
+      txn("2026-04-01", 100.1, "Client invoice"), txn("2026-04-28", -150.15, "Supplier"),
+      txn("2026-05-01", 200.2, "Client invoice"), txn("2026-05-30", -150.15, "Supplier"),
+    ], { today: "2026-07-15" });
+    // Two complete months. In: 100.10 + 200.20 = 300.30. Out: 150.15 + 150.15 = 300.30. Profit: 0.
+    const m = computeMetrics(rows, NO_MANUAL, "safe", { currency: "ZAR", today: "2026-07-15", runRateRows: rows });
+    expect(m.totRev).toBe(300.3);
+    expect(m.totExp).toBe(300.3);
+    expect(Object.is(m.totPro, 0)).toBe(true);
+    expect(Object.is(m.free, 0)).toBe(true);
+    expect(m.margin).toBe(0);
+  });
+
+  it("adds months to the cent in the run rate as well", () => {
+    // April and May complete; revenue 100.10 + 200.20 = 300.30 over 2 months, costs 150.15 + 150.15 = 300.30.
+    const rows = aggregateTransactionsByMonth([
+      txn("2026-04-01", 100.1, "Client invoice"), txn("2026-04-30", -150.15, "Supplier"),
+      txn("2026-05-01", 200.2, "Client invoice"), txn("2026-05-31", -150.15, "Supplier"),
+    ], { today: "2026-07-15" });
+    const r = currentRunRate(rows);
+    expect(r.months).toBe(2);
+    expect(r.revenue).toBe(150.15);   // 300.30 / 2
+    expect(r.expenses).toBe(150.15);  // 300.30 / 2
+    expect(Object.is(r.burn, 0)).toBe(true);
+  });
+
+  it("sums a field to the cent", () => {
+    expect(sumCents([{ v: 100.1 }, { v: 200.2 }], "v")).toBe(300.3);
+    expect(Object.is(sumCents([{ v: 0.1 }, { v: 0.2 }, { v: -0.3 }], "v"), 0)).toBe(true);
+    expect(sumCents([], "v")).toBe(0);
+    expect(sumCents(null, "v")).toBe(0);
+  });
+
+  it("never stores a negative zero from cents left over by floating point", () => {
+    // 0.30 - 0.10 - 0.20 is -0.0000000000000000278 in floating point; to the cent it is 0.
+    const [row] = aggregateTransactionsByMonth([
+      { txn_date: "2026-06-01", amount: -0.3, description: "Office supplies", category: null },
+      { txn_date: "2026-06-02", amount: 0.1, description: "Office supplies refund", category: null },
+      { txn_date: "2026-06-03", amount: 0.2, description: "Office supplies refund", category: null },
+    ], { today: TODAY });
+    expect(Object.is(row.expenses, 0)).toBe(true);
+  });
+});
 
 describe("which months are partial", () => {
   it("marks this month as partial, whatever it holds", () => {
@@ -66,11 +139,13 @@ describe("computeMetrics with a partial month", () => {
     expect(m.proj90).toBe(10000);
   });
 
-  it("still counts every month's money in the period's totals", () => {
+  it("measures profit and margin on complete months, and reports the month in progress beside them (D4)", () => {
     const m = computeMetrics(rows, NO_MANUAL, "safe");
-    expect(m.totRev).toBe(31500);      // 3 x 10,000 + 1,500
-    expect(m.totExp).toBe(20000);      // 3 x 6,000 + 2,000
-    expect(m.margin).toBeCloseTo((11500 / 31500) * 100, 6);
+    expect(m.totRev).toBe(30000);      // 3 x 10,000; November's 1,500 so far is left out
+    expect(m.totExp).toBe(18000);      // 3 x 6,000; November's 2,000 so far is left out
+    expect(m.margin).toBeCloseTo(40, 6); // 12,000 / 30,000
+    expect(m.toDate).toMatchObject({ revenue: 1500, expenses: 2000, months: 1 });
+    expect(m.toDate.label).toMatch(/to date/);
   });
 
   it("uses the partial month when no month is complete yet", () => {

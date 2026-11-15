@@ -125,22 +125,29 @@ describe("the runway directive", () => {
 });
 
 describe("affordability from a known balance", () => {
-  const args = { avgRev: 10000, avgExp: 8000, obligations: [], monthlyCost: 1000, fromDate: "2026-11-04", currency: "USD" };
+  // A complete window with the same figures in each of its three months, as
+  // judgementWindow() returns it.
+  const windowOf = (revenue, expenses, financingOut = 0) => {
+    const totals = { revenue, expenses, financingOut, unconfirmedIn: 0 };
+    const months = ["2026-08", "2026-09", "2026-10"].map(key => ({ key, month: key, status: "complete", gapAccounts: [], totals }));
+    return { end: "2026-10", months, complete: true, missing: [], average: { ...totals, burn: expenses + financingOut - revenue } };
+  };
+  const args = { window: windowOf(10000, 8000), obligations: [], monthlyCost: 1000, fromDate: "2026-11-04", currency: "USD" };
 
   it("says an overdrawn business has no cash for a new cost, even when profit covers it", () => {
     const r = checkAffordability({ ...args, currentCash: -500, cashKnown: true });
-    expect(r).toMatchObject({ affordable: false, overdrawn: true });
-    expect(r.message).toContain("average monthly profit ($2,000) covers this, but your cash balance is -$500");
+    expect(r).toMatchObject({ status: "not_affordable", affordable: false, held: false, reason: "no_cash_left" });
+    expect(r.message).toContain("your cash balance is -$500, so there is no cash for a new cost");
   });
 
-  it("says so plainly when profit does not cover it either", () => {
+  it("says the same of a known balance of zero", () => {
     const r = checkAffordability({ ...args, currentCash: 0, cashKnown: true, monthlyCost: 3000 });
-    expect(r.affordable).toBe(false);
-    expect(r.message).toContain("does not cover this");
+    expect(r).toMatchObject({ status: "not_affordable", reason: "no_cash_left" });
   });
 
-  it("still reads an unknown zero as no balance entered", () => {
-    expect(checkAffordability({ ...args, currentCash: 0 }).needsCash).toBe(true);
+  it("holds the answer when no balance is on file, and never answers from profit alone", () => {
+    const r = checkAffordability({ ...args, currentCash: 0 });
+    expect(r).toMatchObject({ status: "held", held: true, affordable: false, reason: "no_cash" });
   });
 });
 

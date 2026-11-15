@@ -26,8 +26,9 @@ a defect, however good it looks. Visual rules live in `DESIGN.md`.
    kept out of revenue, costs and margin, and refunds net against them. Every
    transaction shows what it counts as, and the founder can change it.
 9. **A month in progress is labelled "to date"** and never stands in for a
-   whole month: it counts in period totals, never in averages, growth,
-   trends or the latest-month figures.
+   whole month: profit, margin and profit after reserves are measured over
+   complete months, with the part month shown beside them, and it never counts
+   in averages, growth, trends or the latest-month figures.
 10. **A known cash balance is real, even at or below zero.** An overdraft or
     an empty account is 0 months of runway, not `---`. The balance shows its
     date and source, and a stale one lowers runway's confidence. Runway counts
@@ -50,6 +51,19 @@ a defect, however good it looks. Visual rules live in `DESIGN.md`.
     shown, and is not counted as revenue until someone decides. While much of
     it is undecided, figures built on revenue show `---`, never an alarm, and
     the AI advisor waits: a gap in the data is not a loss.
+
+13. **The headline is the first finding.** The largest words on the dashboard
+    state the most serious current finding, the same one the directive shows.
+    It is positive only when nothing warns, and a risk label is never milder
+    than it.
+14. **A missing month is named, never skipped.** A month with no statement for
+    an account is unknown, not zero. Burn and runway say which month is
+    missing, and with too few months they show `---`.
+15. **Only a pass says "affordable".** A cost that survives the year but dips
+    below the safety floor is not affordable, and a question that cannot be
+    answered says what is missing instead of yes or no.
+16. **A bill that cannot be checked is not a missed bill.** It says "Cannot
+    check yet" and stays a committed cost until the founder ends it.
 
 ## Accessibility
 

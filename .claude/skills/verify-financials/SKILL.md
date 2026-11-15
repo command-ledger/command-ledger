@@ -1,13 +1,13 @@
 ---
 name: verify-financials
-description: Validate Command Ledger's financial calculation engine (margin, burn runway, LTV:CAC, break-even, 90-day projection, Sovereignty Score) against hand-computed expected values before any change to that code ships.
+description: Validate Command Ledger's financial calculation engine (margin, burn runway, LTV:CAC, break-even, 90-day projection, risk score) against hand-computed expected values before any change to that code ships.
 ---
 
 Command Ledger's entire value proposition is "trust these numbers." The calculation engine lives in `src/lib/financials.js`, specifically `computeMetrics()`, and is consumed by the `Dashboard` component in `src/App.jsx`. Before any change to that file (or to how `Dashboard` calls it) is considered done, run this procedure — don't rely on "it compiles" or "the number on screen looks plausible."
 
 ## Procedure
 
-1. **Read the current formulas** in `computeMetrics()` end to end. Note every constant (the 30%/20% safe-mode and 25%/10% growth-mode reserve split, the `margin*0.6 + conv*0.4` Sovereignty Score weighting, the `free > 25000*6` hire-readiness threshold) — these are business decisions encoded as literals, not incidental values, so a diff that touches one should be treated as a product decision, not a typo fix.
+1. **Read the current formulas** in `computeMetrics()` end to end. Note every constant (the 30%/20% safe-mode and 25%/10% growth-mode reserve split, the `free > 25000*6` hire-readiness threshold) — these are business decisions encoded as literals, not incidental values, so a diff that touches one should be treated as a product decision, not a typo fix.
 
 2. **Run the existing unit tests**: `npx vitest run src/lib/financials.test.js`. These encode hand-computed expected values for representative scenarios (manual entry, uploaded CSV rows, safe vs. growth mode, zero-revenue edge cases). A change to the calculation engine that doesn't break any of these — but should have, because the formula changed — means the test file itself needs a new case added, not that the check can be skipped.
 

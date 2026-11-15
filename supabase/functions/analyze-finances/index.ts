@@ -99,9 +99,10 @@ serve(async (req: Request) => {
 
     const {
       monthlyRevenue, totalRevenue, totalExpenses, netProfit,
-      profitMargin, velocity, conversionRate, sovereigntyScore,
+      profitMargin, velocity, conversionRate,
       trueFreeCash, profitAfterReserves, burnRunway, cashFlowPositive, ltvCacRatio, cogsRatio, marketingRatio,
-      hiringCapacity, breakEven, proj90,
+      hiringCapacity, breakEven, cashBreakEven, monthlyResultLast3Months, marginLast3Months, monthsMissingFromLast3,
+      monthInProgress, uncategorisedCosts, riskUnknownBecause, taxNote, incomeTaxMarkedPaidInPeriod, vat, proj90,
       // Real payer-based concentration (replaces the retired single-month
       // maxRev/totRev metric). Only carries largestPct/top3Pct/hhi/etc. when
       // extraction confidence was moderate or high — otherwise it's just
@@ -329,22 +330,28 @@ CORE METRICS:
 - Profit Margin: ${pct(profitMargin)}
 - Revenue Velocity (month-on-month growth): ${pct(velocity)}
 - Conversion Rate: ${pct(conversionRate)}
-- Sovereignty Score: ${sovereigntyScore}/100
+- Monthly result over the last 3 complete calendar months (revenue less costs, a month; every judgement, the risk score and the directive read these months, whatever the period): ${monthlyResultLast3Months === null || monthlyResultLast3Months === undefined ? "not available" : `${fmt(monthlyResultLast3Months)} (margin ${pct(marginLast3Months)})`}
+${Array.isArray(monthsMissingFromLast3) && monthsMissingFromLast3.length > 0 ? `- Months missing or incomplete in the last 3: ${monthsMissingFromLast3.join(", ")}. A missing month is unknown, not zero: say it is missing and do not describe the figures as covering it.\n` : ""}${monthInProgress ? `- Not counted in profit or margin yet (${monthInProgress.label}): ${fmt(monthInProgress.moneyIn)} in, ${fmt(monthInProgress.moneyOut)} out. Period profit and margin cover complete months only.\n` : ""}
+TAX AND VAT (the app's own estimates from bank data. Never call any of them tax owed, a liability, a credit, a refund due or an overpayment, and never present them as a SARS calculation; the founder's tax practitioner and SARS decide those):
+- Revenue, costs, profit and margin above are before income tax. Income tax the founder marked as paid is not in costs${Number(incomeTaxMarkedPaidInPeriod) ? ` (${fmt(incomeTaxMarkedPaidInPeriod)} in this period)` : ""}; the tax reserve provides for it. It is still counted in burn and runway.
+- ${taxNote || "No tax-year comparison is available."}
+- VAT: ${vat && vat.registered === true ? `registered. Revenue and costs above leave out VAT where the founder classified it. Estimated from payment dates, not a VAT201 return: ${fmt(vat.collectedInSales)} collected in sales, ${fmt(vat.claimableInCosts)} claimable in costs, ${fmt(vat.paidToSars)} paid to SARS; never net these into an amount owed.${vat.profitIsLowestFigure ? ` Some sales or costs have no VAT class yet, so profit is the lowest it could be and may be up to ${fmt(vat.profitCouldBeHigherBy)} higher: say "at least".` : ""}` : vat && vat.registered === false ? "the founder says the business is not registered, so nothing is divided." : "not asked or not answered; do not assume either way."}
 
 CASH POSITION:
 - Profit After Reserves (net profit for the period less the tax and safety reserves; a profit figure, not a cash balance): ${fmt(reservesProfit)}
 ${cashBalanceLine}${cashTodayLine}
 - Burn Runway: ${cashFlowPositive ? "Cash flow positive — revenue currently covers costs, loan repayments and owner withdrawals, so there is no cash burn to report" : describeMetric(burnRunway, conf.runway, (v) => `${v} months`)}
-- Break-Even Revenue Required: ${describeMetric(breakEven, conf.breakEven, fmt)}
+- Operating Break-Even (monthly revenue at which there is no operating loss, last 3 complete months): ${describeMetric(breakEven, conf.breakEven, fmt)}
+- Cash Break-Even (monthly money in from customers needed for the bank balance to stop falling: costs as paid plus loan repayments and owner withdrawals, last 3 complete months; this is the one that agrees with runway): ${describeMetric(cashBreakEven ?? null, conf.breakEven, fmt)}
 - 90-Day Revenue Projection: ${describeMetric(proj90, conf.proj90, fmt)}
 
 UNIT ECONOMICS:
 - LTV:CAC Ratio: ${describeMetric(ltvCacRatio, conf.ltvCac, (v) => `${v}x`)}
-- COGS as % of Revenue: ${pct(cogsRatio)}
-- Marketing Spend as % of Revenue: ${pct(marketingRatio)}
+- COGS as % of Revenue: ${cogsRatio === "unknown" ? "unknown: costs were not categorised, so this is not zero" : pct(cogsRatio)}
+- Marketing Spend as % of Revenue: ${marketingRatio === "unknown" ? "unknown: costs were not categorised, so this is not zero" : pct(marketingRatio)}${Number(uncategorisedCosts) > 0 ? `\n- Costs not categorised: ${fmt(uncategorisedCosts)}` : ""}
 
 OPERATIONAL FLAGS:
-- Hiring Capacity: ${describeMetric(hiringCapacity, conf.hiringCapacity, (v) => Number(v) > 0 ? `${fmt(v)}/month — the largest fully-loaded monthly cost average profit covers after loan repayments, owner withdrawals and the safety buffer; it is not a recommendation to hire` : "None — average costs exceed revenue, so any hire would be funded from cash")}
+- Hiring Capacity: ${describeMetric(hiringCapacity, conf.hiringCapacity, (v) => Number(v) > 0 ? `${fmt(v)}/month — the largest fully-loaded monthly cost the last 3 complete months' profit covers after loan repayments, owner withdrawals and the safety buffer; it is not a recommendation to hire` : "None — average costs exceed revenue, so any hire would be funded from cash")}
 
 MONEY KEPT OUT OF REVENUE AND COSTS (this period):
 ${nonOperatingSection || "None — every transaction in the period was revenue or a cost."}
@@ -360,7 +367,7 @@ ${directiveHistorySection}
 
 COMPUTED SCORES (already calculated — narrate these, do not recompute or contradict them):
 - Growth Score: ${describeMetric(growthScore, conf.growth, (v) => `${v}/100 (${growthLabel ?? "n/a"})`)}${growthSeasonallyAdjusted ? " — compared to the same month last year, not last month (see SEASONAL CONTEXT below); this is the correct comparison, do not treat it as a weaker or hedged reading" : ""}
-- Risk Score: ${riskScore ?? "n/a"}/100 (${riskLabel ?? "n/a"}) — this is the value "riskLevel" in your response must match, subject to the single-month cap in the rules above
+- Risk Score: ${riskScore === null || riskScore === undefined ? `not scored${riskUnknownBecause ? `, because: ${riskUnknownBecause}` : ""}. Do not invent a score; say what is missing, and set "riskLevel" to "Watch"` : `${riskScore}/100 (${riskLabel ?? "n/a"}) — this is the value "riskLevel" in your response must match, subject to the single-month cap in the rules above`}
 
 ${trends?.length ? `TRENDS DETECTED (comparing the latest month to the prior months' average):\n${trends.map((t) => `- ${t.message}`).join("\n")}` : "TRENDS DETECTED: none — under 3 months of history, or nothing moved meaningfully."}
 

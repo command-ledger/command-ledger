@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import {
   computeMetrics, aggregateTransactionsByMonth, computeForwardRunway, checkAffordability, runScenario, periodStartDate,
   currentRunRate, cashMovementSince, estimateCashToday, cashTodayNote, buildRuleIndex, classificationKey, fmt,
+  accountCoverage, judgementWindow,
 } from "./financials.js";
 
 // Runway is estimated cash today divided by current monthly burn. An audit found
@@ -512,17 +513,30 @@ describe("What runs on the same figures", () => {
     expect(f.daysUntilCross).toBe(225);
   });
 
+  // The window affordability reads, built as the Dashboard builds it.
+  const BATCH = "00000000-0000-4000-8000-000000000001";
+  const windowFor = all => {
+    const coverage = accountCoverage({ transactions: all.map(t => ({ ...t, source_batch_id: BATCH })), batches: [{ id: BATCH, account_label: "Cheque", currency: "ZAR" }], answers: [], today: TODAY });
+    return { coverage, window: judgementWindow(coverage, { today: TODAY }) };
+  };
+
   it("refuses a cost the business cannot carry at the current rate", () => {
-    // 45,000 a month from R300,000 runs out in month 7. The old code said "holds for 12 months".
-    const a = checkAffordability({ currentCash: m.activeCash, cashKnown: m.hasCashData, avgRev: m.runRev, avgExp: m.runExp, avgFinOut: m.runFinOut, obligations: [], monthlyCost: 5000, fromDate: TODAY, currency: "ZAR" });
+    // Burn 40,000 plus 5,000 a month from R300,000. After the 7th payment on 15 January 2027 (184 days):
+    // 300,000 - 184 x 1,333.33 - 35,000 = 19,666.67, gone 15 days later, on 30 January: month 7.
+    const a = checkAffordability({ currentCash: m.cashToday.amount, cashKnown: true, cashUsable: m.cashToday.usable, ...windowFor(ROSE), obligations: [], monthlyCost: 5000, fromDate: TODAY, currency: "ZAR" });
     expect(a.affordable).toBe(false);
+    expect(a.reason).toBe("runs_out");
     expect(a.breaksInMonth).toBe(7);
+    expect(a.breakDate).toBe("2027-01-30");
+    expect(a.burn).toBe(m.runExp + m.runFinOut - m.runRev);
   });
 
-  it("does not ask the forward runway about an old balance", () => {
-    const old = run(SIX.flatMap(k => month(k, 50000, 70000)), { balance: { amount: 70000, on: "2026-04-01" } });
-    const a = checkAffordability({ currentCash: old.activeCash, cashKnown: old.hasCashData, avgRev: old.runRev, avgExp: old.runExp, avgFinOut: old.runFinOut, obligations: [], monthlyCost: 5000, fromDate: TODAY, currency: "ZAR" });
-    expect(a.needsCash).toBe(true);
+  it("does not test a cost against a balance too old to use", () => {
+    const all = SIX.flatMap(k => month(k, 50000, 70000));
+    const old = run(all, { balance: { amount: 70000, on: "2026-04-01" } });
+    expect(old.cashToday.usable).toBe(false);
+    const a = checkAffordability({ currentCash: null, cashKnown: true, cashUsable: old.cashToday.usable, ...windowFor(all), obligations: [], monthlyCost: 5000, fromDate: TODAY, currency: "ZAR" });
+    expect(a).toMatchObject({ status: "held", reason: "cash_unusable" });
   });
 });
 
@@ -538,7 +552,7 @@ describe("How the app uses it", () => {
 
   it("gives the forward runway and the cost check the current rate", () => {
     expect(app).toMatch(/computeForwardRunway\(\{ currentCash: activeCash, avgRev: runRev, avgExp: runExp, avgFinOut: runFinOut,/);
-    expect(app).toMatch(/checkAffordability\(\{ currentCash: activeCash, cashKnown: hasCashData, avgRev: runRev, avgExp: runExp, avgFinOut: runFinOut,/);
+    expect(app).toMatch(/window: judgement, coverage,/); // the cost check reads D1's window, the run rate's own months
   });
 
   it("reads burn and cash from the business currency only", () => {
@@ -549,20 +563,20 @@ describe("How the app uses it", () => {
 
   it("holds everything built on burn on the same test as burn", () => {
     expect(app).toMatch(/activeObligations\.length > 0 && !burnOpen && !burnShort\)/);
-    expect(app).toMatch(/: burnOpen \? \{ affordable: false, pendingReview: true/);
-    expect(app).toMatch(/runwayKnown: hasCashData && !burnOpen && !burnShort,/);
+    // The directive, headline and risk score are built in computeMetrics now, on the same test.
+    expect(readFileSync(new URL("./financials.js", import.meta.url), "utf8")).toMatch(/const runwayKnownNow = hasCashNow && !burnOpen && !burnShort && !burnGap;/);
   });
 
   it("waits for 28 days of data everywhere burn is used", () => {
     expect(app).toMatch(/activeObligations\.length > 0 && !burnOpen && !burnShort\)/);
-    expect(app).toMatch(/: burnShort \? \{ affordable: false, pendingReview: true, message: "This cannot be answered yet: there is less than a month of data/);
-    expect(app).toMatch(/runwayKnown: hasCashData && !burnOpen && !burnShort,/);
+    // The directive, headline and risk score are built in computeMetrics now, on the same test.
+    expect(readFileSync(new URL("./financials.js", import.meta.url), "utf8")).toMatch(/const runwayKnownNow = hasCashNow && !burnOpen && !burnShort && !burnGap;/);
     expect(app).toMatch(/burnShort \? "Needs at least 28 days of data"/);
     expect(app).toMatch(/m\.burnShort \? "Needs at least 28 days of data\."/);
   });
 
   it("does not claim no balance was entered when the saved one cannot be used", () => {
-    expect(app).toMatch(/cashToday && !cashToday\.usable \? \{ affordable: false, pendingReview: true, message: "This cannot be answered until you enter today's cash balance/);
+    expect(app).toMatch(/cashUsable: !cashToday \|\| cashToday\.usable/);
   });
 
   it("no longer publishes the old formula anywhere", () => {

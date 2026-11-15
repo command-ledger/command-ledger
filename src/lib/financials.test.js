@@ -64,8 +64,6 @@ describe("computeMetrics — manual entry", () => {
     expect(m.margin).toBeCloseTo(40, 5);         // (10000-6000)/10000 * 100
     expect(m.conv).toBeCloseTo(20, 5);            // 10/50 * 100
     expect(m.ltvcac).toBeCloseTo(4, 5);           // 800/200
-    expect(m.sov).toBeCloseTo(32, 5);             // 40*0.6 + 20*0.4 (lead data present, so the blended weighting applies)
-    expect(m.sovLbl).toBe("Defensive");           // 30 <= 32 < 50
     expect(m.taxV).toBeCloseTo(1200, 5);          // 4000 profit * 30% (safe mode)
     expect(m.safV).toBeCloseTo(800, 5);           // 4000 profit * 20% (safe mode)
     expect(m.free).toBeCloseTo(2000, 5);          // 4000 - 1200 - 800
@@ -120,21 +118,23 @@ describe("computeMetrics — manual entry", () => {
     expect(m.free).toBeCloseTo(-10000, 5); // not -5000, which reserving 50% of a negative profit produced
   });
 
-  it("scores no runway risk for a burning company that has not entered a cash balance", () => {
+  it("gives no risk score to a burning company that has not entered a cash balance", () => {
+    // Scoring it with no runway risk made less data read safer (defect 3, D7).
     const noCash = { mRev: 30000, mExp: 40000, mCash: 0, mCac: 0, mLtv: 0, mLeads: 0, mClose: 0 };
     const m = computeMetrics(null, noCash, "safe");
     expect(m.runwayConfidence.shown).toBe(false);
-    expect(m.risk.breakdown.runwayRisk).toBe(0); // unknown runway is missing data, not zero runway
+    expect(m.risk.score).toBeNull();
+    expect(m.risk.label).toBeNull();
+    expect(m.risk.unknown).toMatch(/cash balance/);
   });
 
-  it("scores the Sovereignty Score on margin alone when there's no conversion data, instead of capping it at 60", () => {
-    // 90% margin, but no lead/close data at all — true for every CSV/bank
-    // upload, since parseAnyCSV always sets leads and closures to 0.
-    const noLeadData = { mRev: 90000, mExp: 9000, mCash: 0, mCac: 0, mLtv: 0, mLeads: 0, mClose: 0 };
-    const m = computeMetrics(null, noLeadData, "safe");
-    expect(m.hasConversionData).toBe(false);
-    expect(m.sov).toBeCloseTo(90, 5);   // margin alone (90%), not margin*0.6 (54) capped by an unfillable conversion term
-    expect(m.sovLbl).toBe("Sovereign"); // unreachable under the old formula for any CSV-only user
+  it("has no Sovereignty index, and never labels a positive margin Critical (defect 15)", () => {
+    // Revenue 100,000 and costs 75,000: a 25.0% net margin, which the index called "Critical".
+    const m = computeMetrics(null, { mRev: 100000, mExp: 75000, mCash: 0, mCac: 0, mLtv: 0, mLeads: 0, mClose: 0 }, "safe");
+    expect(m.margin).toBeCloseTo(25, 5);
+    expect("sov" in m).toBe(false);
+    expect("sovLbl" in m).toBe(false);
+    expect(JSON.stringify(m)).not.toMatch(/Sovereign|Stabilizing|Defensive/);
   });
 
   it("uses the growth-mode reserve split (25% tax / 10% safety) instead of safe mode's (30%/20%)", () => {
@@ -212,7 +212,6 @@ describe("computeMetrics — uploaded CSV rows", () => {
   it("has no conversion data from uploaded rows, and is cash-flow positive since revenue exceeds expenses", () => {
     const m = computeMetrics(rows, manual, "safe");
     expect(m.hasConversionData).toBe(false); // parseAnyCSV always sets leads/closures to 0
-    expect(m.sov).toBeCloseTo(m.margin, 5);  // falls back to margin alone, not margin*0.6
     expect(m.cashFlowPositive).toBe(true);   // totRev (22000) > totExp (12500)
     expect(m.burnMonths).toBe(0);
   });
@@ -248,8 +247,11 @@ describe("computeMetrics — uploaded CSV rows", () => {
     ];
     const m = computeMetrics(steady, manual, "safe");
     expect(m.vel).toBeCloseTo(50, 5);            // raw last-period rate
-    expect(m.proj90GrowthRate).toBeLessThan(m.vel); // averaged across the last 3 transitions, not just the spike
-    expect(m.proj90GrowthRate).toBeCloseTo((5 + (500/10500*100) + 50) / 3, 3);
+    expect(m.proj90GrowthRate).toBeLessThan(m.vel); // measured between levels, not from the spike alone
+    // Four months: the last 2 average 13,750 against 10,250 for the 2 before.
+    // 13,750 / 10,250 = 1.3415 over 2 months, so its square root less 1: 15.82% a month (D11).
+    expect(m.proj90GrowthRate).toBeCloseTo((Math.sqrt(13750 / 10250) - 1) * 100, 6);
+    expect(m.proj90GrowthRate).toBeCloseTo(15.822, 2);
   });
 });
 
@@ -273,7 +275,8 @@ describe("computeGrowthScore", () => {
     ];
     const g = computeGrowthScore(rows, 50);
     expect(g.consistency).toBe(1); // all three transitions were positive
-    expect(g.score).toBe(100);
+    // 15.82% a month between the two blocks: 50 + 15.82 x 3 = 97.46.
+    expect(g.score).toBeCloseTo(97.465, 2);
     expect(g.label).toBe("Accelerating");
   });
 
@@ -281,9 +284,10 @@ describe("computeGrowthScore", () => {
     const rows = [{ revenue: 20000 }, { revenue: 18000 }, { revenue: 16000 }];
     const g = computeGrowthScore(rows, -11.111111);
     expect(g.consistency).toBe(1); // both transitions moved the way the rate did: down
-    expect(g.rate).toBeCloseTo(-10.5556, 3);
-    // 50 + (rateScore - 50) x (0.6 + 0.4 x 1), rateScore = 50 - 10.5556 x 3 = 18.333
-    expect(g.score).toBeCloseTo(18.333, 2);
+    // Three months: the latest against the one before, 16,000 / 18,000 - 1 = -11.11%.
+    expect(g.rate).toBeCloseTo(-11.1111, 3);
+    // 50 + (rateScore - 50) x (0.6 + 0.4 x 1), rateScore = 50 - 11.1111 x 3 = 16.667
+    expect(g.score).toBeCloseTo(16.667, 2);
     expect(g.label).toBe("Declining");
   });
 
@@ -295,13 +299,14 @@ describe("computeGrowthScore", () => {
   });
 
   it("scores steady growth above one spike at the same average rate", () => {
-    // Both average 8% a month, so rateScore = 50 + 8 x 3 = 74.
+    // Steady: 12,130.56 against 10,400 over 2 months is 8% a month, so rateScore = 50 + 8 x 3 = 74.
+    // Spike: the changes are -10%, +34% and 0%, not one direction, so it is not growth (D11).
     const steady = computeGrowthScore([{ revenue: 10000 }, { revenue: 10800 }, { revenue: 11664 }, { revenue: 12597.12 }], 8);
     const spike  = computeGrowthScore([{ revenue: 10000 }, { revenue: 9000 }, { revenue: 12060 }, { revenue: 12060 }], 0); // -10%, +34%, 0%
     expect(steady.score).toBeCloseTo(74, 6);   // 50 + 24 x (0.6 + 0.4 x 1)
-    expect(spike.score).toBeCloseTo(67.6, 6);  // 50 + 24 x (0.6 + 0.4 x 1/3)
+    expect(spike.score).toBe(50);              // volatility is not growth
     expect(steady.label).toBe("Growing");
-    expect(spike.label).toBe("Growing");
+    expect(spike.label).toBe("Flat");
   });
 
   it("reads a steady decline as worse than a noisy one at the same rate", () => {
@@ -309,9 +314,11 @@ describe("computeGrowthScore", () => {
     const steady = computeGrowthScore([{ revenue: 10000 }, { revenue: 9200 }, { revenue: 8464 }, { revenue: 7786.88 }], -8);
     const noisy  = computeGrowthScore([{ revenue: 10000 }, { revenue: 11000 }, { revenue: 7260 }, { revenue: 7260 }], 0); // +10%, -34%, 0%
     expect(steady.score).toBeCloseTo(26, 6);   // 50 - 24 x (0.6 + 0.4 x 1)
-    expect(noisy.score).toBeCloseTo(32.4, 6);  // 50 - 24 x (0.6 + 0.4 x 1/3)
+    // +10%, -34%, 0%: the changes disagree, so no rate is claimed (D11). A fall like
+    // this one is caught by the revenue-fall warning (D6), not by the growth score.
+    expect(noisy.score).toBe(50);
     expect(steady.label).toBe("Declining");
-    expect(noisy.label).toBe("Declining");
+    expect(noisy.label).toBe("Flat");
   });
 });
 
@@ -1253,16 +1260,16 @@ describe("detectRecurringObligations", () => {
     expect(detectRecurringObligations(txns, { asOf: "2026-03-10" })).toEqual([]);
   });
 
-  it("marks an obligation inactive once it's gone quiet for more than 2 cadence periods", () => {
+  it("never ends an obligation on its own, however long it has been quiet", () => {
     const txns = [
       { txn_date: "2026-01-02", amount: -12000, description: "Rent" },
       { txn_date: "2026-02-02", amount: -12000, description: "Rent" },
       { txn_date: "2026-03-02", amount: -12000, description: "Rent" },
     ];
-    // Monthly cadence (30-day nominal period) — 2 periods = 60 days. Last
-    // seen 2026-03-02; asking as of 2026-05-15 is ~74 days later.
+    // Last seen 2026-03-02; 74 days later the old code called it ended. A quiet
+    // bill may only mean nothing newer was uploaded, so only the founder ends one.
     const [ob] = detectRecurringObligations(txns, { asOf: "2026-05-15" });
-    expect(ob.active).toBe(false);
+    expect(ob.active).toBe(true);
   });
 
   it("marks an annual obligation low confidence when detected from under 13 months of overall history", () => {
@@ -1482,69 +1489,75 @@ describe("computeForwardRunway", () => {
 });
 
 describe("checkAffordability", () => {
-  it("answers from profit, not a $0 simulation, when no cash balance is entered", () => {
-    const covered = checkAffordability({ currentCash: 0, avgRev: 50000, avgExp: 34000, obligations: [], monthlyCost: 9000, fromDate: "2026-01-01" });
-    expect(covered.affordable).toBe(true);           // 16,000 monthly profit covers 9,000
-    expect(covered.needsCash).toBe(true);
-    const over = checkAffordability({ currentCash: 0, avgRev: 50000, avgExp: 34000, obligations: [], monthlyCost: 20000, fromDate: "2026-01-01" });
-    expect(over.affordable).toBe(false);
-    expect(over.breaksInMonth).toBeUndefined();      // no invented break date
+  // A complete window with the same figures in each of its three months, as
+  // judgementWindow() returns it.
+  const windowOf = (revenue, expenses, financingOut = 0) => {
+    const totals = { revenue, expenses, financingOut, unconfirmedIn: 0 };
+    const months = ["2026-08", "2026-09", "2026-10"].map(key => ({ key, month: key, status: "complete", gapAccounts: [], totals }));
+    return { end: "2026-10", months, complete: true, missing: [], average: { ...totals, burn: expenses + financingOut - revenue } };
+  };
+
+  it("is held, never answered from profit alone, when no cash balance is entered", () => {
+    const covered = checkAffordability({ currentCash: 0, window: windowOf(50000, 34000), obligations: [], monthlyCost: 9000, fromDate: "2026-01-01" });
+    expect(covered).toMatchObject({ status: "held", held: true, affordable: false, reason: "no_cash" });
+    expect(covered.breaksInMonth).toBeUndefined();      // no invented break date
   });
 
-  it("still simulates a real negative balance (an overdraft)", () => {
-    const r = checkAffordability({ currentCash: -500, avgRev: 10000, avgExp: 8000, obligations: [], monthlyCost: 100, fromDate: "2026-01-01" });
-    expect(r.needsCash).toBeUndefined();
-    expect(r.affordable).toBe(false);
+  it("says a real negative balance (an overdraft) leaves no cash for a new cost", () => {
+    const r = checkAffordability({ currentCash: -500, cashKnown: true, window: windowOf(10000, 8000), obligations: [], monthlyCost: 100, fromDate: "2026-01-01" });
+    expect(r).toMatchObject({ status: "not_affordable", reason: "no_cash_left", held: false });
   });
 
-  it("confirms affordability holds for 12 months when the math supports it", () => {
+  it("confirms a cost is affordable when cash stays above the floor for all 12 payments", () => {
+    // Floor 8,000 + 1,500 = 9,500. After the first payment 48,500, then +500 a month.
     const result = checkAffordability({
-      currentCash: 50000, avgRev: 10000, avgExp: 8000, obligations: [], monthlyCost: 1500, fromDate: "2026-01-01",
+      currentCash: 50000, cashKnown: true, window: windowOf(10000, 8000), obligations: [], monthlyCost: 1500, fromDate: "2026-01-01",
     });
-    expect(result.affordable).toBe(true);
+    expect(result).toMatchObject({ status: "affordable", affordable: true, floor: 9500, lowest: 48500 });
   });
 
-  it("returns the specific month a hypothetical cost would break the runway", () => {
-    // No existing obligations or background flow — isolates the synthetic
-    // cost's own monthly hits on the 1st (Jan 1, Feb 1, Mar 1) against a
-    // $3,000 cushion; the third empties it.
+  it("returns the month, numbered by payment, in which a cost would empty the bank", () => {
+    // No background flow: payments on 1 Jan, 1 Feb and 1 Mar against 3,000. The third empties it.
     const result = checkAffordability({
-      currentCash: 3000, avgRev: 0, avgExp: 0, obligations: [], monthlyCost: 1000, fromDate: "2026-01-01",
+      currentCash: 3000, cashKnown: true, window: windowOf(0, 0), obligations: [], monthlyCost: 1000, fromDate: "2026-01-01",
     });
     expect(result.affordable).toBe(false);
-    expect(result.breaksInMonth).toBe(2);
+    expect(result.reason).toBe("runs_out");
+    expect(result.breaksInMonth).toBe(3);
     expect(result.breakDate).toBe("2026-03-01");
   });
 
-  it("treats the hypothetical cost as purely additive, not already reflected in avgExp", () => {
-    // avgRev - avgExp - monthlyCost = 10000 - 8000 - 1500 = +500/month —
-    // healthy — even though avgExp doesn't yet include this new cost.
+  it("treats the hypothetical cost as purely additive, not already reflected in the window's costs", () => {
+    // 10,000 - 8,000 - 1,500 = +500 a month: 18,500 after the first payment, then rising. Floor 9,500.
     const result = checkAffordability({
-      currentCash: 5000, avgRev: 10000, avgExp: 8000, obligations: [], monthlyCost: 1500, fromDate: "2026-01-01",
+      currentCash: 20000, cashKnown: true, window: windowOf(10000, 8000), obligations: [], monthlyCost: 1500, fromDate: "2026-01-01",
     });
-    expect(result.affordable).toBe(true);
+    expect(result).toMatchObject({ status: "affordable", lowest: 18500 });
+    // The same cost from 5,000 starts below the 9,500 floor.
+    expect(checkAffordability({ currentCash: 5000, cashKnown: true, window: windowOf(10000, 8000), obligations: [], monthlyCost: 1500, fromDate: "2026-01-01" }))
+      .toMatchObject({ status: "not_affordable", reason: "below_floor_today" });
   });
 });
 
 describe("detectMissedObligations", () => {
-  it("surfaces an obligation more than 7 days past its expected date", () => {
+  it("lists a due date that has passed as Cannot check yet, never as missed", () => {
     const obligations = [
-      { label: "Rent — Unit 14 Epping", cadence: "monthly", next_expected: "2026-01-01", active: true },
+      { label: "Rent — Unit 14 Epping", cadence: "monthly", next_expected: "2026-01-01", day_of_month: 1, active: true },
     ];
-    const [missed] = detectMissedObligations(obligations, "2026-01-05" /* 4 days past — not yet flagged */);
-    expect(missed).toBeUndefined();
-
-    const [flagged] = detectMissedObligations(obligations, "2026-01-12" /* 11 days past */);
-    expect(flagged.daysPast).toBe(11);
-    expect(flagged.message).toBe("Rent — Unit 14 Epping was expected 11 days ago and has not appeared.");
+    const [entry] = detectMissedObligations(obligations, "2026-01-12" /* 11 days past */);
+    expect(entry.daysPast).toBe(11);
+    expect(entry.status).toBe("cannot_check");
+    expect(entry.dueDates).toEqual(["2026-01-01"]);
+    expect(entry.message).toBe("Cannot check yet: no statement for this account is confirmed to cover this date.");
   });
 
-  it("does not flag an obligation that isn't yet overdue by more than 7 days", () => {
-    const obligations = [{ label: "Rent", cadence: "monthly", next_expected: "2026-01-01", active: true }];
-    expect(detectMissedObligations(obligations, "2026-01-06")).toEqual([]); // exactly 5 days past
+  it("has no entry for an obligation that is not yet due", () => {
+    const obligations = [{ label: "Rent", cadence: "monthly", next_expected: "2026-01-10", active: true }];
+    expect(detectMissedObligations(obligations, "2026-01-06")).toEqual([]);
+    expect(detectMissedObligations(obligations, "2026-01-10")).toEqual([]); // due today
   });
 
-  it("never flags an inactive obligation", () => {
+  it("never lists an obligation the founder ended", () => {
     const obligations = [{ label: "Cancelled Subscription", cadence: "monthly", next_expected: "2026-01-01", active: false }];
     expect(detectMissedObligations(obligations, "2026-02-01")).toEqual([]);
   });
@@ -1553,7 +1566,7 @@ describe("detectMissedObligations", () => {
 describe("computeDirective", () => {
   const healthy = { margin: 25, burnMonths: 8, free: 20000, vel: 12, conv: 15, ltvcac: 4, months: 6, concentration: null };
 
-  it("issues negative_free_cash as critical, above every other signal", () => {
+  it("issues negative_free_cash as critical, above every other signal, when a loss leaves under 3 months of cash", () => {
     const d = computeDirective({ ...healthy, free: -500, burnMonths: 1, ltvcac: 1 });
     expect(d.rule).toBe("negative_free_cash");
     expect(d.targetMetric).toBe("free");
@@ -1572,7 +1585,11 @@ describe("computeDirective", () => {
     const d = computeDirective({ ...healthy, ltvcac: 1, conv: 5, concentration });
     expect(d.rule).toBe("client_concentration");
     expect(d.targetMetric).toBe("concentration");
-    expect(d.severity).toBe("critical");
+    // A large client is an exposure, not an event: a warning, and critical only
+    // when the business could not last 3 months without that client (D7).
+    expect(d.severity).toBe("warn");
+    expect(computeDirective({ ...healthy, ltvcac: 1, conv: 5, concentration, clientRunway: 2.5 }).severity).toBe("critical");
+    expect(computeDirective({ ...healthy, ltvcac: 1, conv: 5, concentration, clientRunway: 10 }).severity).toBe("warn");
   });
 
   it("never issues client_concentration from a low-confidence extraction", () => {
@@ -1618,15 +1635,18 @@ describe("computeDirective", () => {
   });
 
   it("caps a would-be critical severity to warn from a single month of data, and flags wasCapped", () => {
-    const d = computeDirective({ ...healthy, free: -500, months: 1 });
+    // A loss with 1 month of cash left would be critical (D5); one month of data caps it.
+    const d = computeDirective({ ...healthy, free: -500, burnMonths: 1, months: 1 });
     expect(d.severity).toBe("warn");
     expect(d.wasCapped).toBe(true);
   });
 
   it("does not cap severity once there are 2+ months of data", () => {
-    const d = computeDirective({ ...healthy, free: -500, months: 2 });
+    const d = computeDirective({ ...healthy, free: -500, burnMonths: 1, months: 2 });
     expect(d.severity).toBe("critical");
     expect(d.wasCapped).toBe(false);
+    // The same loss with 8 months of cash is a warning, not critical (D5).
+    expect(computeDirective({ ...healthy, free: -500, months: 2 }).severity).toBe("warn");
   });
 });
 
@@ -1765,7 +1785,6 @@ describe("computeGrowthScore — seasonal override", () => {
     const rows = buildSeasonalHistory(); // raw MoM would be a steep November->December drop
     const withoutOverride = computeGrowthScore(rows, -30);
     const withOverride = computeGrowthScore(rows, -30, 0); // 0% YoY, the correct seasonal reading
-    expect(withoutOverride.label).toBe("Declining");
     expect(withOverride.label).toBe("Flat");
     expect(withOverride.seasonallyAdjusted).toBe(true);
     expect(withoutOverride.seasonallyAdjusted).toBe(false);

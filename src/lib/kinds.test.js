@@ -11,8 +11,10 @@ import {
 const NO_MANUAL = { mRev:0, mExp:0, mCash:0, mCac:0, mLtv:0, mLeads:0, mClose:0 };
 
 describe("classifyTransaction", () => {
-  it("knows exactly four kinds", () => {
-    expect(TRANSACTION_KINDS).toEqual(["operating", "transfer", "financing", "refund"]);
+  it("knows four kinds a description can show, and three more only the founder can set", () => {
+    // Income tax and VAT paid are never read from wording on a bank line (defect 8).
+    expect(TRANSACTION_KINDS).toEqual(["operating", "transfer", "financing", "refund", "income_tax_current", "income_tax_prior", "vat"]);
+    ["SARS payment", "SARS provisional tax", "VAT 201 SARS", "Income tax"].forEach(d => expect(["operating", "transfer", "financing", "refund"]).toContain(classifyTransaction(d)));
   });
 
   it.each([
@@ -111,8 +113,8 @@ describe("rules the founder sets", () => {
 
   it("applies a rule to every transaction described alike", () => {
     const rules = buildRuleIndex([{ scope: "similar", match_key: classificationKey(loanStar.description), kind: "operating" }]);
-    expect(resolveKind(loanStar, rules)).toEqual({ kind: "operating", source: "similar" });
-    expect(resolveKind(loanStar2, rules)).toEqual({ kind: "operating", source: "similar" });
+    expect(resolveKind(loanStar, rules)).toEqual({ kind: "operating", source: "similar", vatClass: null });
+    expect(resolveKind(loanStar2, rules)).toEqual({ kind: "operating", source: "similar", vatClass: null });
   });
 
   it("lets a rule for one transaction win over a rule for all like it", () => {
@@ -121,7 +123,7 @@ describe("rules the founder sets", () => {
       { scope: "single", match_key: "h2", kind: "financing" },
     ]);
     expect(transactionKind(loanStar, rules)).toBe("operating");
-    expect(resolveKind(loanStar2, rules)).toEqual({ kind: "financing", source: "single" });
+    expect(resolveKind(loanStar2, rules)).toEqual({ kind: "financing", source: "single", vatClass: null });
   });
 
   it("ignores a rule with an unknown kind or scope, and never reads a built-in property", () => {
@@ -209,12 +211,22 @@ describe("monthly figures by kind", () => {
     expect(row.expenses).toBe(-1000); // the money back is still counted in full
   });
 
-  it("never prints a negative zero", () => {
+  it("keeps a refund larger than the month's sales to the cent", () => {
     const [row] = aggregateTransactionsByMonth([
       { txn_date: "2026-03-01", description: "Sale", amount: 10.2 },
       { txn_date: "2026-03-02", description: "Refund to customer", amount: -10.4 },
     ]);
-    expect(Object.is(row.revenue, 0)).toBe(true); // Math.round(-0.2) is -0
+    expect(row.revenue).toBe(-0.2); // 10.20 - 10.40; whole-rand rounding read it as 0 (defect 17)
+  });
+
+  it("never prints a negative zero", () => {
+    // 0.30 - 0.10 - 0.20 leaves -0.0000000000000000278 in floating point; to the cent it is 0.
+    const [row] = aggregateTransactionsByMonth([
+      { txn_date: "2026-03-01", description: "Sale", amount: 0.3 },
+      { txn_date: "2026-03-02", description: "Refund to customer", amount: -0.1 },
+      { txn_date: "2026-03-03", description: "Refund to customer", amount: -0.2 },
+    ]);
+    expect(Object.is(row.revenue, 0)).toBe(true);
   });
 });
 
@@ -267,12 +279,18 @@ describe("loan repayments and owner withdrawals in the metrics", () => {
     expect(withRepayments.daysUntilCross).toBe(301);
   });
 
-  it("are taken out before saying whether profit covers a new cost", () => {
-    const args = { currentCash: 0, avgRev: 10000, avgExp: 6000, obligations: [], monthlyCost: 2000, fromDate: "2026-05-01", currency: "USD" };
-    expect(checkAffordability(args)).toMatchObject({ affordable: true, message: expect.stringContaining("average monthly profit ($4,000)") });
-    const r = checkAffordability({ ...args, avgFinOut: 3000 });
-    expect(r.affordable).toBe(false);
-    expect(r.message).toContain("average monthly profit after loan repayments and owner withdrawals ($1,000)");
+  it("count in the safety floor and the flow behind a new cost", () => {
+    const windowOf = (revenue, expenses, financingOut) => {
+      const totals = { revenue, expenses, financingOut, unconfirmedIn: 0 };
+      return { end: "2026-04", complete: true, missing: [], average: { ...totals, burn: expenses + financingOut - revenue },
+        months: ["2026-02", "2026-03", "2026-04"].map(key => ({ key, month: key, status: "complete", gapAccounts: [], totals })) };
+    };
+    const args = { currentCash: 10000, cashKnown: true, obligations: [], monthlyCost: 2000, fromDate: "2026-05-01", currency: "USD" };
+    // Outgoings 6,000: floor 8,000. After the first payment 8,000 is left, then cash rises 2,000 a month.
+    expect(checkAffordability({ ...args, window: windowOf(10000, 6000, 0) })).toMatchObject({ status: "affordable", floor: 8000, lowest: 8000 });
+    // With 3,000 of loan repayments, outgoings are 9,000 and the floor 11,000: above the 10,000 on hand.
+    const r = checkAffordability({ ...args, window: windowOf(10000, 6000, 3000) });
+    expect(r).toMatchObject({ status: "not_affordable", reason: "below_floor_today", floor: 11000 });
   });
 });
 

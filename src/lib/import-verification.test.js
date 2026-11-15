@@ -708,7 +708,12 @@ describe("Figures that wait for unconfirmed money", () => {
   it("carries on as normal when the gap is small", () => {
     const m = metrics(CLOSED, { cash: { amount: 1000, on: "2026-05-30" } });
     expect(m.figuresOpen).toBe(false);
-    expect(m.hiringCapacityConfidence.shown).toBe(true);
+    expect(m.burnOpen).toBe(false);
+    expect(m.proj90Confidence.shown).toBe(true);
+    // Hiring capacity now rests on burn, and 19 days of data is under the 28
+    // needed to measure it (defect 5), so it waits for that and not for money in.
+    expect(m.burnShort).toBe(true);
+    expect(m.hiringCapacityConfidence.shown).toBe(false);
   });
 
   it("asks the founder to confirm the money, not to cut spending", () => {
@@ -846,7 +851,7 @@ describe("What the live database will accept", () => {
       { description: "Transfer 0099", kind: "financing" },
       { description: "Client payment", kind: "operating" },
     ]);
-    expect(out.rows).toEqual([{ kind: "operating", scope: "similar", match_key: "client payment", description_key: null }]);
+    expect(out.rows).toEqual([{ kind: "operating", scope: "similar", match_key: "client payment", description_key: null, vat_class: null }]);
     expect(out.unsaved).toBe(2);
   });
 
@@ -896,11 +901,11 @@ describe("What the live upload found", () => {
 
   it("sends the advisor nothing while figures are on hold", () => {
     expect(app.match(/functions\.invoke\("analyze-finances"/g)).toHaveLength(1);
-    expect(app).toMatch(/const runAI = async \(\) => \{\s*(?:\/\/[^\n]*\s*)*if \(figuresOpen\) return;/);
+    expect(app).toMatch(/const runAI = async \(\) => \{\s*(?:\/\/[^\n]*\s*)*if \(figuresOpen \|\| m\.vatHold\) return;/); // and while profit waits for the VAT answers
   });
 
   it("closes the advisor button while figures are on hold, and says why", () => {
-    expect(advisor).toMatch(/disabled=\{aiLoad \|\| !m\.hasData \|\| m\.figuresOpen\}/);
+    expect(advisor).toMatch(/disabled=\{aiLoad \|\| !m\.hasData \|\| m\.figuresOpen \|\| !!m\.vatHold\}/);
     expect(advisor).toMatch(/Confirm your money in first/);
     expect(advisor).toMatch(/fmt\(m\.totUnconfirmedIn, cur\)/);
   });

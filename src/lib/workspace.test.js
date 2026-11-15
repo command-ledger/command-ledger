@@ -71,7 +71,7 @@ describe("buildAlerts", () => {
   it("orders critical before warning before info", () => {
     const alerts = buildAlerts({
       hasData: true, today,
-      missedObligations: [{ label: "Rent", normalized_key: "rent", message: "Rent was expected 10 days ago and has not appeared." }],
+      missedObligations: [{ status: "missed", label: "Rent", normalized_key: "rent", message: "Rent was expected 10 days ago and has not appeared." }],
       needsAcknowledgement: true, latestDirective: { id: "d1", directive_text: "Fix the funnel." },
       directives: [{ id: "d0", directive_text: "Cut spend.", outcome_at: "2026-10-25T00:00:00Z", target_metric: "free", metric_at_issue: -500, outcome_metric: 200, issued_at: "2026-08-20" }],
     });
@@ -151,5 +151,56 @@ describe("App.jsx money formatting", () => {
       if (!comma) missing.push(`line ${src.slice(0, match.index).split("\n").length}: ${src.slice(match.index, i)}`);
     }
     expect(missing).toEqual([]);
+  });
+
+  // Monthly figures keep their cents (defect 17), and adding cents in floating
+  // point leaves remainders, so a break-even total read as a loss and a red
+  // "-R 0". Every total of money over monthly rows goes through sumCents().
+  it("totals monthly money with sumCents, never a bare reduce", async () => {
+    const { readFileSync } = await import("node:fs");
+    const src = readFileSync(new URL("../App.jsx", import.meta.url), "utf8");
+    const bare = src.split("\n")
+      .map((line, i) => [i + 1, line])
+      // A reduce whose callback adds a monthly money field of its own element,
+      // such as `reduce((s, d) => s + (d.revenue || 0), 0)`.
+      .filter(([, line]) => /reduce\(\(\s*\w+\s*,\s*(\w+)\s*\)\s*=>.*\b\1\.(revenue|expenses|payroll|rent|marketing|software|cogs|financingIn|financingOut|transferIn|transferOut|refundsIn|refundsOut|unconfirmedIn)\b/.test(line))
+      .map(([n, line]) => `line ${n}: ${line.trim()}`);
+    expect(bare).toEqual([]);
+  });
+
+  // An upsert replaces only the fields it carries, so an account answer saved
+  // without every field keeps the old answer's date or link, and the database
+  // refuses the row. Every save of an answer goes through accountAnswerRows(),
+  // which sends every field and refuses one slot twice in one save.
+  it("saves account answers only through accountAnswerRows", async () => {
+    const { readFileSync } = await import("node:fs");
+    const src = readFileSync(new URL("../App.jsx", import.meta.url), "utf8");
+    const upserts = [...src.matchAll(/from\("account_answers"\)\.upsert\((\w+)/g)].map(m => m[1]);
+    expect(upserts.length).toBeGreaterThan(0);
+    expect(upserts.every(name => name === "rows")).toBe(true);
+    expect(src).toMatch(/const \{ rows, error: invalid \} = accountAnswerRows\(/);
+    expect(src).not.toMatch(/from\("account_answers"\)\.(insert|update)\(/);
+  });
+});
+
+// A helper defined inside one component and used in another builds without
+// error and crashes the page that uses it: it took the Forecasts page down.
+// Every name a section component reads must come from ctx, its own body or the
+// module. This checks the ones that moved during the correction work.
+describe("App.jsx section helpers", () => {
+  it("defines riskText at module level, where ForecastsSection can reach it", async () => {
+    const { readFileSync } = await import("node:fs");
+    const src = readFileSync(new URL("../App.jsx", import.meta.url), "utf8");
+    expect(src).toMatch(/^const riskText = /m);
+    expect(src).not.toMatch(/^  const riskText = /m);
+  });
+
+  it("starts scenarios from the run rate, and makes them wait when burn is held", async () => {
+    const { readFileSync } = await import("node:fs");
+    const src = readFileSync(new URL("../App.jsx", import.meta.url), "utf8");
+    expect(src).toMatch(/\{ revenue: runRev, expenses: runExp, cash: activeCash,/);
+    expect(src).toMatch(/m\.figuresOpen \|\| m\.burnOpen \?/);
+    expect(src).toMatch(/: m\.burnGap \?/);
+    expect(src).toMatch(/computeMetrics\([\s\S]{0,400}window: judgement, coverageMonths: coverage\.months/);
   });
 });

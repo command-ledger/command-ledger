@@ -179,11 +179,54 @@ export const detectIncomeFromDescription = (description) => {
 // wording, because a wrong guess removes real revenue from every figure:
 // a bare "transfer" is not enough ("Transfer from Coastal Retail" is a
 // customer paying), and anything not matched stays operating.
-export const TRANSACTION_KINDS = ["operating", "transfer", "financing", "refund"];
+export const TRANSACTION_KINDS = ["operating", "transfer", "financing", "refund", "income_tax_current", "income_tax_prior", "vat"];
 export const isTransactionKind = kind => TRANSACTION_KINDS.includes(kind);
+// TAX AND VAT (correction plan, defect 8; D3a, D3b). Three kinds only the founder
+// sets, never wording on a bank line:
+//   income_tax_current  income tax on the business's profit, for the tax year it
+//                       was paid in (the provisional payments). Not a cost: the
+//                       tax reserve provides for it, and counting both took tax
+//                       twice.
+//   income_tax_prior    income tax for an earlier tax year. Not a cost either,
+//                       and never counted against this year's estimate.
+//   vat                 VAT paid to, or refunded by, SARS. Not a cost.
+// PAYE, UIF and SDL stay payroll costs, and every other SARS payment stays a
+// cost. All three still leave the bank, so every cash figure (burn, runway,
+// cash today, cash break-even, affordability and its floor) counts them exactly
+// as before. Income tax is marked one payment at a time, because each payment
+// can belong to a different tax year.
+export const INCOME_TAX_KINDS = ["income_tax_current", "income_tax_prior"];
+const TAX_KINDS = new Set([...INCOME_TAX_KINDS, "vat"]);
+// The VAT rate is one named value. South Africa's standard rate has been 15%
+// since 1 April 2018; amounts dated before that are not divided, because the
+// rate then was different.
+export const VAT_RATE = { rate: 0.15, since: "2018-04-01", checkedOn: "2026-11-15" };
+// A founder's class for a customer or a supplier of a VAT-registered business.
+// Money in: standard (VAT at the rate is in the amount), zero_rated, exempt.
+// A cost: claimable (VAT charged, and the business can claim it), not_claimable,
+// no_vat, partly_claimable (counted whole: the app does not apportion).
+export const VAT_CLASSES = { moneyIn: ["standard", "zero_rated", "exempt"], cost: ["claimable", "not_claimable", "no_vat", "partly_claimable"] };
+const ALL_VAT_CLASSES = [...VAT_CLASSES.moneyIn, ...VAT_CLASSES.cost];
+const VAT_CLASS_KINDS = new Set(["operating", "refund"]);
+
+// One rule as the row transaction_rules stores. Every field is always sent,
+// vat_class included: an upsert keeps any field it omits, and a class left
+// behind on a rule changed to a transfer is refused by the database. A class is
+// dropped from a kind that cannot carry one. Income tax for "every payment like
+// this" is refused here as the database refuses it.
+export function kindRuleRow({ userId, txn, kind, scope, vatClass = null }) {
+  if (!isTransactionKind(kind)) throw new Error(`"${kind}" is not a kind a rule can hold.`);
+  if (vatClass !== null && vatClass !== undefined && vatClass !== "" && !ALL_VAT_CLASSES.includes(vatClass)) throw new Error(`"${vatClass}" is not a VAT class.`);
+  if (INCOME_TAX_KINDS.includes(kind) && scope !== "single") throw new Error("Income tax is marked one payment at a time, because each payment can belong to a different tax year.");
+  const key = classificationKey(txn?.description);
+  const vat_class = vatClass && VAT_CLASS_KINDS.has(kind) ? vatClass : null;
+  return scope === "similar"
+    ? { user_id: userId, kind, scope: "similar", match_key: key, description_key: null, vat_class }
+    : { user_id: userId, kind, scope: "single", match_key: txn?.dedupe_hash, description_key: key || null, vat_class };
+}
 // Outflows that are commitments: costs, and loan repayments or owner
 // withdrawals. A transfer to savings or a refund to a customer is not a bill.
-const BILL_KINDS = new Set(["operating", "financing"]);
+const BILL_KINDS = new Set(["operating", "financing", "income_tax_current", "income_tax_prior", "vat"]);
 
 // Descriptions are matched after normalizeDescription(): lower case, no
 // punctuation, single spaces, so "A/c" arrives as "ac" and "Owner's" as
@@ -249,11 +292,14 @@ export function classificationKey(description) {
 // whose classificationKey matches). Maps, not objects, so a description
 // such as "constructor" can never read a built-in property.
 export function buildRuleIndex(rules) {
-  const index = { single: new Map(), similar: new Map() };
+  const index = { single: new Map(), similar: new Map(), singleVat: new Map(), similarVat: new Map() };
   (rules || []).forEach(r => {
     if (!r || !isTransactionKind(r.kind) || !r.match_key) return;
-    if (r.scope === "single") index.single.set(r.match_key, r.kind);
-    else if (r.scope === "similar") index.similar.set(r.match_key, r.kind);
+    // Income tax is one payment at a time; a wider rule for it is not used.
+    if (r.scope !== "single" && INCOME_TAX_KINDS.includes(r.kind)) return;
+    const vat = ALL_VAT_CLASSES.includes(r.vat_class) && VAT_CLASS_KINDS.has(r.kind) ? r.vat_class : null;
+    if (r.scope === "single") { index.single.set(r.match_key, r.kind); if (vat) index.singleVat.set(r.match_key, vat); }
+    else if (r.scope === "similar") { index.similar.set(r.match_key, r.kind); if (vat) index.similarVat.set(r.match_key, vat); }
   });
   return index;
 }
@@ -271,10 +317,10 @@ export function resolveKind(txn, rules) {
   const index = asRuleIndex(rules);
   if (index) {
     const single = txn?.dedupe_hash ? index.single.get(txn.dedupe_hash) : undefined;
-    if (single) return { kind: single, source: "single" };
+    if (single) return { kind: single, source: "single", vatClass: index.singleVat?.get(txn.dedupe_hash) || null };
     const key = classificationKey(txn?.description);
     const similar = key ? index.similar.get(key) : undefined;
-    if (similar) return { kind: similar, source: "similar" };
+    if (similar) return { kind: similar, source: "similar", vatClass: index.similarVat?.get(key) || null };
   }
   const kind = classifyTransaction(txn?.description);
   if (kind === "operating" && txn?.reviewed && Number(txn.amount) > 0 && !looksLikeRevenue(txn.description)) return { kind: "unconfirmed", source: "auto" };
@@ -282,6 +328,14 @@ export function resolveKind(txn, rules) {
 }
 
 export const transactionKind = (txn, rules) => resolveKind(txn, rules).kind;
+
+// Payments to or from SARS that no rule covers. Each stays a cost until the
+// founder says what it is; the wording prompts the question and never answers it.
+const SARS_WORDS = /\bsars\b|south african revenue/i;
+export function taxQuestions(transactions, rules) {
+  const index = asRuleIndex(rules);
+  return (transactions || []).filter(t => SARS_WORDS.test(String(t?.description || "")) && resolveKind(t, index).source === "auto");
+}
 
 // How many transactions of each kind, and the money in and out of each, for
 // the upload message and the Transactions page.
@@ -766,11 +820,11 @@ export function detectRecurringObligations(transactions, options = {}) {
         ? paydayInMonth(scheduledMonthIndex(lastSeen, payday) + MONTH_STEP[cadence], payday)
         : addDaysUTC(lastSeen, cadence === "biweekly" ? 14 : Math.round(avgInterval));
 
-    // A pattern gone quiet for more than 2 full cadence periods is treated
-    // as ended, not still-recurring — recomputed fresh every run rather
-    // than trusting a stored flag that could drift out of date.
-    const daysSinceLastSeen = daysBetween(lastSeen, asOf);
-    const active = daysSinceLastSeen <= 2 * CADENCE_DAYS[cadence];
+    // A bill is never ended here (correction plan, defect 12). A pattern gone
+    // quiet used to be dropped after two cadence periods, but no upload records
+    // the dates its statement covers, so quiet may only mean nothing newer was
+    // uploaded. It stays a committed cost until the founder ends it.
+    const active = true;
 
     obligations.push({
       label: sorted[sorted.length - 1].description,
@@ -917,70 +971,208 @@ export function computeForwardRunway({ currentCash, avgRev, avgExp, avgFinOut = 
   return { crossesZero: false, crossDate: null, daysUntilCross: null, monthsUntilCross: null, recurringMonthlyTotal, dailyFlow };
 }
 
-// "Can I afford a recurring cost of $X/month?" — answered against the
-// forward calendar (real obligations on their real dates), not against a
-// flat current-cash check. Layers a synthetic monthly obligation onto the
-// existing ones and re-runs the same simulation over a 12-month horizon.
-export function checkAffordability({ currentCash, cashKnown = Boolean(Number(currentCash)), avgRev, avgExp, avgFinOut = 0, obligations, monthlyCost, fromDate, currency = "USD" }) {
-  // No cash balance on file leaves nothing to simulate from: the run would
-  // start at $0 and call every cost unaffordable on day one, even for a
-  // profitable business. Answer from monthly profit instead and say what is
-  // missing. `cashKnown` says a balance is on file; without it, 0 is how
-  // "not entered" arrives. A known balance of zero or an overdraft is data,
-  // and runs the full simulation.
-  const finOut = Number(avgFinOut) || 0;
-  if (!cashKnown) {
-    const monthlyProfit = (Number(avgRev) || 0) - (Number(avgExp) || 0) - finOut;
-    const covered = monthlyProfit >= (Number(monthlyCost) || 0);
-    const basis = finOut > 0 ? "average monthly profit after loan repayments and owner withdrawals" : "average monthly profit";
-    return {
-      affordable: covered, needsCash: true,
-      message: covered
-        ? `Your ${basis} (${fmt(monthlyProfit, currency)}) covers this. Add a cash balance to also test it against your bills on their real dates.`
-        : `This is more than your ${basis} (${fmt(Math.max(0, monthlyProfit), currency)}) covers, and with no cash balance entered there is nothing to fund the gap. Add a cash balance to see how long it would last.`,
-    };
-  }
-  // Already at or below zero, a new cost has no cash to come from, whatever
-  // profit does: a simulation would only say it "breaks" on day one.
-  if (Number(currentCash) <= 0) {
-    const monthlyProfit = (Number(avgRev) || 0) - (Number(avgExp) || 0) - finOut;
-    const basis = finOut > 0 ? "average monthly profit after loan repayments and owner withdrawals" : "average monthly profit";
-    return {
-      affordable: false, overdrawn: true,
-      message: monthlyProfit >= (Number(monthlyCost) || 0)
-        ? `Your ${basis} (${fmt(monthlyProfit, currency)}) covers this, but your cash balance is ${fmt(currentCash, currency)}, so until profit rebuilds it this would be paid from an overdraft or borrowing.`
-        : `Your cash balance is ${fmt(currentCash, currency)} and your ${basis} (${fmt(Math.max(0, monthlyProfit), currency)}) does not cover this, so it would deepen the shortfall every month.`,
-    };
-  }
-  const horizonDays = 365;
-  const synthetic = {
-    label: "Hypothetical new cost", cadence: "monthly",
-    typical_amount: Number(monthlyCost) || 0, next_expected: fromDate, active: true,
-    excludeFromBackground: false,
-  };
-  const withNew = computeForwardRunway({ currentCash, avgRev, avgExp, avgFinOut: finOut, obligations: [...(obligations || []), synthetic], fromDate, horizonDays });
+// "Can I afford a recurring cost of X a month?" (correction plan, defect 4;
+// D1, D2, D9, D10a, D10c). Two separate tests over 12 monthly payments, and a
+// cost is affordable only when it passes both:
+//   Survival      cash stays above zero for the whole window.
+//   Safety floor  cash never falls below the floor: everything that left the
+//                 bank in an average month of the window (costs, loan
+//                 repayments, owner drawings, tax as paid) plus the new cost.
+// The window runs from the start date up to, not including, the same date 12
+// months later. It holds 12 payments, the first on the start date and each
+// later one on the same day of the month, or the last day of a shorter month.
+// The background flow and the floor come only from D1's window
+// (judgementWindow), the same three calendar months runway's burn uses, and
+// never from any other months. Known bills leave on their real dates.
+//
+// An answer is given only when every input is known. The checks run in this
+// order and the first that applies decides. A held answer is neither a pass
+// nor a fail: it names what is missing and carries no figures.
+//    1 no cash balance on file                      held
+//    2 cash estimate unusable                       held
+//    3 cash at or below zero, proven by the records not affordable
+//    4 money in not identified in the window (10%
+//      or more, or enough to reverse the result)    held
+//    5 an account question not yet answered         held
+//    6 a gap, a part month or a month with no data
+//      in the window                                held
+//    7 cash today below the floor                   not affordable
+//    8 survival fails                               not affordable
+//    9 the floor fails                              not affordable
+//   10 both pass                                    affordable
+// Only row 10 is a pass, and no other result says "affordable" without "not".
+const longMonth = key => `${MONTH_NAMES[Number(key.slice(5, 7)) - 1]} ${key.slice(0, 4)}`;
+const longDate = iso => `${Number(iso.slice(8, 10))} ${MONTH_NAMES[Number(iso.slice(5, 7)) - 1]} ${iso.slice(0, 4)}`;
+const listWords = items => (items.length <= 1 ? items.join("") : `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`);
+// The same day of the month `months` later, or the last day of a shorter month.
+// Always stepped from the start date, so the 31st returns to the 31st.
+function sameDayMonthsLater(iso, months) {
+  const y = Number(iso.slice(0, 4)), m = Number(iso.slice(5, 7)) - 1, day = Number(iso.slice(8, 10));
+  const index = y * 12 + m + months;
+  const ty = Math.floor(index / 12), tm = index % 12;
+  return new Date(Date.UTC(ty, tm, Math.min(day, daysInMonthUTC(ty, tm)))).toISOString().slice(0, 10);
+}
+// Whether identifying money in could turn a loss into a profit: it is at least
+// the size of the loss (D9). More money in cannot turn a profit into a loss.
+export const couldReverseLoss = (result, unidentified) => unidentified > 0 && result <= 0 && unidentified >= -result;
 
-  if (!withNew.crossesZero) {
-    return { affordable: true, message: "This holds for the next 12 months against your known obligations." };
-  }
-  const breaksInMonth = Math.max(1, Math.ceil(withNew.daysUntilCross / 30));
-  return {
-    affordable: false, breaksInMonth, breakDate: withNew.crossDate,
-    message: `This breaks your runway in month ${breaksInMonth} (around ${withNew.crossDate}).`,
+const AFFORD_HELD = (reason, message, extra = {}) => ({ status: "held", affordable: false, held: true, reason, message: `Not answered yet. ${message}`, ...extra });
+const accountLabelFor = (coverage, key) => {
+  const a = (coverage?.accounts || []).find(x => x.key === key);
+  return a ? (a.label || (a.filenames?.length ? `the unnamed upload ${a.filenames.join(", ")}` : "an unnamed upload")) : key;
+};
+
+// Which linked names both hold transactions for the same dates.
+export function overlapWords(coverage, key) {
+  const a = (coverage?.accounts || []).find(x => x.key === key);
+  if (!a || !a.overlaps?.length) return accountLabelFor(coverage, key);
+  const nameOf = k => {
+    const own = a.memberLabels?.[k];
+    return own || (isUnnamedAccountKey(k) ? "an unnamed upload" : k);
   };
+  return a.overlaps.map(o => `${nameOf(o.a)} and ${nameOf(o.b)} are linked as one account and both have transactions from ${o.from} to ${o.to}`).join("; ");
 }
 
-// Surfaces an obligation whose expected date has passed by more than a
-// week with nothing matching it in the transaction history — often the
-// first visible signal of a cash problem, since it shows up before the
-// bank balance itself looks alarming.
+export function checkAffordability({ currentCash = null, cashKnown = false, cashUsable = true, window = null, coverage = null, obligations, monthlyCost, fromDate, currency = "USD", floorBasis = "outgoings" }) {
+  const cost = Number(monthlyCost) || 0;
+  const money = v => fmt(v, currency);
+  // 1 and 2: nothing to measure from.
+  if (!cashKnown) {
+    return AFFORD_HELD("no_cash", "Enter today's cash balance under Transactions, then check again.");
+  }
+  if (!cashUsable) {
+    return AFFORD_HELD("cash_unusable", "Enter today's cash balance under Transactions, then check again: your last one may have run out, or is too old to estimate from.");
+  }
+  if (currentCash === null || currentCash === undefined || !Number.isFinite(Number(currentCash))) {
+    return AFFORD_HELD("no_cash", "Enter today's cash balance under Transactions, then check again.");
+  }
+  const cash = toCents(Number(currentCash));
+  // 3: no cash for a new cost, whatever the months show.
+  if (cash <= 0) {
+    return { status: "not_affordable", affordable: false, held: false, reason: "no_cash_left", cashToday: cash,
+      message: `Not affordable: your cash balance is ${money(cash)}, so there is no cash for a new cost.` };
+  }
+  const months = window?.months || [];
+  const withTotals = months.filter(m => m.totals);
+  const span = months.length ? `${longMonth(months[0].key)} to ${longMonth(months[months.length - 1].key)}` : "the last 3 months";
+  // 4: money in nobody has identified, in the window's own months.
+  const unidentified = sumCents(withTotals.map(m => m.totals), "unconfirmedIn");
+  if (unidentified > 0) {
+    const revenue = sumCents(withTotals.map(m => m.totals), "revenue");
+    const expenses = sumCents(withTotals.map(m => m.totals), "expenses");
+    const financingOut = sumCents(withTotals.map(m => m.totals), "financingOut");
+    const profit = toCents(revenue - expenses);
+    const flow = toCents(profit - financingOut);
+    const where = "Confirm it under Transactions, then check again.";
+    if (couldReverseLoss(profit, unidentified)) {
+      return AFFORD_HELD("unconfirmed", `Identify your money in first: over ${span} the result is between a ${money(-profit)} loss and a ${money(toCents(profit + unidentified))} profit, depending on ${money(unidentified)} of money in you have not identified. ${where}`, { unidentified });
+    }
+    if (couldReverseLoss(flow, unidentified)) {
+      return AFFORD_HELD("unconfirmed", `Identify your money in first: over ${span} your bank balance fell by ${money(-flow)} or rose by ${money(toCents(flow + unidentified))}, depending on ${money(unidentified)} of money in you have not identified. ${where}`, { unidentified });
+    }
+    if (unidentifiedOpen(revenue, unidentified)) {
+      return AFFORD_HELD("unconfirmed", `Identify your money in first: ${money(unidentified)} of money in over ${span} has not been identified, which is 10% or more of it. ${where}`, { unidentified });
+    }
+  }
+  // 5: an account the founder has been asked about, missing in the window.
+  const missingAccounts = new Set(months.flatMap(m => (m.status === "gap" ? m.gapAccounts || [] : [])));
+  const question = (coverage?.questions || []).find(q => missingAccounts.has(q.key));
+  if (question) {
+    const name = accountLabelFor(coverage, question.key);
+    const where = "Answer under Transactions, in Accounts and missing months, then check again.";
+    return AFFORD_HELD("account_question", question.kind === "stopped"
+      ? `Tell us whether ${name} is closed: its statements stop on ${question.lastDate} while your other accounts continue. ${where}`
+      : `Tell us which account ${name} is from: its statements stop on ${question.lastDate}, so its later months are missing. ${where}`, { account: question.key });
+  }
+  // 6: the three calendar months must all be complete (or confirmed quiet).
+  if (months.length < 3) {
+    return AFFORD_HELD("window", "This needs the last 3 complete calendar months of uploaded transactions. Upload your statements, then check again.", { missingMonths: [] });
+  }
+  if (!window.complete || !window.average) {
+    const parts = months.filter(m => m.status !== "complete" && m.status !== "quiet").map(m => {
+      const name = longMonth(m.key), short = MONTH_NAMES[Number(m.key.slice(5, 7)) - 1];
+      if (m.status === "gap") return `${name} has no transactions on file for ${listWords((m.gapAccounts || []).map(k => accountLabelFor(coverage, k))) || "one of your accounts"}. Upload ${short}'s statement, then check again.`;
+      if (m.status === "partial") return `${name} is only partly covered by the transactions on file. Upload ${short}'s full statement, then check again.`;
+      if (m.status === "overlap") return `${name} may be counted twice: ${listWords((m.overlapAccounts || []).map(k => overlapWords(coverage, k)))}. Delete one of the overlapping uploads, or separate the accounts under Transactions, then check again.`;
+      return `${name} has no transactions on file. This needs the 3 complete calendar months of ${span}.`;
+    });
+    return AFFORD_HELD("window", parts.join(" "), { missingMonths: window.missing || [] });
+  }
+  if (!months.some(m => m.status === "complete")) {
+    return AFFORD_HELD("window", `None of ${span} has any transactions on file, so there is nothing to measure a month from.`, { missingMonths: [] });
+  }
+
+  // The figures of the window, and nothing else.
+  const avg = window.average;
+  const outgoings = toCents(avg.expenses + avg.financingOut);
+  const floor = floorBasis === "zero" ? 0 : toCents(outgoings + cost);
+  const floorWords = floor > 0 ? `your safety floor of ${money(floor)}` : "zero";
+  const base = { floor, cashToday: cash, burn: avg.burn, windowMonths: months.map(m => m.key) };
+  // 7: already under the floor before the first payment.
+  if (cash < floor) {
+    return { ...base, status: "not_affordable", affordable: false, held: false, reason: "below_floor_today",
+      message: `Not affordable: your cash today, ${money(cash)}, is already below ${floorWords}, which is one month of outgoings (${money(outgoings)}) plus this cost.` };
+  }
+
+  // Cash day by day. Known bills leave on their dates, so they come out of the
+  // background rate, which would otherwise count them twice.
+  const active = (obligations || []).filter(o => o.active !== false);
+  const recurringMonthlyTotal = active.reduce((s, o) => s + monthlyEquivalent(o.typical_amount, o.cadence), 0);
+  const dailyFlow = (avg.revenue - (avg.expenses + avg.financingOut - recurringMonthlyTotal)) / 30;
+  const payments = Array.from({ length: 12 }, (_, k) => sameDayMonthsLater(fromDate, k));
+  const days = daysBetween(fromDate, sameDayMonthsLater(fromDate, 12));
+  const due = {};
+  projectForwardCalendar(active, fromDate, days - 1).forEach(e => { due[e.date] = (due[e.date] || 0) + e.amount; });
+  payments.forEach(d => { due[d] = (due[d] || 0) + cost; });
+
+  let balance = cash, lowest = null, lowestOn = null, afterTwelfth = null, breakDate = null, floorDate = null;
+  for (let d = 0; d < days; d++) {
+    const date = d === 0 ? fromDate : addDaysUTC(fromDate, d);
+    if (d > 0) balance += dailyFlow;
+    if (due[date]) balance -= due[date];
+    const at = toCents(balance);
+    if (lowest === null || at < lowest) { lowest = at; lowestOn = date; }
+    if (date === payments[11]) afterTwelfth = at;
+    if (breakDate === null && at <= 0) breakDate = date;
+    if (floorDate === null && at < floor) floorDate = date;
+  }
+  const figures = { ...base, payments, lowest, lowestOn, afterTwelfth };
+  const tail = `The lowest balance would be ${money(lowest)}, and ${money(afterTwelfth)} would be left after the 12th payment.`;
+  // 8: survival.
+  if (breakDate) {
+    const breaksInMonth = Math.max(1, payments.filter(p => p <= breakDate).length);
+    return { ...figures, status: "not_affordable", affordable: false, held: false, reason: "runs_out", breaksInMonth, breakDate,
+      message: `Not affordable: cash runs out in month ${breaksInMonth}, on ${longDate(breakDate)}. ${tail}` };
+  }
+  // 9: the safety floor.
+  if (floorDate) {
+    return { ...figures, status: "not_affordable", affordable: false, held: false, reason: "floor", floorDate,
+      message: `Not affordable: cash does not run out in 12 months, but it falls below ${floorWords} on ${longDate(floorDate)}. ${tail}` };
+  }
+  // 10: both pass.
+  return { ...figures, status: "affordable", affordable: true, held: false, reason: null,
+    message: `Affordable: cash stays above ${floorWords} through all 12 payments. ${tail}` };
+}
+
+// The due dates that have passed with no matching payment on file, for each
+// bill the founder has not ended (correction plan, defect 12). A bill can be
+// called missed only where its account's statement is confirmed to cover the
+// due date, and no upload records a statement period, so today nothing can be:
+// every entry is "cannot_check", never "missed", and the bill stays a committed
+// cost. A payment found in any account moves next_expected on, so a paid bill
+// has no entry. Missed-bill alerts return only if confirmed coverage is ever
+// captured; buildAlerts() raises one only for status "missed".
+export const CANNOT_CHECK_BILL = "Cannot check yet: no statement for this account is confirmed to cover this date.";
 export function detectMissedObligations(obligations, asOf) {
   const today = asOf || new Date().toISOString().slice(0, 10);
   return (obligations || [])
-    .filter(o => o.active !== false)
-    .map(o => ({ ...o, daysPast: daysBetween(o.next_expected, today) }))
-    .filter(o => o.daysPast > 7)
-    .map(o => ({ ...o, message: `${o.label} was expected ${o.daysPast} day${o.daysPast === 1 ? "" : "s"} ago and has not appeared.` }));
+    .filter(o => o.active !== false && o.next_expected && o.next_expected < today)
+    .map(o => {
+      const span = daysBetween(o.next_expected, today) - 1; // up to yesterday
+      const dueDates = [...new Set(projectForwardCalendar([{ ...o, active: true }], o.next_expected, span).map(e => e.date))];
+      return { ...o, status: "cannot_check", dueDates, daysPast: daysBetween(o.next_expected, today), message: CANNOT_CHECK_BILL };
+    })
+    .filter(o => o.dueDates.length > 0);
 }
 
 // ─── SMART PARSER — reads any real bank or accounting export ──
@@ -2067,7 +2259,7 @@ export function reviewRuleRows(decisions) {
   const rows = [];
   byKey.forEach((kinds, key) => {
     if (new Set(kinds).size > 1) { unsaved += kinds.length; return; }
-    rows.push({ kind: kinds[0], scope: "similar", match_key: key, description_key: null });
+    rows.push({ kind: kinds[0], scope: "similar", match_key: key, description_key: null, vat_class: null });
   });
   return { rows, unsaved };
 }
@@ -2244,19 +2436,31 @@ export function periodStartDate(months, today = new Date().toISOString().slice(0
   const index = Number(today.slice(0, 4)) * 12 + Number(today.slice(5, 7)) - 1 - Math.floor(m);
   return `${Math.floor(index / 12)}-${String((index % 12) + 1).padStart(2, "0")}-01`;
 }
-// Rounded to whole units, without a negative zero ("-$0").
-const wholeUnits = v => { const r = Math.round(v); return r === 0 ? 0 : r; };
+// Monthly totals keep their cents, without a negative zero ("-R0.00"). They
+// were rounded to whole rand, so three R0.40 fees read as R1 (defect 17).
+const monthCents = v => round2(v) || 0;
+// The total of one field across rows, to the cent. Adding cent amounts in
+// floating point leaves remainders (100.10 + 200.20 is 300.29999999999995), and
+// a business that broke even to the cent read as a loss. Every sum of money over
+// monthly rows goes through this, in this file and in App.jsx.
+export function sumCents(list, field) {
+  return round2((list || []).reduce((s, d) => s + (Number(d[field]) || 0), 0)) || 0;
+}
 
 export function aggregateTransactionsByMonth(transactions, options = {}) {
   const rules = asRuleIndex(options.rules);
   const today = options.today || new Date().toISOString().slice(0, 10);
+  // `options.vat`: { registered, from } from the founder's own answer. Without
+  // it nothing is divided.
+  const vat = options.vat || null;
   const buckets = {};
   (transactions || []).forEach(t => {
     const date = String(t.txn_date).slice(0, 10);
     const key = date.slice(0, 7);
     if (!buckets[key]) buckets[key] = {
-      revenue:0, expenses:0, payroll:0, marketing:0, cogs:0, rent:0, software:0,
+      revenue:0, expenses:0, payroll:0, marketing:0, cogs:0, rent:0, software:0, uncategorised:0,
       financingIn:0, financingOut:0, transferIn:0, transferOut:0, refundsIn:0, refundsOut:0, unconfirmedIn:0,
+      pRevLow:0, pRevHigh:0, pExpLow:0, pExpHigh:0, incomeTaxCurrent:0, incomeTaxPrior:0, vatPaid:0, vatCollected:0, vatClaimable:0, vatUnclassified:0,
       firstDate: date, lastDate: date,
     };
     const b = buckets[key];
@@ -2265,8 +2469,35 @@ export function aggregateTransactionsByMonth(transactions, options = {}) {
     const amt = Number(t.amount) || 0;
     if (amt === 0) return;
     const abs = Math.abs(amt);
-    const kind = transactionKind(t, rules);
-    if (kind === "unconfirmed") {
+    const resolved = resolveKind(t, rules);
+    const kind = resolved.kind;
+    // The profit basis: what the amount counts as once VAT is left out. [low,
+    // high] differ only for a registered business's unclassified amounts.
+    const divides = vat?.registered === true && !!vat.from && date >= String(vat.from).slice(0, 10) && date >= VAT_RATE.since;
+    const net = abs / (1 + VAT_RATE.rate);
+    const basis = side => {
+      if (!divides) return [abs, abs];
+      const cls = resolved.vatClass;
+      if (side === "in") {
+        if (cls === "standard") { b.vatCollected += (amt > 0 ? 1 : -1) * (abs - net); return [net, net]; }
+        if (cls === "zero_rated" || cls === "exempt") return [abs, abs];
+      } else {
+        if (cls === "claimable") { b.vatClaimable += (amt < 0 ? 1 : -1) * (abs - net); return [net, net]; }
+        if (cls === "not_claimable" || cls === "no_vat" || cls === "partly_claimable") return [abs, abs];
+      }
+      // No class, or one that does not fit the direction of the money.
+      b.vatUnclassified += abs;
+      return [net, abs];
+    };
+    if (TAX_KINDS.has(kind)) {
+      // Cash: it left the bank (or came back), so it is in cash costs as before.
+      // Profit: it is not a cost.
+      const signed = amt < 0 ? abs : -abs;
+      b.expenses += signed;
+      if (kind === "vat") b.vatPaid += signed;
+      else if (kind === "income_tax_current") b.incomeTaxCurrent += signed;
+      else b.incomeTaxPrior += signed;
+    } else if (kind === "unconfirmed") {
       b.unconfirmedIn += abs;
     } else if (kind === "transfer") {
       if (amt > 0) b.transferIn += abs; else b.transferOut += abs;
@@ -2277,18 +2508,27 @@ export function aggregateTransactionsByMonth(transactions, options = {}) {
         // Money back from a supplier: a cost that did not stay a cost.
         b.refundsIn += abs;
         b.expenses -= abs;
+        // The lowest profit keeps the cost highest: the smaller reduction.
+        { const [lo, hi] = basis("out"); b.pExpHigh -= lo; b.pExpLow -= hi; }
         const cat = detectExpenseCategory(t.description);
         if (CATEGORY_BUCKETS.has(cat)) b[cat] -= abs;
+        else if (cat === "other") b.uncategorised -= abs;
       } else {
         // Money returned to a customer: revenue that did not stay revenue.
         b.refundsOut += abs;
         b.revenue -= abs;
+        { const [lo, hi] = basis("in"); b.pRevLow -= hi; b.pRevHigh -= lo; }
       }
     } else if (amt > 0) {
       b.revenue += abs;
+      { const [lo, hi] = basis("in"); b.pRevLow += lo; b.pRevHigh += hi; }
     } else {
       b.expenses += abs;
+      { const [lo, hi] = basis("out"); b.pExpLow += lo; b.pExpHigh += hi; }
       if (t.category && CATEGORY_BUCKETS.has(t.category)) b[t.category] += abs;
+      // A cost no keyword placed anywhere: its category is not known, which is
+      // not the same as belonging to none (defect 16).
+      else if (!t.category || t.category === "other") b.uncategorised += abs;
     }
   });
 
@@ -2297,7 +2537,7 @@ export function aggregateTransactionsByMonth(transactions, options = {}) {
     const b = buckets[key];
     // A refund larger than the month's spend in its category leaves the
     // category at zero, not below it; the expense total keeps the full amount.
-    const category = c => wholeUnits(Math.max(0, b[c]));
+    const category = c => monthCents(Math.max(0, b[c]));
     return {
       period_month: `${key}-01`,
       // In UTC, like the date it is made from: in the viewer's own time
@@ -2306,34 +2546,550 @@ export function aggregateTransactionsByMonth(transactions, options = {}) {
       month: new Date(`${key}-01T00:00:00Z`).toLocaleDateString("en-US", { month:"short", year:"2-digit", timeZone:"UTC" }),
       partial: monthIsPartial(key, b, i > 0 ? buckets[keys[i - 1]] : null, i === 0, i === keys.length - 1, today),
       coveredFrom: b.firstDate, coveredTo: b.lastDate,
-      revenue: wholeUnits(b.revenue), expenses: wholeUnits(b.expenses), cash: 0,
+      revenue: monthCents(b.revenue), expenses: monthCents(b.expenses), cash: 0,
       payroll: category("payroll"), marketing: category("marketing"), cogs: category("cogs"),
-      rent: category("rent"), software: category("software"),
-      financingIn: wholeUnits(b.financingIn), financingOut: wholeUnits(b.financingOut),
-      transferIn: wholeUnits(b.transferIn), transferOut: wholeUnits(b.transferOut),
-      refundsIn: wholeUnits(b.refundsIn), refundsOut: wholeUnits(b.refundsOut),
-      unconfirmedIn: wholeUnits(b.unconfirmedIn),
+      rent: category("rent"), software: category("software"), uncategorised: category("uncategorised"),
+      financingIn: monthCents(b.financingIn), financingOut: monthCents(b.financingOut),
+      transferIn: monthCents(b.transferIn), transferOut: monthCents(b.transferOut),
+      refundsIn: monthCents(b.refundsIn), refundsOut: monthCents(b.refundsOut),
+      unconfirmedIn: monthCents(b.unconfirmedIn),
+      // Profit basis. profitRevenue and profitExpenses are the figures shown: the
+      // lowest revenue and the highest costs the unclassified amounts allow, so
+      // profit is "at least". The High and Low fields are the other end.
+      profitRevenue: monthCents(b.pRevLow), profitRevenueHigh: monthCents(b.pRevHigh),
+      profitExpenses: monthCents(b.pExpHigh), profitExpensesLow: monthCents(b.pExpLow),
+      incomeTaxCurrent: monthCents(b.incomeTaxCurrent), incomeTaxPrior: monthCents(b.incomeTaxPrior), vatPaid: monthCents(b.vatPaid),
+      vatCollected: monthCents(b.vatCollected), vatClaimable: monthCents(b.vatClaimable), vatUnclassified: monthCents(b.vatUnclassified),
       leads: 0, closures: 0, cac: 0, ltv: 0,
     };
   });
 }
 
-// Average month-over-month growth rate across up to the last 3 transitions
-// between uploaded months, rather than a single period — one anomalous
-// month (a one-off deal, a delayed invoice) shouldn't solely determine a
-// 90-day forecast. Falls back to the single-period rate when there isn't
-// enough history to average (manual entry, or only one uploaded month).
-export function trailingGrowthRate(rows, singlePeriodVel) {
-  if (!rows || rows.length < 2) return singlePeriodVel;
-  const transitions = [];
-  for (let i = 1; i < rows.length; i++) {
-    if (rows[i - 1].revenue > 0) {
-      transitions.push(((rows[i].revenue - rows[i - 1].revenue) / rows[i - 1].revenue) * 100);
+// ─── ACCOUNT ANSWERS AND STATEMENT COVERAGE ─────────────────────
+// Correction plan, revision 4: D10a, D10c and D1's window (Phase 1, task 3).
+// No upload records a statement period, so a month with no transactions is a
+// gap, unknown and never zero, unless the founder confirms the account had no
+// transactions that month AND a verified balance is unchanged across it. The
+// confirmation is the evidence; the balance only rules out net movement.
+// Balance evidence alone is a note, never a figure.
+//
+// Coverage is judged per account. A named upload belongs to accountKey() of
+// its name; an upload with no usable name is its own account,
+// "upload:<batch id>", until the founder links it ("same_as"). An account with
+// no answer is unresolved: never closed and never joined. Only the founder's
+// "closed" answer, with its date, ends an account. A link whose target is no
+// longer on file, or that loops, is ignored and the account is unresolved
+// again. The answers live in account_answers (migration 20261113235610),
+// whose checks accountAnswerRow() mirrors, so a save the database would
+// refuse is refused here first.
+export const ACCOUNT_ANSWER_KINDS = ["closed", "same_as", "still_open", "no_transactions_month"];
+const STATUS_KINDS = new Set(["closed", "same_as", "still_open"]);
+const NAMED_ACCOUNT_KEY = /^[a-z0-9_ ]{1,80}$/;
+const UPLOAD_ACCOUNT_KEY = /^upload:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/;
+const isAccountKeyValue = k => typeof k === "string" && (NAMED_ACCOUNT_KEY.test(k) || UPLOAD_ACCOUNT_KEY.test(k));
+export const isUnnamedAccountKey = k => typeof k === "string" && k.startsWith("upload:");
+const answerError = message => new Error(`Account answer: ${message}`);
+
+// A real calendar date as YYYY-MM-DD, or null. "2026-02-30" is not one.
+function calendarDate(value) {
+  const s = String(value ?? "").trim().slice(0, 10);
+  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return null;
+  const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])];
+  const dt = new Date(Date.UTC(y, mo - 1, d));
+  return dt.getUTCFullYear() === y && dt.getUTCMonth() === mo - 1 && dt.getUTCDate() === d ? s : null;
+}
+const nextMonthKey = key => {
+  const [y, m] = key.split("-").map(Number);
+  return m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, "0")}`;
+};
+const shiftMonthKey = (key, n) => {
+  const [y, m] = key.split("-").map(Number);
+  const i = y * 12 + (m - 1) + n;
+  return `${Math.floor(i / 12)}-${String((i % 12) + 1).padStart(2, "0")}`;
+};
+const monthName = key => new Date(`${key}-01T00:00:00Z`).toLocaleDateString("en-US", { month: "short", year: "2-digit", timeZone: "UTC" });
+
+// The account an upload belongs to.
+export function uploadAccountKey(batch) {
+  const named = accountKey(batch?.account_label || "");
+  return NAMED_ACCOUNT_KEY.test(named) ? named : `upload:${batch?.id}`;
+}
+
+// One answer as the row the database stores. Every field is always sent, with
+// the fields that do not apply set to null: an upsert replaces only the fields
+// it carries, so changing "closed" to "still open" without sending
+// closed_on: null would leave the old date behind, and the database refuses
+// that row. Throws when the database would refuse the answer.
+export function accountAnswerRow(answer, userId) {
+  if (!userId) throw answerError("there is no signed-in founder to save it for.");
+  const key = answer?.accountKey;
+  if (!isAccountKeyValue(key)) throw answerError("it does not name an account.");
+  const upload = key.match(UPLOAD_ACCOUNT_KEY);
+  const row = { user_id: userId, account_key: key, batch_id: upload ? upload[1] : null, kind: answer.kind,
+    slot: "status", closed_on: null, same_as_key: null, month: null };
+  switch (answer.kind) {
+    case "closed": {
+      const on = calendarDate(answer.closedOn);
+      if (!on) throw answerError("a closed account needs the date it closed.");
+      row.closed_on = on;
+      break;
     }
+    case "same_as": {
+      const target = answer.sameAsKey;
+      if (!isAccountKeyValue(target)) throw answerError("it does not name the account this one is the same as.");
+      if (target === key) throw answerError("an account cannot be the same as itself.");
+      row.same_as_key = target;
+      break;
+    }
+    case "still_open":
+      break;
+    case "no_transactions_month": {
+      const raw = String(answer.month ?? "").trim();
+      const on = calendarDate(/^\d{4}-\d{2}$/.test(raw) ? `${raw}-01` : raw);
+      if (!on) throw answerError("a month with no transactions needs its month.");
+      row.month = `${on.slice(0, 7)}-01`;
+      row.slot = `month:${on.slice(0, 7)}`;
+      break;
+    }
+    default:
+      throw answerError(`"${answer.kind}" is not an answer this table holds.`);
   }
-  if (transitions.length === 0) return singlePeriodVel;
-  const lastFew = transitions.slice(-3);
-  return lastFew.reduce((s, v) => s + v, 0) / lastFew.length;
+  return row;
+}
+
+// The rows for one save. The database refuses a whole upsert that touches one
+// row twice, so a save that answers the same question twice is refused here,
+// whole, and so is a save with any answer the database would refuse.
+export function accountAnswerRows(answers, userId) {
+  const rows = [];
+  const seen = new Set();
+  try {
+    for (const a of answers || []) {
+      const row = accountAnswerRow(a, userId);
+      const slot = `${row.account_key}|${row.slot}`;
+      if (seen.has(slot)) return { rows: [], error: "This save answers the same question about one account twice, so nothing was saved." };
+      seen.add(slot);
+      rows.push(row);
+    }
+  } catch (e) {
+    return { rows: [], error: String(e.message || e) };
+  }
+  return { rows, error: null };
+}
+
+// Which account each upload is, following the founder's "same_as" links.
+// `accounts`: every account key on file, with the group its history is read
+// in. `groups`: one per history, keyed by the account at the end of the links.
+// A link to an account no longer on file, or a loop, leaves every account in
+// that chain unresolved and in a group of its own.
+export function resolveAccounts(batches, answers) {
+  const accounts = new Map();
+  (batches || []).forEach(b => {
+    if (!b?.id) return;
+    const key = uploadAccountKey(b);
+    if (!accounts.has(key)) accounts.set(key, { key, label: isUnnamedAccountKey(key) ? null : String(b.account_label).trim(), unnamed: isUnnamedAccountKey(key), batchIds: [], filenames: [] });
+    const a = accounts.get(key);
+    a.batchIds.push(b.id);
+    if (b.filename) a.filenames.push(b.filename);
+  });
+  const statusAnswer = new Map();
+  const monthAnswers = new Map();
+  const ignored = [];
+  (answers || []).forEach(a => {
+    if (!a || !accounts.has(a.account_key)) { if (a) ignored.push(a); return; }
+    if (a.kind === "no_transactions_month") {
+      const key = String(a.month || "").slice(0, 7);
+      if (!/^\d{4}-\d{2}$/.test(key)) { ignored.push(a); return; }
+      if (!monthAnswers.has(a.account_key)) monthAnswers.set(a.account_key, new Map());
+      monthAnswers.get(a.account_key).set(key, a);
+    } else if (STATUS_KINDS.has(a.kind)) {
+      statusAnswer.set(a.account_key, a);
+    } else {
+      ignored.push(a);
+    }
+  });
+
+  const chain = start => {
+    const seen = new Set([start]);
+    let at = start;
+    for (;;) {
+      const a = statusAnswer.get(at);
+      if (!a || a.kind !== "same_as") return { root: at };
+      const next = a.same_as_key;
+      if (!accounts.has(next)) return { broken: "missing_link" };
+      if (seen.has(next)) return { broken: "loop" };
+      seen.add(next);
+      at = next;
+    }
+  };
+
+  const groups = new Map();
+  const groupFor = (key, fields) => {
+    if (!groups.has(key)) {
+      const a = accounts.get(key);
+      groups.set(key, { key, label: a.label, unnamed: a.unnamed, members: [], batchIds: [], filenames: [], ...fields });
+    }
+    return groups.get(key);
+  };
+  accounts.forEach((a, key) => {
+    const c = chain(key);
+    if (c.broken) {
+      Object.assign(a, { group: key, status: "unresolved", reason: c.broken, closedOn: null });
+      return;
+    }
+    const answer = statusAnswer.get(c.root);
+    const status = answer?.kind === "closed" ? "closed" : answer?.kind === "still_open" ? "still_open" : "unresolved";
+    Object.assign(a, { group: c.root, status, reason: status === "unresolved" ? "no_answer" : null,
+      closedOn: status === "closed" ? calendarDate(answer.closed_on) : null });
+  });
+  accounts.forEach((a, key) => {
+    const root = accounts.get(a.group);
+    const g = groupFor(a.group, { status: root.status, reason: root.reason, closedOn: root.closedOn });
+    g.members.push(key);
+    g.batchIds.push(...a.batchIds);
+    g.filenames.push(...a.filenames);
+  });
+  return { accounts, groups, ignored, statusAnswer, monthAnswers };
+}
+
+const COVERAGE_MONEY = ["profitRevenue", "profitRevenueHigh", "profitExpenses", "profitExpensesLow", "incomeTaxCurrent", "incomeTaxPrior", "vatPaid", "revenue", "expenses", "payroll", "marketing", "cogs", "rent", "software", "financingIn", "financingOut",
+  "transferIn", "transferOut", "refundsIn", "refundsOut", "unconfirmedIn"];
+const finiteAmount = v => (v === null || v === undefined || v === "" || !Number.isFinite(Number(v)) ? null : Number(v));
+const isVerifiedBatch = b => b?.reconciliation_status === "verified";
+
+// What the balances say about a span with no rows, from `before` (the last
+// transaction before it) to `after` (the first after it). Inside one verified
+// file the balance cannot have moved, since every row's balance follows the
+// one before. Between two verified files, the first's closing balance and the
+// second's opening balance are compared to the cent. It says nothing before an
+// account's first row or after its last. An unnamed file whose duplicates were
+// skipped is not used inside itself: those rows were matched against every
+// unnamed upload, so the span may have had rows this account no longer shows.
+function balanceEvidence(batches, before, after) {
+  if (!before || !after) return null;
+  const inside = batches.find(b => isVerifiedBatch(b) && b.period_start && b.period_end
+    && String(b.period_start).slice(0, 10) <= before && String(b.period_end).slice(0, 10) >= after
+    && (!isUnnamedAccountKey(uploadAccountKey(b)) || Number(b.duplicate_count) === 0));
+  if (inside) return { kind: "unchanged", source: "file", from: before, to: after, filename: inside.filename || null };
+  const closingOf = b => finiteAmount(b.closing_balance) ?? finiteAmount(b.reconciliation_detail?.closingBalance);
+  const openingOf = b => finiteAmount(b.reconciliation_detail?.openingBalance);
+  const first = batches.find(b => isVerifiedBatch(b) && String(b.period_end || "").slice(0, 10) === before && closingOf(b) !== null);
+  const second = first && batches.find(b => isVerifiedBatch(b) && String(b.period_start || "").slice(0, 10) === after
+    && openingOf(b) !== null && (b.currency || null) === (first.currency || null));
+  if (!first || !second) return null;
+  const moved = round2(openingOf(second) - closingOf(first)) || 0;
+  return moved === 0
+    ? { kind: "unchanged", source: "files", from: before, to: after, amount: closingOf(first) }
+    : { kind: "moved", source: "files", from: before, to: after, amount: moved };
+}
+
+// Every calendar month, per account and for the business, marked complete,
+// partial, quiet (founder-confirmed, with an unchanged verified balance) or
+// gap. `transactions` are the ones the figures use (the business currency);
+// an account with none of them is not part of the reading. Business months
+// run from the first month any account has data to the last. A business month
+// is a gap when any account expected in it is a gap, and its totals are null:
+// unknown, never zero. Before an account's first month it is not expected;
+// after its last it is expected (its later months are gaps) unless the
+// founder said it closed, and then only until the month it closed.
+export function accountCoverage({ transactions, batches, answers, rules, today, vat = null } = {}) {
+  const asOf = today || new Date().toISOString().slice(0, 10);
+  const thisMonth = asOf.slice(0, 7);
+  const resolved = resolveAccounts(batches, answers);
+  const batchById = new Map((batches || []).filter(b => b?.id).map(b => [b.id, b]));
+  const ruleIndex = asRuleIndex(rules);
+
+  // Transactions by the history they are read in.
+  const byGroup = new Map();
+  const spanOf = new Map(); // each account's own first and last transaction date
+  (transactions || []).forEach(t => {
+    const b = batchById.get(t.source_batch_id);
+    const own = b ? uploadAccountKey(b) : `upload:${t.source_batch_id}`;
+    const key = resolved.accounts.get(own)?.group || own;
+    if (!byGroup.has(key)) byGroup.set(key, []);
+    byGroup.get(key).push(t);
+    const date = String(t.txn_date).slice(0, 10);
+    const span = spanOf.get(own);
+    if (!span) spanOf.set(own, { from: date, to: date });
+    else { if (date < span.from) span.from = date; if (date > span.to) span.to = date; }
+  });
+  if (byGroup.size === 0) return { asOf, accounts: [], months: [], questions: [], ignored: resolved.ignored };
+
+  const groupInfo = key => resolved.groups.get(key)
+    || { key, label: null, unnamed: true, members: [key], batchIds: [], filenames: [], status: "unresolved", reason: "no_answer", closedOn: null };
+  const histories = [...byGroup.entries()].map(([key, list]) => {
+    const sorted = [...list].sort((a, b) => String(a.txn_date).localeCompare(String(b.txn_date)));
+    const rows = aggregateTransactionsByMonth(sorted, { rules: ruleIndex, today: asOf, vat });
+    return { info: groupInfo(key), rows, byMonth: new Map(rows.map(r => [r.period_month.slice(0, 7), r])) };
+  });
+  const bizFirst = histories.map(h => h.rows[0].period_month.slice(0, 7)).sort()[0];
+  const bizLast = histories.map(h => h.rows[h.rows.length - 1].period_month.slice(0, 7)).sort().pop();
+
+  const accountsOut = histories.map(({ info, rows, byMonth }) => {
+    const first = rows[0].period_month.slice(0, 7);
+    const last = rows[rows.length - 1].period_month.slice(0, 7);
+    const closedMonth = info.status === "closed" && info.closedOn ? info.closedOn.slice(0, 7) : null;
+    const end = closedMonth ? [last, closedMonth < bizLast ? closedMonth : bizLast].sort().pop() : bizLast;
+    const groupBatches = info.batchIds.map(id => batchById.get(id)).filter(Boolean);
+    // Linked accounts whose own dates overlap. Duplicates are matched per
+    // account name, so one bank account uploaded under two names holds the rows
+    // of the overlap twice, and nothing here guesses which rows those are: the
+    // months both cover are held. Two unnamed uploads were matched against each
+    // other when they were uploaded, so a pair of those is not held.
+    const overlaps = [];
+    const members = info.members.filter(k => spanOf.has(k));
+    members.forEach((a, i) => members.slice(i + 1).forEach(b => {
+      if (isUnnamedAccountKey(a) && isUnnamedAccountKey(b)) return;
+      const from = [spanOf.get(a).from, spanOf.get(b).from].sort()[1];
+      const to = [spanOf.get(a).to, spanOf.get(b).to].sort()[0];
+      if (from <= to) overlaps.push({ a, b, from, to });
+    }));
+    const overlapped = key => overlaps.some(o => o.from.slice(0, 7) <= key && key <= o.to.slice(0, 7));
+    const quietAnswer = key => info.members.map(m => resolved.monthAnswers.get(m)?.get(key)).find(Boolean) || null;
+    const months = [];
+    for (let key = first; key <= end; key = nextMonthKey(key)) {
+      const row = byMonth.get(key);
+      if (row) {
+        months.push({ key, month: monthName(key), status: overlapped(key) ? "overlap" : row.partial ? "partial" : "complete", balance: null, confirmed: false, refused: null, afterLast: false });
+        continue;
+      }
+      const prev = rows.filter(r => r.period_month.slice(0, 7) < key).pop();
+      const next = rows.find(r => r.period_month.slice(0, 7) > key);
+      const balance = balanceEvidence(groupBatches, prev?.coveredTo || null, next?.coveredFrom || null);
+      const answer = quietAnswer(key);
+      const quiet = !!answer && balance?.kind === "unchanged";
+      months.push({ key, month: monthName(key), status: quiet ? "quiet" : "gap", balance, confirmed: quiet,
+        refused: answer && !quiet ? (balance ? "moved" : "no_balance") : null, afterLast: key > last });
+    }
+    const memberLabels = Object.fromEntries(info.members.map(k => [k, resolved.accounts.get(k)?.label || (resolved.accounts.get(k)?.filenames?.length ? `the unnamed upload ${resolved.accounts.get(k).filenames.join(", ")}` : null)]));
+    return { key: info.key, label: info.label, unnamed: info.unnamed, members: [...info.members], memberLabels, filenames: [...info.filenames],
+      status: info.status, reason: info.reason, closedOn: info.closedOn, overlaps,
+      firstMonth: first, lastMonth: last, firstDate: rows[0].coveredFrom, lastDate: rows[rows.length - 1].coveredTo, months };
+  }).sort((a, b) => a.firstMonth.localeCompare(b.firstMonth) || a.key.localeCompare(b.key));
+
+  // Business months. Totals come from every transaction in the month, so money
+  // between the business's own accounts cancels within the month it moved.
+  const bizRows = new Map(aggregateTransactionsByMonth(
+    [...(transactions || [])].sort((a, b) => String(a.txn_date).localeCompare(String(b.txn_date))),
+    { rules: ruleIndex, today: asOf, vat }).map(r => [r.period_month.slice(0, 7), r]));
+  const zeroTotals = key => ({ period_month: `${key}-01`, month: monthName(key), coveredFrom: null, coveredTo: null,
+    ...Object.fromEntries(COVERAGE_MONEY.map(f => [f, 0])) });
+  const monthsOut = [];
+  for (let key = bizFirst; key <= bizLast; key = nextMonthKey(key)) {
+    const expected = accountsOut.map(a => ({ a, m: a.months.find(x => x.key === key) })).filter(x => x.m);
+    const gapAccounts = expected.filter(x => x.m.status === "gap").map(x => x.a.key);
+    const overlapAccounts = expected.filter(x => x.m.status === "overlap").map(x => x.a.key);
+    const status = expected.length === 0 || gapAccounts.length > 0 ? "gap"
+      : overlapAccounts.length > 0 ? "overlap"
+      : expected.some(x => x.m.status === "partial") ? "partial"
+      : expected.every(x => x.m.status === "quiet") ? "quiet" : "complete";
+    const row = bizRows.get(key);
+    // A gap is unknown and an overlap may hold the same money twice: neither is a figure.
+    monthsOut.push({ key, month: monthName(key), status, gapAccounts, overlapAccounts,
+      totals: status === "gap" || status === "overlap" ? null : row ? { ...row, partial: status === "partial" } : zeroTotals(key) });
+  }
+
+  // What to ask the founder. An unnamed upload is always asked which account
+  // it is. A named account is asked once its statements have stopped for a
+  // whole month while the business's continue; the current month, still
+  // running, does not count. A broken link is asked again.
+  const questions = [];
+  accountsOut.forEach(a => {
+    let kind = null;
+    if (a.status === "unresolved" && (a.reason === "missing_link" || a.reason === "loop")) kind = "broken_link";
+    else if (a.status === "unresolved" && a.unnamed) kind = "identity";
+    else if (a.status === "unresolved" && a.months.some(m => m.afterLast && m.status === "gap" && m.key < thisMonth)) kind = "stopped";
+    if (kind) questions.push({ key: a.key, kind, label: a.label, unnamed: a.unnamed, filenames: a.filenames, firstDate: a.firstDate, lastDate: a.lastDate });
+  });
+
+  return { asOf, accounts: accountsOut, months: monthsOut, questions, ignored: resolved.ignored };
+}
+
+// D1: the 3 calendar months ending with the latest calendar month that has
+// ended (founder's decision, 14 November 2026): on 15 July, April, May and
+// June, whatever the statements cover. "Complete" means the month is over, not
+// that every account has its statement. A missing June stays a gap inside the
+// window; the window never moves back to March to May to step round it.
+// Each month carries its status; `complete` only when all three are complete or
+// quiet (a founder-confirmed zero), and only then an `average`, over business
+// months, never per-account averages added up. `missing` names every month
+// that is not. A month after the last data on file is a gap for every account
+// still expected in it; one before the first is "none". Burn is costs plus
+// financing out less revenue, as runway's.
+export function judgementWindow(coverage, options = {}) {
+  const months = coverage?.months || [];
+  const asOf = options.today || coverage?.asOf || new Date().toISOString().slice(0, 10);
+  const usable = m => m.status === "complete" || m.status === "quiet";
+  const endKey = shiftMonthKey(asOf.slice(0, 7), -1);
+  const byKey = new Map(months.map(m => [m.key, m]));
+  const first = months[0]?.key, last = months[months.length - 1]?.key;
+  const list = [-2, -1, 0].map(n => {
+    const key = shiftMonthKey(endKey, n);
+    const m = byKey.get(key);
+    if (m) return { key, month: m.month, status: m.status, gapAccounts: m.gapAccounts, overlapAccounts: m.overlapAccounts || [], totals: m.totals };
+    // After the last data on file: missing for every account not closed before it.
+    const expected = last && key > last
+      ? (coverage.accounts || []).filter(a => !(a.status === "closed" && a.closedOn && a.closedOn.slice(0, 7) < key)).map(a => a.key)
+      : [];
+    return expected.length > 0
+      ? { key, month: monthName(key), status: "gap", gapAccounts: expected, totals: null }
+      : { key, month: monthName(key), status: "none", gapAccounts: [], totals: null, beforeData: !first || key < first };
+  });
+  const missing = list.filter(m => !usable(m)).map(m => m.key);
+  // D10b, for every judgement but affordability: measure from the months of the
+  // window that are complete or confirmed quiet. With a gap, a part month or a
+  // possibly doubled month in the window, at least 2 are needed, the result is
+  // low confidence and the months left out are named; with only 1, it is held.
+  // A month before the data starts is not a gap: a newer business is measured
+  // from what there is, as before.
+  const used = list.filter(usable);
+  const blocked = list.filter(m => m.status === "gap" || m.status === "partial" || m.status === "overlap").map(m => m.key);
+  const usedTotals = used.map(m => m.totals);
+  const measure = {
+    count: used.length, months: used.map(m => m.key), blocked, low: blocked.length > 0,
+    held: blocked.length > 0 && used.length < 2,
+    sums: Object.fromEntries(COVERAGE_MONEY.map(f => [f, sumCents(usedTotals, f)])),
+  };
+  let average = null;
+  if (missing.length === 0) {
+    const totals = list.map(m => m.totals);
+    const avg = f => round2(sumCents(totals, f) / totals.length) || 0;
+    average = Object.fromEntries(COVERAGE_MONEY.map(f => [f, avg(f)]));
+    average.burn = round2((sumCents(totals, "expenses") + sumCents(totals, "financingOut") - sumCents(totals, "revenue")) / totals.length) || 0;
+  }
+  return { end: endKey, months: list, complete: missing.length === 0, missing, average, measure };
+}
+
+// The run rate's monthly rows, with each business month that is quiet added as
+// a month of zero (founder's decision, 14 November 2026), so runway's burn and
+// D1's window rest on the same three calendar months. Quiet means what
+// accountCoverage() says: the founder confirmed every account expected that
+// month had no transactions, and a verified balance is unchanged across it.
+// Every other month with no rows stays out, a gap, never zero. A month where
+// one account was quiet and another traded already has its row and is left as
+// it is. A quiet month never stands in for burn alone: with no complete month
+// of transactions the rows are returned as they are, and the run rate keeps
+// its daily measure across the days the data covers.
+export function runRateRowsWithQuietMonths(rows, coverage) {
+  const list = rows || [];
+  const quiet = (coverage?.months || []).filter(m => m.status === "quiet" && m.totals);
+  if (quiet.length === 0 || !list.some(r => !r.partial)) return list;
+  const have = new Set(list.map(r => String(r.period_month).slice(0, 7)));
+  const added = quiet.filter(m => !have.has(m.key)).map(m => ({
+    ...m.totals, period_month: `${m.key}-01`, month: m.month, partial: false, quiet: true,
+    coveredFrom: null, coveredTo: null, cash: 0, leads: 0, closures: 0, cac: 0, ltv: 0,
+  }));
+  if (added.length === 0) return list;
+  return [...list, ...added].sort((a, b) => String(a.period_month).localeCompare(String(b.period_month)));
+}
+
+// Tax year to date (D3a): the only place tax payments are compared with a
+// reserve. It runs from the first month of the business's tax year to the latest
+// complete month, the same on every period view, and gives three estimates: the
+// reserve rate on that span's profit, the income tax paid in it for the year it
+// was paid in, and what is estimated still to set aside. Payments for an earlier
+// year are shown apart and never counted. It is the app's estimate from bank
+// data, never a SARS calculation, a liability or a credit.
+// Not worked out without the financial year-end month, or when the statements
+// do not run from the start of the tax year with no month missing.
+export function taxYearToDate({ rows, coverageMonths = null, yearEndMonth = null, rate }) {
+  const complete = (rows || []).filter(r => !r.partial && r.period_month);
+  if (!(yearEndMonth >= 1 && yearEndMonth <= 12)) return { available: false, reason: "the month your financial year ends is not set" };
+  if (complete.length === 0) return { available: false, reason: "there is no complete month on file" };
+  const to = String(complete[complete.length - 1].period_month).slice(0, 7);
+  const startMonth = (yearEndMonth % 12) + 1;
+  const toYear = Number(to.slice(0, 4)), toMonth = Number(to.slice(5, 7));
+  const from = `${toMonth >= startMonth ? toYear : toYear - 1}-${String(startMonth).padStart(2, "0")}`;
+  const byKey = new Map(complete.map(r => [String(r.period_month).slice(0, 7), r]));
+  const status = coverageMonths ? new Map(coverageMonths.map(m => [m.key, m.status])) : null;
+  const span = [];
+  for (let key = from; key <= to; key = nextMonthKey(key)) {
+    const row = byKey.get(key), st = status?.get(key);
+    if (!row || (st && st !== "complete" && st !== "quiet")) {
+      return { available: false, from, to, reason: `the statements on file do not cover every month from ${longMonth(from)}: ${longMonth(key)} is missing or incomplete` };
+    }
+    span.push(row);
+  }
+  const profit = toCents(profitSum(span, "profitRevenue", "revenue") - profitSum(span, "profitExpenses", "expenses"));
+  const estimate = toCents(Math.max(0, profit) * rate);
+  const paid = sumCents(span, "incomeTaxCurrent");
+  return { available: true, from, to, months: span.length, profit, estimate, paid, priorYears: sumCents(span, "incomeTaxPrior"),
+    stillToSetAside: toCents(Math.max(0, estimate - paid)), beyond: toCents(Math.max(0, paid - estimate)) };
+}
+
+// The tax-year line in words. It never calls a difference a credit, a refund,
+// an overpayment or an amount owed: only an assessment by SARS establishes those.
+export function taxYearNote(taxYear, currency, rate) {
+  const basis = `an estimate at ${Math.round(rate * 100)}% of profit, not a SARS calculation`;
+  if (!taxYear?.available) return `Tax year to date is not shown: ${taxYear?.reason || "it cannot be worked out"}. The reserve above is ${basis}.`;
+  const money = v => fmt(v, currency);
+  const head = `Tax year to date, ${longMonth(taxYear.from)} to ${longMonth(taxYear.to)}: reserve estimate ${money(taxYear.estimate)}, income tax you marked as paid for this year ${money(taxYear.paid)}.`;
+  const tail = taxYear.beyond > 0
+    ? ` There is nothing further to set aside by this estimate, and you have paid ${money(taxYear.beyond)} more than this estimate.`
+    : taxYear.stillToSetAside > 0 ? ` Estimated still to set aside: ${money(taxYear.stillToSetAside)}.` : " There is nothing further to set aside by this estimate.";
+  const prior = taxYear.priorYears !== 0 ? ` Income tax paid for earlier years, ${money(taxYear.priorYears)}, is shown apart and not counted here.` : "";
+  return `${head}${tail}${prior} This is ${basis}.`;
+}
+
+// Whether the founder may confirm that an account had no transactions in a
+// month: only a gap with a verified balance unchanged across it. With no
+// balances to check, or a balance that moved, the confirmation is refused.
+export function canConfirmQuietMonth(coverage, key, monthKey) {
+  const account = (coverage?.accounts || []).find(a => a.key === key || a.members.includes(key));
+  const m = account?.months.find(x => x.key === String(monthKey).slice(0, 7));
+  if (!m) return { ok: false, reason: "outside" };
+  if (m.status === "quiet") return { ok: false, reason: "already" };
+  if (m.status !== "gap") return { ok: false, reason: "has_transactions" };
+  if (!m.balance) return { ok: false, reason: "no_balance" };
+  if (m.balance.kind !== "unchanged") return { ok: false, reason: "moved" };
+  return { ok: true };
+}
+
+// A balance note for a missing month, in words. It is never a figure.
+export function coverageNote(balance, label, currency) {
+  if (!balance) return null;
+  const name = label || "This account";
+  if (balance.kind === "moved") {
+    return `${fmt(Math.abs(balance.amount), currency)} ${balance.amount < 0 ? "left" : "reached"} ${name} between ${balance.from} and ${balance.to} with no transaction on file.`;
+  }
+  const where = balance.source === "file"
+    ? `${name}'s balance did not change between ${balance.from} and ${balance.to}${balance.filename ? `, inside ${balance.filename}` : ""}, a file that passed its balance check`
+    : `${name}'s balance was ${fmt(balance.amount, currency)} on both ${balance.from} and ${balance.to}`;
+  return `${where}. The month still counts as missing unless you confirm the account had no transactions in it.`;
+}
+
+// Growth is measured between levels, not as an average of percentage changes
+// (correction plan, defect 10; D11). A rise and a fall of the same amount do not
+// cancel in percentages: +100% then -50% is a return to the start, yet averages
+// +25%, and a business that swung without growing read "Accelerating" with a
+// forecast several times its revenue.
+// The average revenue of the latest block of months is compared with the block
+// before it: 3 against 3 with six months or more, 2 against 2 with four or
+// five, and the latest month against the one before with fewer. The monthly
+// rate is the block ratio's k-th root. It is growth only when the last three
+// month-to-month changes all moved the same way, and that way; otherwise there
+// is no growth to project, and the rate is 0. `rows` must be neighbouring
+// calendar months (the caller passes the run that ends at the latest complete
+// month), so a block never spans a gap.
+export function growthReading(rows, singlePeriodVel = 0) {
+  const list = rows || [];
+  const latest = list.length ? Number(list[list.length - 1].revenue) || 0 : 0;
+  if (list.length < 2) return { rate: Number(singlePeriodVel) || 0, consistent: false, blockAverage: latest, blockSize: 1, measured: false };
+  const k = list.length >= 6 ? 3 : list.length >= 4 ? 2 : 1;
+  const mean = part => part.reduce((sum, r) => sum + (Number(r.revenue) || 0), 0) / part.length;
+  const last = mean(list.slice(-k)), prior = mean(list.slice(-2 * k, -k));
+  const blockAverage = round2(last) || 0;
+  if (!(prior > 0)) return { rate: Number(singlePeriodVel) || 0, consistent: false, blockAverage, blockSize: k, measured: false };
+  const blockRate = (Math.pow(last / prior, 1 / k) - 1) * 100;
+  const changes = [];
+  for (let n = Math.max(1, list.length - 3); n < list.length; n++) changes.push((Number(list[n].revenue) || 0) - (Number(list[n - 1].revenue) || 0));
+  const up = changes.every(d => d > 0), down = changes.every(d => d < 0);
+  const consistent = (up && blockRate > 0) || (down && blockRate < 0);
+  return { rate: consistent ? blockRate : 0, consistent, blockAverage, blockSize: k, measured: true };
+}
+export function trailingGrowthRate(rows, singlePeriodVel) {
+  return growthReading(rows, singlePeriodVel).rate;
 }
 
 // Growth Score (0-100): rewards a sustained, consistent growth rate over a
@@ -2391,6 +3147,13 @@ export function computeGrowthScore(rows, singlePeriodVel, seasonalRate = null) {
 // seasonal (seasonallyAnnotated) is excluded — an expected seasonal swing
 // isn't deterioration. Only ever adds risk for a declining direction;
 // flat or improving trends never earn a discount on the other signals.
+const RISK_BAND_FLOOR = { Critical: 70, Elevated: 45, Watch: 20 };
+// Judgements set by hand, for review against real statements (D13): the fall in
+// revenue that is a warning (D6), the loss that is one (D5), and the share of
+// revenue from one client at which the question is raised (D7).
+const REVENUE_FALL_WARNING_PCT = 20;
+const LOSS_WARNING_PCT = 2;
+const LARGE_CLIENT_PCT = 60;
 function computeTrendRisk(trends, growthScore) {
   let risk = 0;
   const marginTrend = trends?.find(t => t.type === "margin" && !t.seasonallyAnnotated);
@@ -2407,8 +3170,7 @@ function computeTrendRisk(trends, growthScore) {
 // Risk Score (0-100, higher = riskier): a composite of five already-
 // verified signals, each contributing only when there's real data behind
 // it — no signal is penalized for being absent (consistent with how
-// Sovereignty Score and concentration reliability already treat missing
-// data in this engine). Weighted toward runway (0.4) since it's the most
+// concentration reliability already treats missing data in this engine). Weighted toward runway (0.4) since it's the most
 // survival-critical signal, then margin (0.3) — together these two alone
 // already reach the "Critical" band at their worst, regardless of trend
 // data — then trend direction (0.2), then concentration and unit
@@ -2416,7 +3178,10 @@ function computeTrendRisk(trends, growthScore) {
 // `runwayKnown` is false when no cash balance exists to measure runway
 // against. burnMonths is then meaningless (not short), so runway scores no
 // risk — the same rule as every other missing input here.
-export function computeRiskScore({ cashFlowPositive, burnMonths, runwayKnown = true, concentration, concentrationReliable, ltvcac, margin, trends, growthScore }) {
+export function computeRiskScore({ cashFlowPositive, burnMonths, runwayKnown = true, concentration, concentrationReliable, ltvcac, margin, trends, growthScore, minLabel = null, unknown = null }) {
+  // No score, with the reason, when the business burns cash and runway is not
+  // known, or the months behind it are missing (D7).
+  if (unknown) return { score: null, label: null, unknown, breakdown: null };
   const runwayRisk = cashFlowPositive || !runwayKnown ? 0
     : burnMonths >= 8 ? 0
     : burnMonths <= 0 ? 100
@@ -2438,8 +3203,11 @@ export function computeRiskScore({ cashFlowPositive, burnMonths, runwayKnown = t
   const score = Math.min(100, Math.max(0,
     runwayRisk * 0.4 + concentrationRisk * 0.05 + unitEconRisk * 0.05 + marginRisk * 0.3 + trendRisk * 0.2
   ));
-  const label = score >= 70 ? "Critical" : score >= 45 ? "Elevated" : score >= 20 ? "Watch" : "Low";
-  return { score, label, breakdown: { runwayRisk, concentrationRisk, unitEconRisk, marginRisk, trendRisk } };
+  // A floor lifts the score to the bottom of its band, so number and label agree.
+  const floor = RISK_BAND_FLOOR[minLabel] || 0;
+  const scored = Math.max(score, floor);
+  const label = scored >= 70 ? "Critical" : scored >= 45 ? "Elevated" : scored >= 20 ? "Watch" : "Low";
+  return { score: scored, label, floored: scored > score, breakdown: { runwayRisk, concentrationRisk, unitEconRisk, marginRisk, trendRisk } };
 }
 
 // Trend detection: compares the latest uploaded month against the average
@@ -2593,6 +3361,27 @@ const unidentifiedOpen = (revenue, unconfirmedIn) => unconfirmedIn > 0 && unconf
 // Rounded to the cent, so a business that breaks even reads 0, not a rounding
 // leftover: 0.0000000000145 once read as burn, and runway as 3.4 quadrillion months.
 const toCents = v => round2(v) || 0;
+// A profit-basis total. Rows from before the profit basis existed, or built by
+// hand, carry only the cash field, which is then the same figure.
+const profitSum = (list, field, cashField) => round2((list || []).reduce((sum, d) => sum + (Number(d[field] ?? d[cashField]) || 0), 0)) || 0;
+// Whether money nobody has identified leaves a result open (D9): it is 10% or
+// more of money in, or it is at least the size of the loss, or of the fall in
+// the bank balance, so identifying it could turn that into a profit or a rise.
+// More money in can never turn a profit into a loss.
+const moneyInOpen = (revenue, expenses, financingOut, unidentified) => unidentified > 0 && (
+  unidentifiedOpen(revenue, unidentified)
+  || couldReverseLoss(toCents(revenue - expenses), unidentified)
+  || couldReverseLoss(toCents(revenue - expenses - financingOut), unidentified));
+// The run of consecutive calendar months that ends with the last row. A month
+// with no row breaks it: the months either side of a gap are not neighbours.
+function consecutiveTail(rows) {
+  const list = rows || [];
+  if (list.length === 0 || !list[list.length - 1]?.period_month) return list;
+  const index = r => Number(String(r.period_month).slice(0, 4)) * 12 + Number(String(r.period_month).slice(5, 7));
+  let start = list.length - 1;
+  while (start > 0 && list[start - 1]?.period_month && index(list[start - 1]) === index(list[start]) - 1) start--;
+  return list.slice(start);
+}
 
 // The last 3 complete months, or what there is. A month in progress is not a
 // month of spending. `rows` is aggregateTransactionsByMonth's output.
@@ -2608,14 +3397,18 @@ export function currentRunRate(rows) {
     const days = from && to ? daysBetween(from, to) + 1 : 0;
     const none = { months: 0, historyMonths: 0, revenue: 0, expenses: 0, financingOut: 0, unconfirmedIn: 0, open: false, burn: 0 };
     if (days < MIN_DAYS_FOR_DAILY_RATE) return { ...none, days, tooShort: true };
-    const monthly = f => (all.reduce((s, r) => s + (Number(r[f]) || 0), 0) / days) * DAYS_PER_MONTH;
+    const monthly = f => (sumCents(all, f) / days) * DAYS_PER_MONTH;
     const revenue = monthly("revenue"), expenses = monthly("expenses"), financingOut = monthly("financingOut"), unconfirmedIn = monthly("unconfirmedIn");
     return { ...none, days, revenue, expenses, financingOut, unconfirmedIn, open: unidentifiedOpen(revenue, unconfirmedIn), burn: toCents(expenses + financingOut - revenue) };
   }
   const recent = complete.slice(-RUN_RATE_MONTHS);
-  const average = f => (recent.length ? recent.reduce((s, r) => s + (Number(r[f]) || 0), 0) / recent.length : 0);
+  const average = f => (recent.length ? sumCents(recent, f) / recent.length : 0);
   const revenue = average("revenue"), expenses = average("expenses"), financingOut = average("financingOut"), unconfirmedIn = average("unconfirmedIn");
-  return { months: recent.length, historyMonths: complete.length, revenue, expenses, financingOut, unconfirmedIn, open: unidentifiedOpen(revenue, unconfirmedIn), burn: toCents(expenses + financingOut - revenue) };
+  return { months: recent.length, historyMonths: complete.length, revenue, expenses, financingOut, unconfirmedIn,
+    profitRevenue: recent.length ? profitSum(recent, "profitRevenue", "revenue") / recent.length : 0,
+    profitExpenses: recent.length ? profitSum(recent, "profitExpenses", "expenses") / recent.length : 0,
+    open: moneyInOpen(sumCents(recent, "revenue"), sumCents(recent, "expenses"), sumCents(recent, "financingOut"), sumCents(recent, "unconfirmedIn")),
+    burn: toCents(expenses + financingOut - revenue) };
 }
 
 // What the bank recorded after a balance's date. Transfers between the
@@ -2680,7 +3473,13 @@ export function computeMetrics(rows, manual, mode, context = {}) {
   // figure, where 0 means "not entered".
   // `context.runRateRows` is every month on file, so burn does not depend on
   // the period on screen. Without it, burn reads `rows`.
-  const { lastTxnDate = null, revenueConcentration = null, currency = "USD", cash = null, runRateRows = null, today = null } = context;
+  // `context.window` (judgementWindow) is D1's window with D10b's measure, and
+  // `context.coverageMonths` the business months' statuses; with them burn and
+  // every judgement follow the coverage reading. Without them (older callers,
+  // manual entry) burn is the last 3 complete rows, as before. `riskBase`
+  // carries the dashboard's own findings inputs into a scenario.
+  const { lastTxnDate = null, revenueConcentration = null, currency = "USD", cash = null, runRateRows = null, today = null,
+    window = null, coverageMonths = null, riskBase = null, vat = null, taxYear: taxYearInput = null } = context;
   const { mRev, mExp, mCash, mCac, mLtv, mLeads, mClose, mFinOut = 0 } = manual;
 
   const tr = mode === "safe" ? 0.30 : 0.25;
@@ -2692,19 +3491,47 @@ export function computeMetrics(rows, manual, mode, context = {}) {
   // month, growth, trends, seasonality and the projection. Until one month
   // is complete, the partial months are all there is, and they are used.
   const complete = rows ? rows.filter(r => !r.partial) : null;
-  const basis    = rows ? (complete.length > 0 ? complete : rows) : null;
+  // A business month the coverage reading calls a gap (an account's statement
+  // is missing) or possibly doubled is not a month's worth either: it is left
+  // out of every average, the latest month, change, trends and growth (D10b).
+  const covStatus = coverageMonths ? new Map(coverageMonths.map(m => [m.key, m.status])) : null;
+  const unsound  = r => !!covStatus && r?.period_month && ["gap", "overlap"].includes(covStatus.get(String(r.period_month).slice(0, 7)));
+  const soundOf  = list => { const ok = list.filter(r => !r.partial && !unsound(r)); return ok.length > 0 ? ok : null; };
+  const basis    = rows ? (soundOf(rows) || (complete.length > 0 ? complete : rows)) : null;
+  // Change is measured only between neighbouring calendar months.
+  const tail     = basis ? consecutiveTail(basis) : null;
   const latest   = basis ? basis[basis.length - 1] : { revenue:mRev, expenses:mExp };
-  const prev     = basis && basis.length > 1 ? basis[basis.length - 2] : latest;
-  const sumRows  = (list, f) => list.reduce((s, d) => s + (Number(d[f]) || 0), 0);
-  const totRev   = rows ? sumRows(rows, "revenue")  : mRev;
-  const totExp   = rows ? sumRows(rows, "expenses") : mExp;
-  const totCogs  = rows ? rows.reduce((s,d) => s + (d.cogs||0), 0) : 0;
-  const totMkt   = rows ? rows.reduce((s,d) => s + (d.marketing||0), 0) : 0;
+  const prev     = tail && tail.length > 1 ? tail[tail.length - 2] : latest;
+  const sumRows  = sumCents;
+  // Profit and margin are measured over complete months (D4): on the 9th, a
+  // month holds its takings and not yet its bills, and a break-even business
+  // read a profit that was gone by the 29th. A part month is reported beside
+  // them as "to date". Until one month is complete, the part months are all
+  // there is, and they are used.
+  const judged   = rows ? (complete.length > 0 ? complete : rows) : null;
+  const partials = rows && complete.length > 0 ? rows.filter(r => r.partial) : [];
+  const toDate   = partials.length > 0
+    ? { label: partials.map(r => monthLabel(r)).join(", "), months: partials.length, revenue: sumRows(partials, "revenue"), expenses: sumRows(partials, "expenses") }
+    : null;
+  // Revenue, costs, profit and margin are on the profit basis: VAT left out where
+  // it was charged or can be claimed, and income tax and VAT paid not costs. For
+  // a business with neither, these are the cash figures.
+  const totRev   = rows ? profitSum(judged, "profitRevenue", "revenue")  : mRev;
+  const totExp   = rows ? profitSum(judged, "profitExpenses", "expenses") : mExp;
+  const revenueHigh = rows ? profitSum(judged, "profitRevenueHigh", "revenue") : mRev;
+  const expensesLow = rows ? profitSum(judged, "profitExpensesLow", "expenses") : mExp;
+  const incomeTaxPaid = rows ? toCents(sumRows(judged, "incomeTaxCurrent") + sumRows(judged, "incomeTaxPrior")) : 0;
+  const vatPeriod = rows ? { collected: sumRows(judged, "vatCollected"), claimable: sumRows(judged, "vatClaimable"), paid: sumRows(judged, "vatPaid") } : { collected: 0, claimable: 0, paid: 0 };
+  const vatUnclassified = rows ? sumRows(judged, "vatUnclassified") : 0;
+  const totCogs  = rows ? sumRows(judged, "cogs") : 0;
+  const totMkt   = rows ? sumRows(judged, "marketing") : 0;
+  // Costs no keyword placed in any category (defect 16).
+  const uncategorised = rows ? sumRows(judged, "uncategorised") : 0;
   const totL     = rows ? rows.reduce((s,d) => s + (d.leads||0), 0) : mLeads;
   const totC     = rows ? rows.reduce((s,d) => s + (d.closures||0), 0) : mClose;
   // Money kept out of revenue and costs (see TRANSACTION KINDS). Only
   // financing going out reaches a figure: it is part of burn.
-  const sumOf = f => rows ? rows.reduce((s, d) => s + (Number(d[f]) || 0), 0) : 0;
+  const sumOf = f => rows ? sumCents(rows, f) : 0;
   const totFinIn  = sumOf("financingIn");
   const totFinOut = rows ? sumOf("financingOut") : (Number(mFinOut) || 0);
   const totTrIn   = sumOf("transferIn"),  totTrOut  = sumOf("transferOut");
@@ -2714,25 +3541,52 @@ export function computeMetrics(rows, manual, mode, context = {}) {
   // Unidentified money is a gap, not a zero. Counted as nothing, a real file
   // read as a R5,662 loss at critical risk when it had taken in more than it
   // spent. While the gap is material, what rests on revenue waits for it.
-  const figuresOpen = totUnconfirmedIn > 0 && totUnconfirmedIn >= UNCONFIRMED_MATERIAL_SHARE * (Math.max(0, totRev) + totUnconfirmedIn);
+  // It is also open when the unidentified money is at least the size of the
+  // loss: identifying it could turn the loss into a profit (D9). Judged on the
+  // same complete months as profit.
+  const judgedUnconfirmed = rows ? sumRows(judged, "unconfirmedIn") : 0;
+  const periodProfit = toCents(totRev - totExp);
+  const figuresOpen = judgedUnconfirmed > 0 && (unidentifiedOpen(totRev, judgedUnconfirmed) || couldReverseLoss(periodProfit, judgedUnconfirmed));
   // Runway must reflect net burn (cash out less revenue), not gross expenses:
   // dividing cash by gross expenses tells a profitable company it is about to
   // run out of money. Loan repayments and owner withdrawals are not costs, but
   // they empty the bank just the same, so they count here; a loan received does
   // not offset burn, because it is a one-off addition to cash, not income.
-  const rate = rows
-    ? currentRunRate(runRateRows?.length ? runRateRows : rows)
-    : { months: 1, historyMonths: 1, revenue: Number(mRev) || 0, expenses: Number(mExp) || 0, financingOut: Number(mFinOut) || 0 };
+  const historyRows = rows ? (runRateRows?.length ? runRateRows : rows) : null;
+  const historyMonths = historyRows ? historyRows.filter(r => !r.partial).length : 1;
+  // With the coverage reading, burn is measured on D1's window: the months of
+  // it that are complete or confirmed quiet (D10b). A month missing from the
+  // window is named, never stepped round; with only one usable month beside a
+  // missing one, burn is held.
+  const measure = rows && window?.measure && (window.measure.count > 0 || window.measure.blocked.length > 0) ? window.measure : null;
+  const rate = !rows
+    ? { months: 1, historyMonths: 1, revenue: Number(mRev) || 0, expenses: Number(mExp) || 0, financingOut: Number(mFinOut) || 0 }
+    : !measure ? currentRunRate(historyRows)
+    : measure.held ? { months: measure.count, historyMonths, revenue: 0, expenses: 0, financingOut: 0, unconfirmedIn: 0, open: false, held: true }
+    : { months: measure.count, historyMonths,
+        revenue: measure.sums.revenue / measure.count, expenses: measure.sums.expenses / measure.count,
+        financingOut: measure.sums.financingOut / measure.count, unconfirmedIn: measure.sums.unconfirmedIn / measure.count,
+        open: moneyInOpen(measure.sums.revenue, measure.sums.expenses, measure.sums.financingOut, measure.sums.unconfirmedIn) };
   const runRev = rate.revenue, runExp = rate.expenses, runFinOut = rate.financingOut;
   const netBurn = toCents(runExp + runFinOut - runRev);
+  // The same months on the profit basis, for the judgements that are about
+  // profit: the monthly result, its margin, hiring capacity and operating
+  // break-even. Burn, runway and cash break-even above stay on cash.
+  const runPRev = measure && !measure.held ? measure.sums.profitRevenue / measure.count : rate.profitRevenue ?? runRev;
+  const runPExp = measure && !measure.held ? measure.sums.profitExpenses / measure.count : rate.profitExpenses ?? runExp;
   // Much of the money in those months is unidentified, so burn is not known.
   const burnOpen = !!rate.open;
   // Under 28 days of data and no complete month: burn has not been measured.
   const burnShort = !!rate.tooShort;
+  // Too few of the window's months are on file to measure burn at all.
+  const burnGap = !!rate.held;
+  const runMissing = measure ? measure.blocked : [];
+  const runLow = !!measure && measure.low && !measure.held;
+  const missingWords = listWords(runMissing.map(longMonth));
   // A balance belongs to the newest row, complete or not.
   const lastRow    = rows ? rows[rows.length - 1] : null;
   const cashToday  = cash && finiteOrNull(cash.amount) !== null
-    ? estimateCashToday({ amount: cash.amount, on: cash.on, recorded: cash.recorded, lastDataOn: cash.lastDataOn, burn: netBurn, today, burnOnHold: burnOpen || burnShort })
+    ? estimateCashToday({ amount: cash.amount, on: cash.on, recorded: cash.recorded, lastDataOn: cash.lastDataOn, burn: netBurn, today, burnOnHold: burnOpen || burnShort || burnGap })
     : null;
   const knownCash  = cashToday ? (cashToday.usable ? cashToday.amount : null)
     : lastRow?.cashKnown ? Number(lastRow.cash) || 0 : null;
@@ -2746,9 +3600,24 @@ export function computeMetrics(rows, manual, mode, context = {}) {
   const n = basis?.length || 1;
   const partialMonths = rows ? rows.length - complete.length : 0;
   const hasData  = rows !== null || mRev > 0;
-  const totPro   = totRev - totExp;
+  const totPro   = toCents(totRev - totExp);
   const margin   = totRev > 0 ? (totPro / totRev) * 100 : 0;
-  const vel      = prev.revenue > 0 ? ((latest.revenue - prev.revenue) / prev.revenue) * 100 : 0;
+  // Profit is "at least" while a registered business has unclassified amounts:
+  // the figure shown is the lowest they allow, and `high` the most.
+  const profitHigh = toCents(revenueHigh - expensesLow);
+  const profitRange = { low: totPro, high: profitHigh, atLeast: profitHigh > totPro };
+  const marginHigh = revenueHigh > 0 ? (profitHigh / revenueHigh) * 100 : 0;
+  // Profit figures wait when the founder has not said whether the business is
+  // registered for VAT, and when the unclassified amounts could turn a profit
+  // into a loss or a loss into a profit (as under D9). Cash figures never wait
+  // for either.
+  const vatHold = !rows || !vat?.applies ? null
+    : vat.registered === null || vat.registered === undefined ? { reason: "unanswered" }
+    : profitRange.atLeast && totPro <= 0 && profitHigh >= 0 ? { reason: "unclassified", low: totPro, high: profitHigh, unclassified: vatUnclassified }
+    : null;
+  // Not measured, rather than 0%, with no neighbouring month before the latest.
+  const velKnown = rows ? (tail.length > 1 && prev.revenue > 0) : !!riskBase?.velKnown;
+  const vel      = !rows && riskBase ? (Number(riskBase.vel) || 0) : prev.revenue > 0 ? ((latest.revenue - prev.revenue) / prev.revenue) * 100 : 0;
   // Only persisted, period_month-bearing history (aggregateTransactionsByMonth's
   // output) can be checked for real calendar seasonality — a CSV parsed for
   // this session only carries a display-string month label, not a date.
@@ -2760,15 +3629,13 @@ export function computeMetrics(rows, manual, mode, context = {}) {
   const ltvcac   = activeCac > 0 ? activeLtv / activeCac : 0;
   const cogsRatio = totRev > 0 ? (totCogs / totRev) * 100 : 0;
   const mktRatio  = totRev > 0 ? (totMkt  / totRev) * 100 : 0;
-  // When there's no lead/conversion data (true for every CSV/bank-statement
-  // upload, since parseAnyCSV always sets leads/closures to 0), conversion's
-  // 40% weight can never be filled — scoring margin*0.6 against that would
-  // cap every such user at 60/100 regardless of actual performance. Give
-  // margin the full weight instead so the score still uses the 0-100 range.
-  const sov       = hasConversionData
-    ? Math.min(100, Math.max(0, (margin * 0.6) + (Math.min(conv, 100) * 0.4)))
-    : Math.min(100, Math.max(0, margin));
-  const sovLbl    = sov >= 75 ? "Sovereign" : sov >= 50 ? "Stabilizing" : sov >= 30 ? "Defensive" : "Critical";
+  // A category nothing matched is zero only when every cost was placed
+  // somewhere. While some costs are uncategorised it is not known.
+  const cogsKnown = totCogs > 0 || uncategorised <= 0;
+  const mktKnown  = totMkt > 0 || uncategorised <= 0;
+  // There is no Sovereignty index (correction plan, defect 15): with bank
+  // uploads it was net margin under bands that called a 25% margin "Critical".
+  // Net margin is shown as itself.
   // Reserves are set aside out of profit. A loss owes no tax and funds no
   // buffer, so both are zero then and profit after reserves is the full loss —
   // reserving a negative amount used to report only half of it.
@@ -2783,12 +3650,12 @@ export function computeMetrics(rows, manual, mode, context = {}) {
   const avgCashOut = avgExp + avgFinOut;
   // When revenue already covers it there's no burn to measure against.
   // Not claimed from a few days of data: takings can land before the month's bills.
-  const cashFlowPositive = hasData && netBurn <= 0 && !burnShort;
+  const cashFlowPositive = hasData && netBurn <= 0 && !burnShort && !burnGap;
   // The published formula: cash divided by burn. A safety share used to come
   // off it, so the same business read 11.8 months in Safe mode, 11.9 in Growth
   // and 12.0 by the formula on the site. Never below zero: an overdraft is no
   // runway, not negative runway.
-  const burnMonths = netBurn > 0 && !burnOpen && !burnShort ? Math.max(0, activeCash / netBurn) : 0;
+  const burnMonths = netBurn > 0 && !burnOpen && !burnShort && !burnGap ? Math.max(0, activeCash / netBurn) : 0;
   // Hiring capacity: the largest new fully-loaded monthly cost (salary,
   // payroll tax, benefits) the business's own average monthly profit can
   // carry without drawing down cash, after holding back the mode's safety
@@ -2799,7 +3666,13 @@ export function computeMetrics(rows, manual, mode, context = {}) {
   // with them. Whether a specific salary also holds against cash and dated
   // obligations is checkAffordability()'s job. Loan repayments and owner
   // withdrawals come out first: that money is already spoken for.
-  const hiringCapacity = Math.max(0, (avgRev - avgCashOut) * (1 - sr));
+  // Measured on the same months as burn and runway (D1), not the period on
+  // screen: a business profitable last year and burning now read a capacity of
+  // R10,000 a month on the 12-month view.
+  const hiringCapacity = Math.max(0, toCents((runPRev - runPExp - runFinOut) * (1 - sr)));
+  // The same months' profit and margin, which every judgement reads.
+  const runProfit = toCents(runPRev - runPExp);
+  const runMargin = runPRev > 0 ? ((runPRev - runPExp) / runPRev) * 100 : 0;
   // Real revenue concentration (by paying counterparty, not by calendar
   // month — a single highest MONTH is mechanically ~100% of a 1-month
   // total regardless of any real client-concentration risk, which is why
@@ -2814,23 +3687,84 @@ export function computeMetrics(rows, manual, mode, context = {}) {
   // The previous avgExp/(margin/100) formula is not a valid break-even
   // model — it can place break-even revenue above a company's current
   // revenue even while that company is already profitable.
-  const breakEven  = avgExp;
+  // Two figures for two questions (D8), both on D1's months. Operating
+  // break-even: the revenue at which there is no operating loss. Cash
+  // break-even: the money that must come in from customers for the bank balance
+  // to stop falling, which is every outflow net burn counts, so it always
+  // agrees with runway.
+  const breakEven  = toCents(runPExp);
+  const cashBreakEven = toCents(runExp + runFinOut);
+  const cashIn = toCents(runRev);
   // Use a trailing average growth rate for the 90-day compounding forecast
   // instead of raw single-period `vel`, and clamp it — an unclamped single
   // outlier month compounded three times can produce a forecast off by
   // orders of magnitude. ±50%/month is a heuristic guard, not a precise
   // model: no realistic sustained growth rate for an established revenue
   // base exceeds that for three consecutive months.
-  const proj90GrowthRate = Math.max(-50, Math.min(50, trailingGrowthRate(basis, vel)));
-  const proj90     = latest.revenue * Math.pow(1 + proj90GrowthRate / 100, 3);
+  // Growth is compounded from the latest month only when the last three changes
+  // moved the same way; otherwise the latest block's average is projected with
+  // no growth (D11). The blocks are the run of neighbouring months.
+  const reading = growthReading(tail || basis, vel);
+  const proj90GrowthRate = Math.max(-50, Math.min(50, reading.rate));
+  const proj90     = reading.consistent ? latest.revenue * Math.pow(1 + proj90GrowthRate / 100, 3) : (rows ? reading.blockAverage : latest.revenue);
   // "low"    — a single manually-typed snapshot, no transaction history.
   // "medium" — real uploaded data, but under 3 months of it.
   // "high"   — real uploaded data with 3+ months of history.
   const dataConfidence = !rows ? "low" : n >= 3 ? "high" : "medium";
 
-  const growth = computeGrowthScore(basis, vel, seasonalAdjustedVel);
-  const trends = detectTrends(basis, seasonalPattern, currency);
-  const risk = computeRiskScore({ cashFlowPositive, burnMonths, runwayKnown: (cashKnown || activeCash > 0) && !burnOpen && !burnShort, concentration, concentrationReliable, ltvcac, margin, trends, growthScore: growth.score });
+  const growth = computeGrowthScore(tail || basis, vel, seasonalAdjustedVel);
+  const trends = detectTrends(tail || basis, seasonalPattern, currency);
+  // What the judgements read, from the whole history whatever the period on
+  // screen (D1): the run of neighbouring complete months up to the latest.
+  const histTail = historyRows ? consecutiveTail(soundOf(historyRows) || []) : null;
+  const riskTrends = !rows ? (riskBase?.trends || []) : detectTrends((histTail || []).slice(-RUN_RATE_MONTHS), null, currency);
+  const histPrev = histTail && histTail.length > 1 ? histTail[histTail.length - 2] : null;
+  const histVel = histPrev && histPrev.revenue > 0 ? ((histTail[histTail.length - 1].revenue - histPrev.revenue) / histPrev.revenue) * 100 : 0;
+  const riskGrowthScore = !rows ? (riskBase?.growthScore ?? null) : histTail && histTail.length > 1 ? computeGrowthScore(histTail, histVel, null).score : null;
+  // D6: the latest complete month against the average of up to 3 before it.
+  const revenueFall = !rows ? (riskBase?.revenueFall || null) : (() => {
+    if (!histTail || histTail.length < 2) return null;
+    const last = histTail[histTail.length - 1], prior = histTail.slice(-4, -1);
+    const average = sumCents(prior, "revenue") / prior.length;
+    if (!(average > 0)) return null;
+    const pct = Math.round(((average - last.revenue) / average) * 1000) / 10;
+    return pct >= REVENUE_FALL_WARNING_PCT ? { pct, latest: last.revenue, average: toCents(average), months: prior.length, month: last.month || "The latest month" } : null;
+  })();
+  const hasCashNow = cashKnown || activeCash > 0;
+  const runwayKnownNow = hasCashNow && !burnOpen && !burnShort && !burnGap;
+  const burning = hasData && netBurn > 0 && !burnOpen && !burnShort && !burnGap;
+  // D7: what losing the largest client would do. Costs are held unchanged, the
+  // cautious assumption. Null when it cannot be worked out.
+  const largeClient = !!revenueConcentration?.shown && revenueConcentration.largestPct > LARGE_CLIENT_PCT;
+  const clientShortfall = largeClient ? toCents(runExp + runFinOut - runRev * (1 - revenueConcentration.largestPct / 100)) : 0;
+  const clientRunway = !largeClient || burnOpen || burnShort || burnGap ? null
+    : clientShortfall <= 0 ? Infinity
+    : hasCashNow ? Math.max(0, activeCash) / clientShortfall : null;
+  const open = figuresOpen || burnOpen;
+  const openRange = !open ? null
+    : burnOpen && measure && !measure.held
+      ? { low: toCents(measure.sums.revenue - measure.sums.expenses), high: toCents(measure.sums.revenue - measure.sums.expenses + measure.sums.unconfirmedIn), unidentified: measure.sums.unconfirmedIn }
+      : { low: periodProfit, high: toCents(periodProfit + judgedUnconfirmed), unidentified: judgedUnconfirmed || totUnconfirmedIn };
+  const findings = !hasData ? [] : computeFindings({
+    vatHold, currency, months: rows ? historyMonths : (riskBase?.months ?? 1), open, openRange, unconfirmedIn: openRange?.unidentified ?? totUnconfirmedIn,
+    runProfit: burnGap ? null : runProfit, runRev, runMonths: rate.months, netBurn, burning, hasCash: hasCashNow,
+    runwayKnown: runwayKnownNow, cashFlowPositive, burnMonths, revenueFall, concentration: revenueConcentration, clientRunway,
+    ltvcac, conv, margin: runMargin, vel, velKnown,
+  });
+  const directive = findings[0] || null;
+  // Tax year to date: the only place payments are compared with a reserve.
+  const taxYear = rows ? taxYearToDate({ rows: historyRows, coverageMonths, yearEndMonth: taxYearInput?.yearEndMonth ?? null, rate: tr }) : { available: false, reason: "no uploaded history" };
+  // D7 floors. The label is never milder than the first finding; no cash while
+  // burning, or under 3 months, is Critical; one client above 60% is at least
+  // Elevated, and Critical only when the business could not last 3 months
+  // without it. Burning with no usable balance has no score: less data must
+  // never read as safer.
+  const riskUnknown = burnGap ? `${missingWords} ${runMissing.length === 1 ? "is" : "are"} missing, so the last 3 months cannot be judged`
+    : burning && !runwayKnownNow ? "Enter today's cash balance: the business is using more than it takes in, and how long that lasts is not known" : null;
+  const minLabel = (burning && runwayKnownNow && burnMonths < 3) || (clientRunway !== null && clientRunway < 3) || directive?.severity === "critical" ? "Critical"
+    : largeClient ? "Elevated" : directive?.severity === "warn" ? "Watch" : null;
+  const risk = computeRiskScore({ cashFlowPositive, burnMonths, runwayKnown: runwayKnownNow, concentration, concentrationReliable, ltvcac,
+    margin: runMargin, trends: riskTrends, growthScore: riskGrowthScore, minLabel, unknown: riskUnknown });
 
   // Long-run trajectory, seasonality, and a plain-language narrative —
   // same 13+/2+ month floors as the functions themselves. Every field
@@ -2846,12 +3780,17 @@ export function computeMetrics(rows, manual, mode, context = {}) {
   const hasCashData = cashKnown || activeCash > 0;
   const hasUnitEconomicsData = activeCac > 0 && activeLtv > 0;
 
-  const runwayMissing = burnOpen ? "money in is not confirmed yet"
+  const runwayMissing = burnGap ? `${missingWords} ${runMissing.length === 1 ? "is" : "are"} missing from the last 3 months. Upload the statements to measure burn`
+    : burnOpen ? "money in is not confirmed yet"
     : burnShort ? `there is less than a month of data (${rate.days} day${rate.days === 1 ? "" : "s"}). At least 28 days are needed to measure burn`
     : cashToday?.reason === "too_old" ? `your latest data is ${cashToday.gapDays} days old. Enter today's balance under Transactions to calculate runway`
     : cashToday?.reason === "may_have_run_out" ? "at your current burn your last balance may have run out. Enter today's balance under Transactions to calculate runway"
     : "no cash balance entered. Add it under Transactions to calculate runway";
-  const runwayMeasured = metricConfidence((cashFlowPositive || hasCashData) && !burnOpen && !burnShort, runwayMissing, rate.historyMonths, lastTxnDate);
+  const runwayFound = metricConfidence((cashFlowPositive || hasCashData) && !burnOpen && !burnShort && !burnGap, runwayMissing, rate.historyMonths, lastTxnDate);
+  // Measured from 2 of the 3 months: low, naming the month left out (D10b).
+  const runwayMeasured = runwayFound.shown && runLow
+    ? { ...runwayFound, level: "low", reason: `measured from ${rate.months} of the last 3 months: ${missingWords} ${runMissing.length === 1 ? "is" : "are"} missing or incomplete` }
+    : runwayFound;
   // Measured per day, before any month is complete: low, and it says so.
   const runwayBase = runwayMeasured.shown && rate.days
     ? { ...runwayMeasured, level: "low", reason: runwayMeasured.reason.replace(/^based on \d+ months? of data/, `based on ${rate.days} days of data, with no complete month yet`) }
@@ -2866,9 +3805,11 @@ export function computeMetrics(rows, manual, mode, context = {}) {
         reason: `${runwayBase.reason}, and a cash balance from ${cash.on}, ${cashAgeDays} days ago`,
       }
     : runwayBase;
-  const breakEvenConfidence = metricConfidence(hasData, "no revenue/expense data yet", n, lastTxnDate);
+  const burnHeldReason = burnGap ? runwayMissing : burnOpen ? "money in is not confirmed yet" : burnShort ? "there is less than a month of data" : "no revenue/expense data yet";
+  const burnTrusted = hasData && !burnOpen && !burnShort && !burnGap;
+  const breakEvenConfidence = metricConfidence(burnTrusted, burnHeldReason, n, lastTxnDate);
   const proj90Confidence    = metricConfidence(hasData && !figuresOpen, figuresOpen ? "money in is not confirmed yet" : "no revenue/expense data yet", n, lastTxnDate);
-  const hiringCapacityConfidence = metricConfidence(hasData && !figuresOpen, figuresOpen ? "money in is not confirmed yet" : "no revenue/expense data yet", n, lastTxnDate);
+  const hiringCapacityConfidence = metricConfidence(burnTrusted, burnHeldReason, n, lastTxnDate);
   const ltvcacConfidence    = metricConfidence(hasUnitEconomicsData, "enter both CAC and LTV to calculate", n, lastTxnDate);
   const growthConfidence    = metricConfidence(hasData && !figuresOpen, figuresOpen ? "money in is not confirmed yet" : "no revenue data yet", n, lastTxnDate);
 
@@ -2877,12 +3818,16 @@ export function computeMetrics(rows, manual, mode, context = {}) {
     hasConversionData, avgRev, netBurn, cashFlowPositive, dataConfidence,
     totFinIn, totFinOut, totTrIn, totTrOut, totRefIn, totRefOut, totUnconfirmedIn, figuresOpen, avgFinOut, avgCashOut, partialMonths,
     activeCash, activeCac, activeLtv, n, totPro, margin, vel, conv, ltvcac,
-    cogsRatio, mktRatio, sov, sovLbl, taxV, safV, free, avgExp, burnMonths,
+    cogsRatio, mktRatio, taxV, safV, free, avgExp, burnMonths,
     hiringCapacity, concentration, concentrationReliable, revenueConcentration,
     breakEven, proj90, proj90GrowthRate, hasData,
     growth, risk, trends, seasonalPattern, trajectory, historicalConfidence, founderNarrative,
     hasCashData, hasUnitEconomicsData, cashKnown, cashOn: cash?.on ?? null, cashToday,
     runRev, runExp, runFinOut, runMonths: rate.months, runDays: rate.days ?? null, burnOpen, burnShort,
+    burnGap, runMissing, runLow, runProfit, runMargin, cashBreakEven, cashIn, toDate, openRange, velKnown,
+    uncategorised, cogsKnown, mktKnown, findings, directive, clientRunway, revenueFall, riskTrends, riskGrowthScore,
+    historyMonths, latestRevenue: latest.profitRevenue ?? latest.revenue,
+    revenueHigh, expensesLow, profitRange, marginHigh, vatHold, vatPeriod, vatUnclassified, incomeTaxPaid, taxYear, runPRev, runPExp,
     runwayConfidence, breakEvenConfidence, proj90Confidence,
     hiringCapacityConfidence, ltvcacConfidence, growthConfidence,
   };
@@ -2920,9 +3865,15 @@ export function applyScenario(baseline, adjustments = {}) {
 export function runScenario(baseline, adjustments, mode, options = {}) {
   const baselineManual = applyScenario(baseline, {});
   const scenarioManual = applyScenario(baseline, adjustments);
-  const known = delta => options.cashKnown
+  // `options.base` is the dashboard's own metrics: its trends, growth, revenue
+  // fall and client share go into the scenario's findings and risk, so "before"
+  // is the dashboard's risk and not a second opinion.
+  const base = options.base;
+  const carried = base ? { revenueConcentration: base.revenueConcentration || null, riskBase: { trends: base.riskTrends, growthScore: base.riskGrowthScore,
+    revenueFall: base.revenueFall, vel: base.vel, velKnown: base.velKnown, months: base.historyMonths } } : {};
+  const known = delta => ({ ...carried, ...(options.cashKnown
     ? { cash: { amount: (Number(baseline.cash) || 0) + (Number(delta) || 0) } }
-    : {};
+    : {}) });
   return {
     before: computeMetrics(null, baselineManual, mode, known(0)),
     after: computeMetrics(null, scenarioManual, mode, known(adjustments?.cashDelta)),
@@ -3111,84 +4062,183 @@ export function buildFounderNarrative(trajectory, currentMargin) {
 // `runwayKnown` (a cash balance is known) and `cashFlowPositive` tell a
 // runway of 0 months (no cash left to burn) from one that was never
 // measured; without them, 0 is read as unmeasured, as before.
-export function computeDirective({ margin, burnMonths, free, vel, conv, ltvcac, months, concentration, currency = "USD", runwayKnown = false, cashFlowPositive = false, figuresOpen = false, unconfirmedIn = 0 }) {
-  const raw = (() => {
-    // Nothing else here can be judged while much of the money in is unknown.
-    if (figuresOpen) return {
+// The ordered findings about the business now, most serious first (correction
+// plan, defects 2, 1 and 14; D1, D5, D6, D7). The directive is the first, and
+// the dashboard headline shows the same one, so the two cannot disagree. Every
+// input is measured on D1's months, whatever period is on screen.
+//   D5  A loss is critical because of what it does to cash: only with under 3
+//       months of runway, or cash gone. It is a warning at 2% of revenue or
+//       more, and "near break-even" below that (stored as a warning: the
+//       directives table accepts critical, warn, go and stable).
+//   D6  The latest complete month 20% or more below the average of up to 3
+//       months before it is a warning.
+//   D7  One client above 60% is critical only when the business could not last
+//       3 months without it; otherwise a warning.
+// Growth that was not measured (no neighbouring month before the latest) makes
+// no growth claim. One month of data is never critical (capSeverityForVolume).
+// Stored rule names are kept, so the decision log still matches.
+const SEVERITY_RANK = { critical: 0, warn: 1, go: 2, stable: 3 };
+export function computeFindings(input) {
+  const { currency = "USD", months = 0, open = false, openRange = null, unconfirmedIn = 0,
+    runProfit = null, runRev = 0, runMonths = 0, netBurn = 0, burning = false, hasCash = false, perMonth = true,
+    runwayKnown = false, cashFlowPositive = false, burnMonths = 0, revenueFall = null, concentration = null, clientRunway = null,
+    ltvcac = 0, conv = 0, margin = 0, vel = 0, velKnown = true } = input;
+  const money = v => fmt(v, currency);
+  const cap = f => { const severity = capSeverityForVolume(f.severity, months); return { ...f, severity, wasCapped: severity !== f.severity }; };
+  // Profit cannot be judged until the founder answers about VAT.
+  if (input.vatHold) {
+    const h = input.vatHold;
+    return [cap({
+      text: h.reason === "unanswered" ? "Tell us whether the business is registered for VAT." : "Classify your customers and suppliers for VAT before acting on these figures.",
+      reason: h.reason === "unanswered"
+        ? "A VAT-registered business collects VAT for SARS inside its sales, so until you answer under Settings, profit and margin cannot be stated. Cash figures, such as runway, do not depend on it."
+        : `Profit is between a ${money(-h.low)} loss and a ${money(h.high)} profit, depending on ${money(h.unclassified)} of sales and costs you have not classified for VAT. Classify them under Transactions.`,
+      severity: "warn", rule: "vat_answers_needed", targetMetric: null,
+    })];
+  }
+  // Nothing else can be judged while the money in could change the answer.
+  if (open) {
+    const reversal = openRange && openRange.low <= 0 && openRange.high >= 0 && openRange.unidentified > 0;
+    return [cap({
       text: "Confirm your money in before acting on these figures.",
-      reason: `${fmt(unconfirmedIn, currency)} of money in has not been identified. It may be revenue, a loan or your own money, so profit, runway and risk cannot be judged yet.`,
+      reason: reversal
+        ? `The result is between a ${money(-openRange.low)} loss and a ${money(openRange.high)} profit, depending on ${money(openRange.unidentified)} of money in you have not identified. It may be revenue, a loan or your own money, so profit, runway and risk cannot be judged yet.`
+        : `${money(unconfirmedIn)} of money in has not been identified. It may be revenue, a loan or your own money, so profit, runway and risk cannot be judged yet.`,
       severity: "warn", rule: "unconfirmed_money_in", targetMetric: null,
-    };
-    // Reserves come out of profit only, so this is a loss for the period.
-    // The rule keeps its stored name.
-    if (safe(free) < 0) return {
+    })];
+  }
+  const found = [];
+  const over = perMonth ? ` a month over the last ${runMonths === 1 ? "complete month" : `${runMonths} complete months`}` : " in this period";
+  const loss = runProfit !== null && safe(runProfit) < 0 ? -safe(runProfit) : 0;
+  const lossPct = loss > 0 ? (runRev > 0 ? (loss / runRev) * 100 : 100) : 0;
+  const outOfRunway = runwayKnown && !cashFlowPositive && safe(burnMonths) <= 0;
+  const shortRunway = runwayKnown && !cashFlowPositive && safe(burnMonths) < 3;
+  const runwayWords = outOfRunway ? "Your cash balance is at or below zero" : `At that rate you have ${safe(burnMonths).toFixed(1)} months of cash`;
+
+  if (loss > 0 && shortRunway) {
+    found.push({
       text: "Cut all non-essential spend before end of this week.",
-      reason: `The business made a loss of ${fmt(Math.abs(free), currency)} in this period: costs are higher than revenue, so there is nothing to set aside for tax or a safety buffer. Each month at this rate is paid for from cash or borrowing.`,
-      severity: "critical", rule: "negative_free_cash", targetMetric: "free",
-    };
-    const outOfRunway = runwayKnown && !cashFlowPositive && safe(burnMonths) <= 0;
-    if ((safe(burnMonths) > 0 && safe(burnMonths) < 3) || outOfRunway) return {
+      reason: `The business made a loss of ${money(loss)}${over}: costs are higher than revenue. ${runwayWords}, so each month at this rate is paid for from cash you do not have to spare.`,
+      severity: "critical", rule: "negative_free_cash", targetMetric: perMonth ? "runProfit" : "free",
+    });
+  } else if (shortRunway) {
+    found.push({
       text: "Protect your runway. You have less than 3 months.",
       reason: outOfRunway
         ? "Your cash balance is at or below zero. Suspend all non-revenue-generating spend immediately."
         : `At current burn rate you have ${safe(burnMonths).toFixed(1)} months before the business runs dry. Suspend all non-revenue-generating spend immediately.`,
       severity: "critical", rule: "low_runway", targetMetric: "burnMonths",
-    };
-    // Only from real, confidently-extracted payer names — never from a
-    // low-confidence parse. `concentration.shown` already means
-    // "confidence moderate or high," by construction of computeRevenueConcentration.
-    if (concentration?.shown && concentration.severity) {
-      const isCritical = concentration.severity === "critical";
-      // Fewer than three named clients is fewer than three clients only when
-      // no money arrives through a processor, whose customers are hidden.
-      const tooFewPayers = concentration.distinctPayers < 3 && !(concentration.aggregatorRevenue > 0);
-      return {
-        text: isCritical
-          ? "Diversify your revenue before growing it."
-          : tooFewPayers
-            ? "Land a third paying client before scaling spend."
-            : "Reduce reliance on your largest client before it becomes a crisis.",
-        reason: tooFewPayers
-          ? `You have ${concentration.distinctPayers} distinct paying client${concentration.distinctPayers === 1 ? "" : "s"} this period. Losing any one of them is a material hit to revenue, however the revenue splits between them.`
-          : `${concentration.largestPct.toFixed(0)}% of revenue comes from your single largest client. One client exit or contract loss exposes the business at this concentration, and the risk stays invisible until it is catastrophic.`,
-        severity: isCritical ? "critical" : "warn", rule: "client_concentration", targetMetric: "concentration",
-      };
+    });
+  }
+  if (loss > 0 && !shortRunway) {
+    const cashWords = runwayKnown ? ` At that rate your cash lasts ${safe(burnMonths).toFixed(1)} months.`
+      : " Enter today's cash balance under Transactions to see how long your cash lasts at that rate.";
+    if (lossPct >= LOSS_WARNING_PCT) {
+      found.push({
+        text: "Stop the monthly loss before it uses up your cash.",
+        reason: `The business made a loss of ${money(loss)}${over}, ${lossPct.toFixed(1)}% of revenue: costs are higher than revenue.${cashWords}`,
+        severity: "warn", rule: "negative_free_cash", targetMetric: perMonth ? "runProfit" : "free",
+      });
+    } else {
+      found.push({
+        text: "You are near break-even. Hold costs where they are.",
+        reason: `Costs were ${money(loss)} more than revenue${over}, ${lossPct.toFixed(2)}% of revenue. That is near break-even, not a crisis.${cashWords}`,
+        severity: "warn", rule: "near_break_even", targetMetric: perMonth ? "runProfit" : "free",
+      });
     }
-    if (safe(ltvcac) > 0 && safe(ltvcac) < 3) return {
-      text: "Fix unit economics before increasing acquisition spend.",
-      reason: `LTV:CAC at ${safe(ltvcac).toFixed(1)}x means every new customer acquired costs more than it sustainably returns. Spending more on acquisition accelerates the loss.`,
-      severity: "warn", rule: "poor_unit_economics", targetMetric: "ltvcac",
-    };
-    if (safe(conv) > 0 && safe(conv) < 10) return {
-      text: "Fix the sales funnel before generating more leads.",
-      reason: `Converting ${pc(conv)} of leads signals a broken process or a mismatched offer. More leads through a broken funnel wastes budget and time.`,
-      severity: "warn", rule: "weak_conversion", targetMetric: "conv",
-    };
-    if (safe(margin) > 40 && safe(conv) > 20) return {
-      text: "Scale lead acquisition now. Your funnel is ready.",
-      reason: `Margin at ${pc(margin)} and conversion at ${pc(conv)} are both above threshold. This is a deployment window. Increase lead volume 30%; the economics support it.`,
-      severity: "go", rule: "scale_window", targetMetric: "vel",
-    };
-    // There is no "hire now" directive. Telling a founder to hire needs a
-    // view of what the role costs and returns, which this engine does not
-    // have; the one it had assumed $25k/month for every business. Hiring
-    // capacity is shown as a figure instead, and a specific salary is tested
-    // with checkAffordability().
-    if (safe(vel) < 5 && safe(vel) >= 0) return {
-      text: "Revenue growth has stalled. Find the constraint this week.",
-      reason: `Velocity at ${pc(vel)}/month signals a blockage in pipeline, conversion or retention. Diagnose before spending more on growth.`,
-      severity: "warn", rule: "stalled_growth", targetMetric: "vel",
-    };
-    return {
-      text: "Maintain trajectory. Increase lead volume by 20%.",
-      reason: `Fundamentals are stable. The highest-ROI move at this position is controlled growth through the same funnel that is already converting.`,
-      severity: "stable", rule: "stable_foundation", targetMetric: "vel",
-    };
-  })();
+  }
+  if (runwayKnown && !cashFlowPositive && safe(burnMonths) >= 3 && safe(burnMonths) < 6 && !(loss > 0)) {
+    found.push({
+      text: "Build your runway back above 6 months.",
+      reason: `At current burn you have ${safe(burnMonths).toFixed(1)} months of cash. Below 6 months leaves little room for one slow month.`,
+      severity: "warn", rule: "runway_below_six", targetMetric: "burnMonths",
+    });
+  }
+  if (burning && !hasCash && !(loss > 0)) {
+    found.push({
+      text: "Enter today's cash balance.",
+      reason: `The business is paying out ${money(netBurn)} a month more than it takes in, and without a cash balance there is no way to say how long that lasts. Enter it under Transactions.`,
+      severity: "warn", rule: "burning_no_balance", targetMetric: null,
+    });
+  }
+  if (revenueFall) {
+    found.push({
+      text: "Find out why revenue fell before spending more.",
+      reason: `${revenueFall.month} revenue was ${money(revenueFall.latest)}, ${revenueFall.pct.toFixed(0)}% below the ${money(revenueFall.average)} average of the ${revenueFall.months === 1 ? "month" : `${revenueFall.months} months`} before it. Find the cause, a lost client, a late payment or a slow season, before committing to new costs.`,
+      severity: "warn", rule: "revenue_fall", targetMetric: "latestRevenue",
+    });
+  }
+  // Only from real, confidently-extracted payer names, never from a
+  // low-confidence parse.
+  if (concentration?.shown && concentration.severity) {
+    const large = concentration.severity === "critical";
+    const isCritical = large && clientRunway !== null && clientRunway < 3;
+    // Fewer than three named clients is fewer than three clients only when
+    // no money arrives through a processor, whose customers are hidden.
+    const tooFewPayers = concentration.distinctPayers < 3 && !(concentration.aggregatorRevenue > 0);
+    const without = !large ? ""
+      : clientRunway === null ? " Enter today's cash balance to see how long the business would last without that client."
+      : clientRunway === Infinity ? " The business would still cover its costs without that client."
+      : ` Without that client, at today's costs, your cash would last ${clientRunway.toFixed(1)} months.`;
+    found.push({
+      text: large
+        ? "Diversify your revenue before growing it."
+        : tooFewPayers
+          ? "Land a third paying client before scaling spend."
+          : "Reduce reliance on your largest client before it becomes a crisis.",
+      reason: (tooFewPayers
+        ? `You have ${concentration.distinctPayers} distinct paying client${concentration.distinctPayers === 1 ? "" : "s"} this period. Losing any one of them is a material hit to revenue, however the revenue splits between them.`
+        : `${concentration.largestPct.toFixed(0)}% of revenue comes from your single largest client. One client exit or contract loss exposes the business at this concentration.`) + without,
+      severity: isCritical ? "critical" : "warn", rule: "client_concentration", targetMetric: "concentration",
+    });
+  }
+  if (safe(ltvcac) > 0 && safe(ltvcac) < 3) found.push({
+    text: "Fix unit economics before increasing acquisition spend.",
+    reason: `LTV:CAC at ${safe(ltvcac).toFixed(1)}x means every new customer acquired costs more than it sustainably returns. Spending more on acquisition accelerates the loss.`,
+    severity: "warn", rule: "poor_unit_economics", targetMetric: "ltvcac",
+  });
+  if (safe(conv) > 0 && safe(conv) < 10) found.push({
+    text: "Fix the sales funnel before generating more leads.",
+    reason: `Converting ${pc(conv)} of leads signals a broken process or a mismatched offer. More leads through a broken funnel wastes budget and time.`,
+    severity: "warn", rule: "weak_conversion", targetMetric: "conv",
+  });
+  // There is no "hire now" directive: hiring capacity is shown as a figure, and
+  // a specific salary is tested with checkAffordability().
+  if (safe(margin) > 40 && safe(conv) > 20) found.push({
+    text: "Scale lead acquisition now. Your funnel is ready.",
+    reason: `Margin at ${pc(margin)} and conversion at ${pc(conv)} are both above threshold. This is a deployment window. Increase lead volume 30%; the economics support it.`,
+    severity: "go", rule: "scale_window", targetMetric: "vel",
+  });
+  else if (velKnown && safe(vel) < 5 && safe(vel) >= 0) found.push({
+    text: "Revenue growth has stalled. Find the constraint this week.",
+    reason: `Velocity at ${pc(vel)}/month signals a blockage in pipeline, conversion or retention. Diagnose before spending more on growth.`,
+    severity: "warn", rule: "stalled_growth", targetMetric: "vel",
+  });
+  if (found.length === 0 || found.every(f => f.severity === "go")) found.push({
+    text: velKnown ? "Maintain trajectory. Increase lead volume by 20%." : "Keep your records current. There is nothing to act on yet.",
+    reason: velKnown
+      ? "Fundamentals are stable. The highest-ROI move at this position is controlled growth through the same funnel that is already converting."
+      : "Nothing in the figures on file needs action, and growth cannot be measured until there are two complete months side by side.",
+    severity: "stable", rule: "stable_foundation", targetMetric: velKnown ? "vel" : null,
+  });
+  return found.map((f, i) => [f, i]).sort((a, b) => SEVERITY_RANK[a[0].severity] - SEVERITY_RANK[b[0].severity] || a[1] - b[1]).map(([f]) => cap(f));
+}
 
-  const severity = capSeverityForVolume(raw.severity, months);
-  const wasCapped = severity !== raw.severity;
-  return { ...raw, severity, wasCapped };
+// The first finding. Callers that hold only period figures (the public demo,
+// older tests) pass `free`: a negative one is the period's loss.
+export function computeDirective({ margin, burnMonths, free, vel, conv, ltvcac, months, concentration, currency = "USD", runwayKnown = false, cashFlowPositive = false,
+  figuresOpen = false, unconfirmedIn = 0, runProfit, runRev = 0, runMonths = 0, revenueFall = null, clientRunway = null, velKnown = true, openRange = null,
+  burning = false, hasCash, netBurn = 0 }) {
+  const perMonth = runProfit !== undefined && runProfit !== null;
+  // A runway above zero was measured from a balance, so it is known.
+  runwayKnown = runwayKnown || safe(burnMonths) > 0;
+  if (hasCash === undefined) hasCash = runwayKnown;
+  return computeFindings({
+    currency, months, open: figuresOpen, openRange, unconfirmedIn, perMonth,
+    runProfit: perMonth ? runProfit : (safe(free) < 0 ? safe(free) : null), runRev, runMonths,
+    netBurn, burning, hasCash, runwayKnown, cashFlowPositive, burnMonths, revenueFall, concentration, clientRunway,
+    ltvcac, conv, margin, vel, velKnown,
+  })[0];
 }
 
 // Reads a directive's numeric target-metric value out of a metrics/
@@ -3209,6 +4259,8 @@ const DIRECTIVE_METRIC_LABELS = {
   ltvcac: { label: "LTV:CAC ratio", fmt: (v) => `${v.toFixed(1)}x`, higherIsBetter: true },
   conv: { label: "Conversion rate", fmt: (v) => `${v.toFixed(1)}%`, higherIsBetter: true },
   vel: { label: "Revenue velocity", fmt: (v) => `${v.toFixed(1)}%/mo`, higherIsBetter: true },
+  runProfit: { label: "Monthly profit over the last 3 complete months", fmt: (v, currency) => fmt(v, currency), higherIsBetter: true },
+  latestRevenue: { label: "Revenue in the latest complete month", fmt: (v, currency) => fmt(v, currency), higherIsBetter: true },
 };
 
 // Neutral, fact-only outcome narration — states the metric's movement,
@@ -3351,7 +4403,8 @@ export function buildAlerts({
     alerts.push({ id: "no-data", severity: "info", title: "Connect your financial data",
       detail: "Upload a bank or accounting export to activate your metrics.", section: "transactions" });
   }
-  (missedObligations || []).forEach(m => alerts.push({
+  // Only a bill confirmed missed raises an alert; one that cannot be checked does not.
+  (missedObligations || []).filter(m => m.status === "missed").forEach(m => alerts.push({
     id: `missed-${m.normalized_key || m.label}`, severity: "critical",
     title: `${m.label} has not appeared`, detail: m.message, section: "forecasts",
   }));
@@ -3400,6 +4453,26 @@ function csvCell(v) {
   return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
+// Monthly rows as the profit tables show them: revenue and costs on the profit
+// basis (VAT left out where classified, income tax and VAT paid not costs), so a
+// table's net and margin agree with the margin tile beside it. The cash figures
+// stay on the row as cashRevenue and cashExpenses. Rows from before the profit
+// basis existed carry only cash, which is then the same figure.
+export function profitBasisRows(rows) {
+  return (rows || []).map(r => ({ ...r, cashRevenue: r.revenue, cashExpenses: r.expenses,
+    revenue: r.profitRevenue ?? r.revenue, expenses: r.profitExpenses ?? r.expenses }));
+}
+// A table's total, over complete months only when a month is in progress (D4),
+// as the margin tile is: a part month is listed, labelled "to date", but not added.
+export function profitTotals(rows) {
+  const list = rows || [];
+  const complete = list.filter(r => !r.partial);
+  const used = complete.length > 0 ? complete : list;
+  const rev = sumCents(used, "revenue"), exp = sumCents(used, "expenses");
+  const partialLeftOut = list.length - used.length;
+  return { rev, exp, net: toCents(rev - exp), label: partialLeftOut > 0 ? "Total, complete months" : "Total", partialLeftOut };
+}
+
 export function buildReportCsv({ title = "Command Ledger financial summary", periodLabel = "", generatedAt = "", rows = [], summary = [], currency = "USD", verification = null } = {}) {
   // Every amount in the file is in one currency, named in its own row and in
   // each money column, so a spreadsheet total can never mix currencies.
@@ -3407,13 +4480,12 @@ export function buildReportCsv({ title = "Command Ledger financial summary", per
   const lines = [[title], ["Period", periodLabel], ["Currency", unit], ["Generated", generatedAt],
     ...(verification ? [["Data status", `${verification.title}: ${verification.detail}`]] : []), [],
     ["Month", `Revenue (${unit})`, `Expenses (${unit})`, `Net (${unit})`, "Margin %"]];
-  let rev = 0, exp = 0;
   (rows || []).forEach(r => {
-    const net = (r.revenue || 0) - (r.expenses || 0);
-    rev += r.revenue || 0; exp += r.expenses || 0;
+    const net = toCents((r.revenue || 0) - (r.expenses || 0));
     lines.push([monthLabel(r), r.revenue || 0, r.expenses || 0, net, r.revenue > 0 ? (net / r.revenue) * 100 : ""]);
   });
-  lines.push(["Total", rev, exp, rev - exp, rev > 0 ? ((rev - exp) / rev) * 100 : ""]);
+  const t = profitTotals(rows);
+  lines.push([t.label, t.rev, t.exp, t.net, t.rev > 0 ? (t.net / t.rev) * 100 : ""]);
   lines.push([], ["Metric", "Value"]);
   (summary || []).forEach(([label, value]) => lines.push([label, value]));
   return lines.map(cols => cols.map(csvCell).join(",")).join("\r\n");

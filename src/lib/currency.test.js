@@ -139,15 +139,21 @@ describe("parsing a South African export", () => {
   it("builds the same monthly totals in parseAnyCSV", () => {
     const result = parseAnyCSV(ZAR_BANK_CSV, { currency: "ZAR" });
     expect(result.currency).toBe("ZAR");
-    expect(result.rows.map(r => [r.revenue, r.expenses])).toEqual([[28101, 15440], [18500, 15511]]);
+    // To the cent (defect 17): April 18 500 + 9 600,50 in and 1 240,25 + 14 200 out;
+    // May 18 500 in and 1 310,75 + 14 200 out.
+    expect(result.rows.map(r => [r.revenue, r.expenses])).toEqual([[28100.5, 15440.25], [18500, 15510.75]]);
   });
 
   it("produces ZAR metrics and messages from the same engine", () => {
     const rows = parseAnyCSV(ZAR_BANK_CSV, { currency: "ZAR" }).rows;
     const m = computeMetrics(rows, { mRev:0, mExp:0, mCash:0, mCac:0, mLtv:0, mLeads:0, mClose:0 }, "safe", { currency: "ZAR" });
-    expect(m.totRev).toBe(46601);
-    expect(m.totExp).toBe(30951);
-    expect(plain(fmt(m.totPro, "ZAR"))).toBe("R 15 650");
+    // May's rows stop on the 22nd, so May is a part month: profit is measured on
+    // April alone (D4), and May is reported beside it.
+    expect(m.totRev).toBe(28100.5);
+    expect(m.totExp).toBe(15440.25);
+    expect(m.totPro).toBe(12660.25);  // 28 100,50 - 15 440,25
+    expect(m.toDate).toMatchObject({ revenue: 18500, expenses: 15510.75 });
+    expect(plain(fmt(m.totPro, "ZAR"))).toBe("R 12 660"); // only the display rounds
   });
 });
 
@@ -208,8 +214,12 @@ describe("partitionByCurrency", () => {
 
 describe("messages carry the business currency", () => {
   it("checkAffordability", () => {
-    const r = checkAffordability({ currentCash: 0, avgRev: 50000, avgExp: 30000, obligations: [], monthlyCost: 10000, fromDate: "2026-06-01", currency: "ZAR" });
-    expect(plain(r.message)).toContain("(R 20 000)");
+    const totals = { revenue: 50000, expenses: 30000, financingOut: 0, unconfirmedIn: 0 };
+    const window = { end: "2026-05", complete: true, missing: [], average: { ...totals, burn: -20000 },
+      months: ["2026-03", "2026-04", "2026-05"].map(key => ({ key, month: key, status: "complete", gapAccounts: [], totals })) };
+    const r = checkAffordability({ currentCash: 500000, cashKnown: true, window, obligations: [], monthlyCost: 10000, fromDate: "2026-06-01", currency: "ZAR" });
+    // Floor: 30,000 of outgoings plus the 10,000 cost.
+    expect(plain(r.message)).toContain("safety floor of R 40 000");
   });
   it("computeDirective", () => {
     const d = computeDirective({ margin: -5, burnMonths: 2, free: -12000, vel: 0, conv: 0, ltvcac: 0, months: 3, concentration: null, currency: "ZAR" });
