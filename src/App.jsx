@@ -1,6 +1,9 @@
 import { useState, useEffect, useRef, useCallback, useMemo, Fragment } from "react";
 import { createClient } from "@supabase/supabase-js";
-import { fmt, pc, safe, sumCents, profitBasisRows, profitTotals, kindRuleRow, taxYearNote, taxQuestions, VAT_CLASSES, INCOME_TAX_KINDS, accountAnswerRows, accountCoverage, judgementWindow, overlapWords, runRateRowsWithQuietMonths, canConfirmQuietMonth, coverageNote, parseAnyCSV, verifyImport, NOT_RECONCILED_MESSAGE, importBatchFields, reviewRuleRows, cashMovementSince, cashTodayNote, batchVerification, summarizeVerification, verificationNotice, accountKey, detectAccountLabel, compareWithStored, workbookToText, computeMetrics, runScenario, parseTransactions, computeDedupeHash, aggregateTransactionsByMonth, computeRevenueConcentration, detectRecurringObligations, computeForwardRunway, checkAffordability, detectMissedObligations, projectForwardCalendar, summarizeCalendarByWeek, computeDirective, getDirectiveMetricValue, describeDirectiveOutcome, checkoutBlockReason, computeConfidence, fmtCompact, filterTransactions, searchWorkspace, buildAlerts, buildReportCsv, SUPPORTED_CURRENCIES, isSupportedCurrency, currencySymbol, currencyName, partitionByCurrency, decodeTextFile, detectFileCurrency, resolveFileCurrency, buildRuleIndex, resolveKind, classificationKey, summarizeKinds, periodStartDate, effectiveCashBalance, monthLabel, isGenericCounterparty } from "./lib/financials.js";
+import { fmt, pc, safe, sumCents, profitBasisRows, profitTotals, kindRuleRow, taxYearNote, taxQuestions, VAT_CLASSES, INCOME_TAX_KINDS, accountAnswerRows, accountCoverage, judgementWindow, overlapWords, runRateRowsWithQuietMonths, canConfirmQuietMonth, coverageNote, parseAnyCSV, verifyImport, NOT_RECONCILED_MESSAGE, importBatchFields, reviewRuleRows, cashMovementSince, cashTodayNote, batchVerification, summarizeVerification, verificationNotice, accountKey, detectAccountLabel, compareWithStored, workbookToText, computeMetrics, runScenario, parseTransactions, computeDedupeHash, aggregateTransactionsByMonth, computeRevenueConcentration, detectRecurringObligations, computeForwardRunway, checkAffordability, detectMissedObligations, projectForwardCalendar, summarizeCalendarByWeek, computeDirective, getDirectiveMetricValue, describeDirectiveOutcome, checkoutBlockReason, computeConfidence, fmtCompact, filterTransactions, searchWorkspace, buildAlerts, buildReportCsv, SUPPORTED_CURRENCIES, isSupportedCurrency, currencySymbol, currencyName, partitionByCurrency, decodeTextFile, detectFileCurrency, resolveFileCurrency, buildRuleIndex, resolveKind, classificationKey, summarizeKinds, periodStartDate, effectiveCashBalance, monthLabel, isGenericCounterparty, buildAdvisorEvidence, buildReportSummary, profitHold, HELD_MARK } from "./lib/financials.js";
+// The advisor's contract: the same code the Edge Function runs, so the brief
+// shown here and the checks behind it cannot disagree.
+import { sanitizeEvidence, engineBrief, MODEL_HOLDS } from "../supabase/functions/_shared/advisor-contract.ts";
 
 const supabase = createClient(
   import.meta.env.VITE_SUPABASE_URL,
@@ -411,6 +414,21 @@ a{color:inherit;}
 .ai-rec-conf{display:flex;align-items:center;gap:12px;font-size:13.5px;color:var(--text-2);flex-wrap:wrap;}
 .ai-conf-meter{width:120px;height:4px;background:var(--line);border-radius:2px;overflow:hidden;}
 .ai-conf-meter span{display:block;height:100%;background:var(--platinum);}
+/* The evidence brief: a question and a cost to test, then each point with the figures it rests on. */
+.ai-ask{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1fr);gap:12px 16px;padding:16px 20px;border-bottom:1px solid var(--line);}
+.ai-ask textarea.di{resize:vertical;min-height:44px;font-family:inherit;line-height:1.5;}
+.ai-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:16px 22px 0;}
+.ai-src{font-size:13px;color:var(--text-3);line-height:1.55;padding:6px 22px 0;margin:0;}
+.ai-sum{font-family:var(--f-display);font-size:22px;line-height:1.4;color:var(--text);padding:12px 22px 18px;border-bottom:1px solid var(--line);margin:0;}
+.ai-find{padding:18px 22px;border-bottom:1px solid var(--line);}
+.ai-find-title{font-size:15.5px;font-weight:700;color:var(--text);margin:0 0 10px;line-height:1.45;}
+.ai-find-row{display:grid;grid-template-columns:170px minmax(0,1fr);gap:16px;padding:5px 0;}
+.ai-find-row .ai-rec-body{font-size:15px;}
+.ai-ev{display:flex;flex-wrap:wrap;gap:6px;margin:6px 0 8px;padding:0;list-style:none;}
+.ai-ev-chip{font-family:var(--f-num);font-size:12px;line-height:1.5;padding:4px 8px;border:1px solid var(--line);border-radius:2px;color:var(--text-2);background:var(--panel-2);font-variant-numeric:lining-nums tabular-nums;}
+.ai-ev-chip b{color:var(--text);font-weight:600;}
+.ai-notes{padding:16px 22px;border-bottom:1px solid var(--line);}
+.ai-notes ul{margin:6px 0 0;padding-left:18px;color:var(--text-2);font-size:14px;line-height:1.6;}
 .drop-zone{border:1px dashed var(--line-strong);border-radius:4px;background:var(--panel-2);padding:36px 24px;text-align:center;cursor:pointer;transition:border-color 0.15s,background 0.15s;}
 .drop-zone:hover,.drop-zone.drag{border-color:var(--text-2);background:var(--panel-3);}
 .drop-zone-title{font-family:var(--f-display);font-size:24px;color:var(--text);margin-bottom:8px;}
@@ -667,6 +685,7 @@ a{color:inherit;}
   .directive-strip{grid-template-columns:minmax(0,1fr);}
   .ds-meta{flex-direction:row;align-items:center;gap:10px;flex-wrap:wrap;}
   .ai-rec-field{grid-template-columns:minmax(0,1fr);gap:6px;}
+  .ai-ask,.ai-find-row{grid-template-columns:minmax(0,1fr);gap:6px;}
   .mk-nav-links,.mk-nav-actions .btn-ghost{display:none;}
   .mk-burger{display:flex;}
   .mk-outcomes,.mk-steps{grid-template-columns:minmax(0,1fr);}
@@ -747,42 +766,108 @@ function clickableProps(fn, { label, disabled = false } = {}) {
 }
 
 // ─── AI ADVISOR RECOMMENDATION ──────────────────────────────────
-// Renders the model's response as a memo: What Happened, Why, Business
-// Impact, Recommended Action, Expected Outcome, then Risk and Confidence,
-// as real React text, never raw HTML. The model's output is untrusted
-// content; dangerouslySetInnerHTML would execute anything it contained.
-// Red appears only when the risk level itself calls for it.
+// Renders the advisor's brief: the engine's status and risk, a summary, each
+// point with the figures it rests on (taken from the evidence the browser sent,
+// so a figure beside a point is the engine's, never the model's), and what
+// limits it. Model output is untrusted content and is rendered as React text,
+// never as HTML. Red appears only when the engine's own finding calls for it.
 const RISK_CHIP_COLOR = { Critical: C.danger, Elevated: C.warning, Watch: C.platinum, Low: C.positive };
+const BRIEF_STATUS = {
+  held: { level: "warning", label: "Figures held" },
+  no_material_issue: { level: "positive", label: "No action needed" },
+};
+const EVIDENCE_STATUS_WORDS = { estimate: "estimate", held: "held", unavailable: "not available" };
 
-function AIRecommendation({ rec }) {
-  const riskColor = RISK_CHIP_COLOR[rec.riskLevel] || C.text3;
-  const score = Number(rec.confidenceScore);
-  const fields = [
-    { key:"whatHappened",      lbl:"What happened" },
-    { key:"whyItHappened",     lbl:"Why it happened" },
-    { key:"businessImpact",    lbl:"Business impact" },
-    { key:"recommendedAction", lbl:"Recommended action", action:true },
-    { key:"expectedOutcome",   lbl:"Expected outcome" },
-  ];
+function EvidenceChips({ ids, evidence }) {
+  const items = (ids || []).map(id => evidence?.items?.find(i => i.id === id)).filter(Boolean);
+  if (items.length === 0) return null;
+  return (
+    <ul className="ai-ev" aria-label="Figures this rests on">
+      {items.map(i => (
+        <li key={i.id} className="ai-ev-chip" title={[i.period, i.definition, i.reason].filter(Boolean).join(". ")}>
+          {i.label}: <b>{i.display}</b>
+          {i.period ? <span>{`, ${i.period}`}</span> : null}
+          {EVIDENCE_STATUS_WORDS[i.status] ? <span>{` (${EVIDENCE_STATUS_WORDS[i.status]}${i.reason ? `: ${i.reason}` : ""})`}</span>
+            : i.confidence && i.confidence !== "high" ? <span>{` (${i.confidence} confidence)`}</span> : null}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function AdvisorBrief({ brief, evidence }) {
+  const first = evidence?.findings?.[0];
+  const status = BRIEF_STATUS[brief.status] || (first?.severity === "critical" ? { level: "critical", label: "Act now" } : { level: "warning", label: "Needs attention" });
+  const risk = brief.risk || {};
+  const riskColor = RISK_CHIP_COLOR[risk.label] || C.text3;
+  const rows = f => [
+    { lbl: "What the figures show", body: f.observation, chips: true },
+    { lbl: "What it may mean", body: f.interpretation },
+    { lbl: "A possible cause to check", body: f.hypothesis },
+    { lbl: "Why it matters", body: f.impact },
+    { lbl: "Next step", body: f.nextStep === f.title ? "" : f.nextStep, action: true },
+  ].filter(r => r.body || r.chips);
+  const removed = brief.checks?.removed || [];
   return (
     <div>
-      {fields.map(f => rec[f.key] && (
-        <div className={`ai-rec-field${f.action ? " action" : ""}`} key={f.key}>
-          <div className="ai-rec-lbl" style={{ color: f.action ? C.platinum : C.text3 }}>{f.lbl}</div>
-          <div className="ai-rec-body">{rec[f.key]}</div>
-        </div>
-      ))}
-      <div className="ai-rec-footer">
-        <span className="ai-rec-chip" style={{ color:riskColor, background:`color-mix(in srgb, ${riskColor} 14%, transparent)` }}>{rec.riskLevel || "Unknown"} risk</span>
-        <span className="ai-rec-conf">
-          Confidence {Number.isFinite(score) ? `${score}/100` : "not stated"}
-          {Number.isFinite(score) && <span className="ai-conf-meter" aria-hidden="true"><span style={{ width:`${Math.max(0, Math.min(100, score))}%` }}/></span>}
-          {rec.confidenceReason && <span>{rec.confidenceReason}</span>}
+      <div className="ai-head">
+        <SeverityTag level={status.level} label={status.label}/>
+        <span className="ai-rec-chip" style={{ color:riskColor, background:`color-mix(in srgb, ${riskColor} 14%, transparent)` }}>
+          {risk.label ? `${risk.label} risk` : "Risk not scored"}
         </span>
+        {/* The business can be fine while the cost tested is not: both are shown. */}
+        {evidence?.affordability && (
+          <SeverityTag level={evidence.affordability.status === "affordable" ? "positive" : evidence.affordability.status === "held" ? "neutral" : "critical"}
+            label={`Cost tested: ${evidence.affordability.status === "affordable" ? "affordable" : evidence.affordability.status === "held" ? "not answered yet" : "not affordable"}`}/>
+        )}
       </div>
-      {/* Written by the app, never by the AI, under every brief: no rule can catch
-          every way of saying a bank or other institution confirmed the figures. */}
-      <p className="panel-copy" style={{ margin:0, padding:"12px 22px 16px", fontSize:13.5, color:C.text2 }}>These figures come from your uploaded statements. Command Ledger has no bank connection, so no bank or other institution has independently confirmed them.</p>
+      <p className="ai-src">
+        {brief.source === "model"
+          ? `Written by the AI advisor (${brief.model || "Claude"}) from Command Ledger's figures, then checked by Command Ledger: every figure in it is one the app calculated.`
+          : `Command Ledger's own reading, written by its rules, not by the AI. ${brief.checks?.fallbackReason || ""}`}
+        {!risk.label && risk.held ? ` Risk is not scored: ${risk.held}.` : ""}
+      </p>
+      <p className="ai-sum">{brief.summary}</p>
+      {evidence?.question && (
+        <div className="ai-find">
+          <div className="ai-find-row"><div className="ai-rec-lbl" style={{ color:C.text3 }}>You asked</div><div className="ai-rec-body">{evidence.question}</div></div>
+          <div className="ai-find-row"><div className="ai-rec-lbl" style={{ color:C.platinum }}>Answer</div><div className="ai-rec-body">{brief.answer || "Not answered. See the notes below."}</div></div>
+        </div>
+      )}
+      {evidence?.affordability && (
+        <div className="ai-find">
+          <div className="ai-find-row">
+            <div className="ai-rec-lbl" style={{ color:C.text3 }}>Cost tested</div>
+            <div className="ai-rec-body">{evidence.affordability.monthlyCost} a month. {evidence.affordability.message}</div>
+          </div>
+        </div>
+      )}
+      {brief.findings.map((f, i) => (
+        <section className="ai-find" key={i} aria-label={f.title}>
+          <h3 className="ai-find-title">{f.title}</h3>
+          {rows(f).map(r => (
+            <div className="ai-find-row" key={r.lbl}>
+              <div className="ai-rec-lbl" style={{ color: r.action ? C.platinum : C.text3 }}>{r.lbl}</div>
+              <div className="ai-rec-body">
+                {r.body}
+                {r.chips && <EvidenceChips ids={f.evidence} evidence={evidence}/>}
+              </div>
+            </div>
+          ))}
+          <div className="ai-find-row"><div className="ai-rec-lbl" style={{ color:C.text3 }}>Confidence</div><div className="ai-rec-body">{capitalize(f.confidence)}</div></div>
+        </section>
+      ))}
+      {(brief.limitations.length > 0 || removed.length > 0) && (
+        <div className="ai-notes">
+          <div className="ai-rec-lbl" style={{ color:C.text3 }}>What limits this brief</div>
+          <ul>
+            {brief.limitations.map((l, i) => <li key={`l${i}`}>{l}</li>)}
+            {removed.map((r, i) => <li key={`r${i}`}>{`Removed by Command Ledger's checks: "${r.title}", because ${r.reason}.`}</li>)}
+          </ul>
+        </div>
+      )}
+      {/* Written by the app, never by the AI, under every brief. */}
+      <p className="panel-copy" style={{ margin:0, padding:"12px 22px 16px", fontSize:13.5, color:C.text2 }}>Decision support, not advice from an accountant, auditor or tax practitioner. These figures come from your uploaded statements. Command Ledger has no bank connection, so no bank or other institution has independently confirmed them.</p>
     </div>
   );
 }
@@ -870,7 +955,8 @@ function Ring({ score, size = 100, sw = 6 }) {
 // share one scale, so a month whose costs beat its revenue is drawn
 // taller, not clipped. A month still in progress is faded and marked. History
 // only: projections live under Forecasts, never mixed into this chart.
-function BChart({ data, compact = false, currency }) {
+// `held`: while profit is held (profitHold), the net is shown as held, as in the tables.
+function BChart({ data, compact = false, currency, held = false }) {
   if (!data || data.length === 0) return (
     <div className="panel-copy" style={{ textAlign:"center", padding:"36px 0" }}>Connect data to see money in and out.</div>
   );
@@ -886,7 +972,7 @@ function BChart({ data, compact = false, currency }) {
         <div className="chart-summary">
           <span>Revenue<b>{fmt(totIn, currency)}</b></span>
           <span>Costs<b>{fmt(totOut, currency)}</b></span>
-          <span>Net<b style={{ color: net >= 0 ? C.positive : C.danger }}>{fmt(net, currency)}</b></span>
+          <span>Net<b style={{ color: held ? C.text3 : net >= 0 ? C.positive : C.danger }}>{held ? HELD_MARK : fmt(net, currency)}</b></span>
           <span>Peak month<b>{fmt(maxV, currency)}</b></span>
         </div>
       )}
@@ -2324,6 +2410,11 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
   const [aiRec,    setAiRec]    = useState(null);
   const [aiError,  setAiError]  = useState("");
   const [aiLoad,   setAiLoad]   = useState(false);
+  // The founder's own question and a monthly cost to test, both optional, and
+  // the evidence the brief on screen was written from.
+  const [aiQuestion, setAiQuestion] = useState("");
+  const [aiCost,     setAiCost]     = useState("");
+  const [aiEvidence, setAiEvidence] = useState(null);
   // Transactions page filters; the header search sets txQuery.
   const [txQuery, setTxQuery] = useState("");
   const [txDirection, setTxDirection] = useState("all");
@@ -2943,152 +3034,42 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
   });
 
   // ── AI advisor ──
+  // The advisor is sent the engine's evidence (buildAdvisorEvidence): every
+  // figure with its period, status and reason, and the engine's own findings.
+  // It never receives transactions. While money in is unconfirmed or VAT is
+  // unanswered the model does not run (a figure the screen holds back must not
+  // reach it), and Command Ledger's own reading explains what is held instead.
   const runAI = async () => {
-    // While much of the money in is unconfirmed, the brief would carry a profit
-    // or loss the screen holds back. Nothing is sent, so nothing can be misread.
-    if (figuresOpen || m.vatHold) return;
-    setAiLoad(true); setAiRec(null); setAiError("");
-    // Aggregate expense categories from uploaded bank data if available
-    const totPayroll  = rows ? sumCents(rows, "payroll")   : 0;
-    const totRent     = rows ? sumCents(rows, "rent")      : 0;
-    const totMktCat   = rows ? sumCents(rows, "marketing") : 0;
-    const totSoftware = rows ? sumCents(rows, "software")  : 0;
+    setAiLoad(true); setAiRec(null); setAiError(""); setAiEvidence(null);
     try {
-      const { data: result, error } = await supabase.functions.invoke("analyze-finances", {
-        body: {
-          // Every amount below is in this currency. The advisor is told so
-          // and writes its figures in it.
-          currency:       cur,
-          monthlyRevenue: latest.revenue,
-          totalRevenue:   totRev,
-          totalExpenses:  totExp,
-          netProfit:      totPro,
-          profitMargin:   margin.toFixed(1),
-          velocity:       vel.toFixed(1),
-          conversionRate: conv.toFixed(1),
-          profitAfterReserves: free,
-          // null out any metric whose required inputs aren't present —
-          // the model must never be handed a fabricated number to narrate.
-          burnRunway:     (!cashFlowPositive && !runwayConfidence.shown) ? null : burnMonths.toFixed(1),
-          cashFlowPositive,
-          ltvCacRatio:    ltvcacConfidence.shown ? ltvcac.toFixed(2) : null,
-          cogsRatio:      cogsKnown ? cogsRatio.toFixed(1) : "unknown",
-          marketingRatio: mktKnown ? mktRatio.toFixed(1) : "unknown",
-          hiringCapacity: hiringCapacityConfidence.shown ? Math.round(hiringCapacity) : null,
-          // The balance runway was measured from, its date and where it
-          // came from; null when no balance is known.
-          cashBalance: cashBalance ? { amount: Math.round(cashBalance.amount), on: cashBalance.on, source: cashBalance.source }
-            : hasCashData ? { amount: Math.round(activeCash), on: "the last date in the uploaded file", source: "upload" } : null,
-          // What runway actually counts down from, when that differs from the
-          // saved balance; null when the balance stands as it is.
-          cashToday: cashToday?.usable && (cashToday.recorded || cashToday.estimated)
-            ? { amount: Math.round(cashToday.amount), recorded: Math.round(cashToday.recorded), estimated: Math.round(cashToday.estimated), daysEstimated: cashToday.gapDays }
-            : null,
-          // Money kept out of revenue and costs in the period.
-          nonOperating: { financingIn: Math.round(totFinIn), financingOut: Math.round(totFinOut), transferIn: Math.round(totTrIn),
-            transferOut: Math.round(totTrOut), refundsIn: Math.round(totRefIn), refundsOut: Math.round(totRefOut) },
-          partialMonths,
-          // Whether the files behind these figures reconciled. The function
-          // uses this in its prompt and checks the reply against it.
-          dataVerification: verification,
-          unconfirmedIn: Math.round(totUnconfirmedIn),
-          latestMonth: rows ? latest.month || null : null,
-          // Real payer-based concentration — null when extraction confidence
-          // is low, so the model never narrates a percentage the parser
-          // itself isn't confident in.
-          revenueConcentration: concentrationData?.shown ? {
-            confidenceLevel: concentrationData.confidenceLevel,
-            largestPct:      concentrationData.largestPct.toFixed(1),
-            top3Pct:         concentrationData.top3Pct.toFixed(1),
-            hhi:             concentrationData.hhi.toFixed(2),
-            distinctPayers:  concentrationData.distinctPayers,
-            severity:        concentrationData.severity,
-            aggregatorPct:   concentrationData.aggregatorPct.toFixed(1),
-            topPayers:       concentrationData.payers.slice(0, 5).map(p => ({ name: p.name, pct: p.pct.toFixed(1) })),
-          } : { reason: concentrationData?.reason || "no persisted transaction history yet" },
-          breakEven:      breakEvenConfidence.shown ? breakEven.toFixed(0) : null,
-          cashBreakEven:  breakEvenConfidence.shown ? cashBreakEven.toFixed(0) : null,
-          monthlyResultLast3Months: burnGap || burnOpen || burnShort ? null : Math.round(runProfit),
-          marginLast3Months: burnGap || burnOpen || burnShort ? null : runMargin.toFixed(1),
-          monthsMissingFromLast3: runMissing,
-          monthInProgress: toDate ? { label: toDate.label, moneyIn: Math.round(toDate.revenue), moneyOut: Math.round(toDate.expenses) } : null,
-          uncategorisedCosts: Math.round(uncategorised),
-          taxNote: taxYearNote(m.taxYear, cur, tr),
-          incomeTaxMarkedPaidInPeriod: Math.round(m.incomeTaxPaid),
-          vat: vatInfo.registered === true ? { registered: true, collectedInSales: Math.round(m.vatPeriod.collected), claimableInCosts: Math.round(m.vatPeriod.claimable), paidToSars: Math.round(m.vatPeriod.paid),
-            profitIsLowestFigure: !!m.profitRange?.atLeast, profitCouldBeHigherBy: Math.round(m.profitRange.high - m.profitRange.low) } : { registered: vatInfo.applies ? vatInfo.registered : "not asked" },
-          proj90:         proj90Confidence.shown ? proj90.toFixed(0) : null,
-          plan,
-          mode,
-          dataMonths:     n,
-          dataConfidence,
-          growthScore:  growth.score.toFixed(0),
-          growthLabel:  growth.label,
-          growthSeasonallyAdjusted: growth.seasonallyAdjusted,
-          riskScore:    risk.score === null ? null : risk.score.toFixed(0),
-          riskLabel:    risk.label,
-          riskUnknownBecause: risk.unknown || null,
-          trends,
-          // Seasonal context: null unless the latest month is a real,
-          // repeating pattern (13+ months of history) — when present, the
-          // model must not read this month's dip/spike as a new problem.
-          seasonalPattern: seasonalPattern ? {
-            month: seasonalPattern.month,
-            avgDeltaPct: seasonalPattern.avgDeltaPct.toFixed(1),
-            occurrences: seasonalPattern.occurrences,
-          } : null,
-          founderNarrative: founderNarrative || null,
-          confidence: {
-            runway:    runwayConfidence,
-            breakEven: breakEvenConfidence,
-            proj90:    proj90Confidence,
-            hiringCapacity: hiringCapacityConfidence,
-            ltvCac:    ltvcacConfidence,
-            growth:    growthConfidence,
-          },
-          // Forward cash calendar: detected recurring obligations projected
-          // 90 days ahead, plus the obligation-aware runway (real dated
-          // bills against current cash) alongside the flat average-burn
-          // figure above — null when no obligations have been detected yet.
-          forwardCalendar: activeObligations.length > 0 ? {
-            weeklyTotals: summarizeCalendarByWeek(upcoming, todayStr, 90)
-              .map(w => ({ weekStart: w.weekStart, total: Math.round(w.total) })),
-            obligationAwareRunway: forwardRunway ? {
-              crossesZero: forwardRunway.crossesZero,
-              monthsUntilCross: forwardRunway.monthsUntilCross,
-              crossDate: forwardRunway.crossDate,
-            } : null,
-            missedObligations: missedObligations.map(o => ({ label: o.label, daysPast: o.daysPast })),
-            committedCosts: activeObligations.slice(0, 10).map(o => ({
-              label: o.label, cadence: o.cadence, typicalAmount: o.typical_amount,
-              nextExpected: o.next_expected, confidence: o.confidence,
-            })),
-          } : null,
-          // Decision history: the last 3 directives with what the founder
-          // did about them and what happened to the metric afterward. A
-          // disagreement's note is included verbatim — the founder's
-          // reasoning may be correct, and the model should account for it.
-          directiveHistory: directives.slice(0, 3).map(d => ({
-            text: d.directive_text, severity: d.severity, issuedAt: d.issued_at,
-            actionTaken: d.action_taken || "awaiting_response",
-            founderNote: d.founder_note || null,
-            outcome: describeDirectiveOutcome(d, d.currency || cur),
-          })),
-          // Expense breakdown from bank statement parser
-          payroll:   totPayroll  || null,
-          rent:      totRent     || null,
-          marketing: totMktCat   || null,
-          software:  totSoftware || null,
-          cogs:      totCogs     || null,
-        },
+      const cost = Number(aiCost);
+      // A cost to test goes through the same check as Forecasts, never the model.
+      const affordability = cost > 0 ? { monthlyCost: cost,
+        result: checkAffordability({ currentCash: cashToday ? (cashToday.usable ? cashToday.amount : null) : (hasCashData ? activeCash : null),
+          cashKnown: hasCashData || !!cashToday, cashUsable: !cashToday || cashToday.usable, window: judgement, coverage,
+          obligations: activeObligations, monthlyCost: cost, fromDate: todayStr, currency: cur }) } : null;
+      const raw = buildAdvisorEvidence({
+        m, currency: cur, today: todayStr, mode, periodLabel, window: judgement, verification, cashBalance,
+        concentration: judgedConcentration, obligations: activeObligations, uncheckedBills, forwardRunway, showForwardRunway,
+        affordability, question: aiQuestion, directives, sarsQuestionCount: sarsQuestions.length, vat: vatInfo, history: rows || [], excludedByCurrency,
       });
-      if (error) throw error;
-      if (result?.recommendation) setAiRec(result.recommendation);
-      else setAiError(result?.error || "Analysis complete but no response returned.");
+      // Rebuilt exactly as the server rebuilds it, so the figures shown beside
+      // each point are the ones the advisor was given.
+      const checked = sanitizeEvidence(JSON.parse(JSON.stringify(raw)));
+      if (!checked.ok) throw new Error(checked.error);
+      setAiEvidence(checked.evidence);
+      if (checked.evidence.holds.some(h => MODEL_HOLDS.has(h.id))) {
+        setAiRec(engineBrief(checked.evidence, "The AI advisor does not run until the held figures are answered."));
+      } else {
+        const { data: result, error } = await supabase.functions.invoke("analyze-finances", { body: { contract: 2, evidence: checked.evidence } });
+        if (error) throw error;
+        if (result?.brief?.contract === 2) setAiRec(result.brief);
+        else setAiError(result?.error || "The advisor answered in a form this page cannot read. Refresh the page and try again.");
+      }
     } catch (e) {
       console.error("AI error:", e);
       // supabase-js throws a FunctionsHttpError/FunctionsRelayError whose
-      // .context is the raw Response from the Edge Function — read the real
+      // .context is the raw Response from the Edge Function: read the real
       // JSON error body it sent instead of showing a generic guess.
       let detail = "";
       try {
@@ -3143,10 +3124,10 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
       sub: figuresOpen || burnOpen ? "Confirm your money in first" : risk.score === null ? `${risk.unknown}.` : `${risk.label}. From runway, 3-month margin and trend${risk.floored ? ", raised to match what was found" : ""}` },
     hiring:  { key:"hiring", lbl:"Hiring capacity", conf:hiringCapacityConfidence,
       val: !hiringCapacityConfidence.shown ? "---" : hiringCapacity > 0 ? fmtCompact(hiringCapacity, cur) : "None",
-      unit: hiringCapacityConfidence.shown && hiringCapacity > 0 ? "/mo" : null, title: fmt(hiringCapacity, cur),
+      unit: hiringCapacityConfidence.shown && hiringCapacity > 0 ? "/mo" : null, title: hiringCapacityConfidence.shown ? fmt(hiringCapacity, cur) : undefined,
       col: !hiringCapacityConfidence.shown ? C.text3 : hiringCapacity > 0 ? C.positive : C.warning,
-      sub: burnGap ? `${missingMonthWords} missing` : burnOpen ? "Confirm your money in first" : burnShort ? "Needs at least 28 days of data"
-        : hiringCapacity > 0 ? "Fully-loaded cost the last 3 months' profit covers" : runFinOut > 0 ? "Costs and repayments use up revenue over the last 3 months" : "Costs exceed revenue over the last 3 months" },
+      sub: vatWait || (burnGap ? `${missingMonthWords} missing` : burnOpen ? "Confirm your money in first" : burnShort ? "Needs at least 28 days of data"
+        : hiringCapacity > 0 ? "Fully-loaded cost the last 3 months' profit covers" : runFinOut > 0 ? "Costs and repayments use up revenue over the last 3 months" : "Costs exceed revenue over the last 3 months") },
   };
   // The headline states the first finding, the same one the directive shows, so
   // the two cannot disagree; it is positive only when nothing warns.
@@ -3161,34 +3142,11 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
             ? `${tiles.revenue.sub}. Nothing in the last 3 months needs action.` : currentDirective.text };
   const supporting = ["revenue","margin","free","runway","risk","hiring"].filter(k => k !== hero.key).map(k => tiles[k]);
 
-  const reportSummary = [
-    [latest.month ? `Latest month revenue, ${monthLabel(latest)}` : "Latest month revenue", fmt(latest.revenue, cur)],
-    ...(figuresOpen ? [["Figures incomplete", "Much of the money in is not confirmed, so profit, margin, runway and risk are not final"]] : []),
-    ["Profit margin", pc(margin)],
-    ["Net profit", fmt(totPro, cur)],
-    ["Profit after reserves", fmt(free, cur)],
-    ["Cash balance", cashBalance ? `${fmt(cashBalance.amount, cur)} on ${cashBalance.on}` : "Not entered"],
-    ...(cashToday?.usable && (cashToday.recorded || cashToday.estimated) ? [["Estimated cash today", fmt(cashToday.amount, cur)]] : []),
-    ["Runway", cashFlowPositive ? "No burn" : runwayConfidence.shown ? `${safe(burnMonths).toFixed(1)} months` : "Not enough data"],
-    ...(totFinIn > 0 ? [["Loans and owner money in", fmt(totFinIn, cur)]] : []),
-    ...(totFinOut > 0 ? [["Loan repayments and owner withdrawals", fmt(totFinOut, cur)]] : []),
-    ["Operating break-even, monthly revenue (last 3 months)", breakEvenConfidence.shown && breakEven > 0 ? fmt(breakEven, cur) : "Not enough data"],
-    ["Cash break-even, monthly money in from customers (last 3 months)", breakEvenConfidence.shown && cashBreakEven > 0 ? fmt(cashBreakEven, cur) : "Not enough data"],
-    ["Tax reserve and tax paid", taxYearNote(m.taxYear, cur, tr)],
-    ...(m.incomeTaxPaid !== 0 ? [["Income tax you marked as paid, in this period (not a cost)", fmt(m.incomeTaxPaid, cur)]] : []),
-    ...(vatInfo.registered === true ? [["VAT in this period, estimates from payment dates (not a VAT201)", `collected in sales ${fmt(m.vatPeriod.collected, cur)}, claimable in costs ${fmt(m.vatPeriod.claimable, cur)}, paid to SARS ${fmt(m.vatPeriod.paid, cur)}`]] : []),
-    ...(m.vatHold ? [["Profit figures held", m.vatHold.reason === "unanswered" ? "You have not said whether the business is registered for VAT" : "Unclassified sales and costs could turn the profit into a loss, or the loss into a profit"]] : []),
-    ...(m.profitRange?.atLeast && !m.vatHold ? [["Profit is a lowest figure", `It could be up to ${fmt(m.profitRange.high - m.profitRange.low, cur)} higher once every customer and supplier has a VAT class`]] : []),
-    ...(toDate ? [[`Not counted in profit yet, ${toDate.label}`, `${fmt(toDate.revenue, cur)} in, ${fmt(toDate.expenses, cur)} out`]] : []),
-    ["90-day revenue projection", proj90Confidence.shown && proj90 > 0 ? fmt(proj90, cur) : "Not enough data"],
-    ["Hiring capacity", hiringCapacityConfidence.shown ? (hiringCapacity > 0 ? `${fmt(hiringCapacity, cur)}/month` : "None from profit") : "Not enough data"],
-    ["Risk score", riskHeld ? "Not known yet" : `${risk.score.toFixed(0)}/100 (${risk.label})`],
-    ["Growth score", `${growth.score.toFixed(0)}/100 (${growth.label})`],
-    ["Largest client share", concentrationData?.shown ? pc(concentrationData.largestPct) : "Not enough data"],
-    ["Data confidence", capitalize(dataConfidence)],
-    ...(totUnconfirmedIn > 0 ? [["Money in not yet confirmed, left out of revenue", fmt(totUnconfirmedIn, cur)]] : []),
-    ["Reserve mode", mode === "safe" ? "Safe (30% tax, 20% safety)" : "Growth (25% tax, 10% safety)"],
-  ];
+  // Reports and its CSV: one list, built and tested in financials.js. While
+  // profit is held (money in unconfirmed, or VAT), every profit figure in it is
+  // held too, as on the tiles.
+  const reportHold = profitHold(m);
+  const reportSummary = buildReportSummary({ m, currency: cur, cashBalance, vatInfo, mode, concentration: concentrationData });
 
   const ctx = {
     user, profile, plan, userName, onUpgrade, onBuyDiagnostic, onProfileChange, go, mode, setMode,
@@ -3205,7 +3163,7 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
     vatInfo, saveTaxSettings, sarsQuestions,
     txQuery, setTxQuery, txDirection, setTxDirection, txKind, setTxKind, txLimit, setTxLimit,
     ruleIndex, saveKindRule, clearKindRule, cashBalance, saveCashBalance,
-    aiRec, aiError, aiLoad, runAI, reportSummary,
+    aiRec, aiError, aiLoad, runAI, reportSummary, reportHold, aiQuestion, setAiQuestion, aiCost, setAiCost, aiEvidence,
     tr, sr, taxV, safV, hasConversionData, activeCac, activeLtv, cogsRatio, mktRatio,
     seasonalPattern, historicalConfidence, founderNarrative, growth, growthConfidence, risk, trends,
   };
@@ -3334,7 +3292,7 @@ function DashboardHome({ ctx }) {
 
       <div className="row row-21">
         <Panel title="Revenue and costs" action={<PanelLink to="financials" onNavigate={go}>Monthly detail</PanelLink>}>
-          <BChart data={profitBasisRows(rows)} currency={cur}/>
+          <BChart data={profitBasisRows(rows)} currency={cur} held={!!ctx.reportHold}/>
         </Panel>
         <Panel title="Trajectory" action={<PanelLink to="financials" onNavigate={go}>History</PanelLink>}>
           <div className="traj-pair">
@@ -3962,8 +3920,9 @@ function FinancialsSection({ ctx }) {
   const { cur } = ctx;
   const { m, rows, mode, setMode, tr, sr, taxV, safV, concentrationData, statusLine, hasConversionData,
     activeCac, activeLtv, cogsRatio, mktRatio, founderNarrative, seasonalPattern, historicalConfidence, go } = ctx;
-  const { hasData, latest, totPro, free, margin, conv, ltvcac, ltvcacConfidence, breakEven, breakEvenConfidence, cashBreakEven, cashIn, runRev, uncategorised, cogsKnown, mktKnown, toDate } = m;
+  const { hasData, latest, totPro, free, margin, conv, ltvcac, ltvcacConfidence, breakEven, breakEvenConfidence, operatingBreakEvenConfidence, cashBreakEven, cashIn, runRev, uncategorised, cogsKnown, mktKnown, toDate } = m;
   const position = (actual, needed) => (actual >= needed ? `${fmt(actual - needed, cur)} above it` : `${fmt(needed - actual, cur)} below it`);
+  const hold = ctx.reportHold;
   if (!hasData) return <><PageHead title="Financials" meta={statusLine}/><EmptyData go={go}/></>;
 
   // The profit basis, so the table's net and margin agree with the margin tile.
@@ -3990,16 +3949,16 @@ function FinancialsSection({ ctx }) {
                       <td>{monthLabel(r)}</td>
                       <td className="num">{fmt(r.revenue, cur)}</td>
                       <td className="num">{fmt(r.expenses, cur)}</td>
-                      <td className="num" style={{ color: net >= 0 ? C.positive : C.danger }}>{fmt(net, cur)}</td>
-                      <td className="num muted">{r.revenue > 0 ? pc((net / r.revenue) * 100) : "---"}</td>
+                      <td className="num" style={{ color: hold ? C.text3 : net >= 0 ? C.positive : C.danger }}>{hold ? HELD_MARK : fmt(net, cur)}</td>
+                      <td className="num muted">{hold ? HELD_MARK : r.revenue > 0 ? pc((net / r.revenue) * 100) : "---"}</td>
                     </tr>
                   );
                 })}
               </tbody>
               <tfoot><tr>
                 <th scope="row">{totals.label}</th><td className="num">{fmt(totals.rev, cur)}</td><td className="num">{fmt(totals.exp, cur)}</td>
-                <td className="num" style={{ color: totals.rev - totals.exp >= 0 ? C.positive : C.danger }}>{fmt(totals.rev - totals.exp, cur)}</td>
-                <td className="num muted">{totals.rev > 0 ? pc(((totals.rev - totals.exp) / totals.rev) * 100) : "---"}</td>
+                <td className="num" style={{ color: hold ? C.text3 : totals.rev - totals.exp >= 0 ? C.positive : C.danger }}>{hold ? HELD_MARK : fmt(totals.rev - totals.exp, cur)}</td>
+                <td className="num muted">{hold ? HELD_MARK : totals.rev > 0 ? pc(((totals.rev - totals.exp) / totals.rev) * 100) : "---"}</td>
               </tr></tfoot>
             </table>
           </div>
@@ -4009,22 +3968,22 @@ function FinancialsSection({ ctx }) {
           {[
             { name:"Tax reserve",    pct:tr * 100, amt:taxV, col:C.danger },
             { name:"Safety buffer",  pct:sr * 100, amt:safV, col:C.silver },
-            { name:"Profit after reserves", pct:totPro > 0 ? Math.max(0, (free / totPro) * 100) : 0, amt:free, col:free >= 0 ? C.platinum : C.danger },
+            { name:"Profit after reserves", pct:!hold && totPro > 0 ? Math.max(0, (free / totPro) * 100) : 0, amt:free, col:free >= 0 ? C.platinum : C.danger, rest:true },
           ].map((a, i) => (
             <div className="alloc-row" key={i}>
               <div className="alloc-meta">
                 <div className="alloc-name">{a.name}</div>
-                <div className="alloc-pct">{safe(a.pct).toFixed(0)}% of profit</div>
+                <div className="alloc-pct">{hold && a.rest ? "Held with profit" : `${safe(a.pct).toFixed(0)}% of profit`}</div>
                 <div className="alloc-track"><div className="alloc-fill" style={{ width:`${Math.min(100, safe(a.pct))}%`, background:a.col }}/></div>
               </div>
-              <div className="alloc-amt" style={{ color:a.col }}>{fmt(a.amt, cur)}</div>
+              <div className="alloc-amt" style={{ color: hold ? C.text3 : a.col }}>{hold ? HELD_MARK : fmt(a.amt, cur)}</div>
             </div>
           ))}
           <p className="panel-copy" style={{ marginTop:10 }}>
-            {totPro > 0 ? `${mode === "safe" ? "Safe" : "Growth"} mode reserves are taken from ${fmt(totPro, cur)} net profit in the period.` : "A loss in the period: nothing is reserved, so the full loss shows."}
+            {hold ? `Profit figures held. ${hold.reason}` : totPro > 0 ? `${mode === "safe" ? "Safe" : "Growth"} mode reserves are taken from ${fmt(totPro, cur)} net profit in the period.` : "A loss in the period: nothing is reserved, so the full loss shows."}
           </p>
           <p className="panel-copy" style={{ marginTop:12 }}>The tax reserve is {(tr * 100).toFixed(0)}% of this period's profit before income tax. It is money to set aside, not tax owed, and payments you have made do not change it.</p>
-          <p className="panel-copy" style={{ marginTop:8 }}>{taxYearNote(m.taxYear, cur, tr)}</p>
+          <p className="panel-copy" style={{ marginTop:8 }}>{hold ? "Tax year to date is not shown: its reserve estimate is a rate on profit, which is held." : taxYearNote(m.taxYear, cur, tr)}</p>
           {!m.taxYear.available && m.incomeTaxPaid !== 0 && <p className="panel-copy" style={{ marginTop:8 }}>Income tax you marked as paid in this period: {fmt(m.incomeTaxPaid, cur)}. It is shown beside the reserve and not compared with it.</p>}
           {ctx.vatInfo.registered === true && (
             <p className="panel-copy" style={{ marginTop:8 }}>VAT in this period, estimated from payment dates: {fmt(m.vatPeriod.collected, cur)} collected in standard-rated sales, {fmt(m.vatPeriod.claimable, cur)} claimable in classified costs, {fmt(m.vatPeriod.paid, cur)} paid to SARS. These are not netted into an amount owed, and will differ from a VAT201 return, which goes by invoice date.{m.vatUnclassified > 0 ? ` ${fmt(m.vatUnclassified, cur)} of sales and costs has no VAT class yet, so profit is shown at its lowest.` : ""}</p>
@@ -4051,7 +4010,9 @@ function FinancialsSection({ ctx }) {
           {breakEvenConfidence.shown && cashBreakEven > 0 ? (
             <>
               <p className="panel-copy"><b>Cash break-even.</b> The money that must come in from customers each month for your bank balance to stop falling: costs as paid, plus loan repayments and owner withdrawals. You took in {fmt(cashIn, cur)} a month, {position(cashIn, cashBreakEven)}.</p>
-              <p className="panel-copy" style={{ marginTop:8 }}><b>Operating break-even: {fmt(breakEven, cur)}.</b> The monthly revenue at which the business makes no operating loss. Revenue was {fmt(runRev, cur)} a month, {position(runRev, breakEven)}.</p>
+              {operatingBreakEvenConfidence.shown
+                ? <p className="panel-copy" style={{ marginTop:8 }}><b>Operating break-even: {fmt(breakEven, cur)}.</b> The monthly revenue at which the business makes no operating loss. Revenue was {fmt(runRev, cur)} a month, {position(runRev, breakEven)}.</p>
+                : <p className="panel-copy" style={{ marginTop:8 }}><b>Operating break-even: {HELD_MARK}.</b> Not shown: {operatingBreakEvenConfidence.reason}. It reads profit; cash break-even above does not.</p>}
               <p className="panel-copy" style={{ marginTop:8 }}>Both are averages over your last 3 complete months, the months runway uses, whatever period is selected. Tax paid in lumps can make three months hold more or less than a typical month.</p>
             </>
           ) : (
@@ -4135,36 +4096,50 @@ function EmptyData({ go }) {
 
 // ─── SECTION: AI ADVISOR ──────────────────────────────────────
 function AdvisorSection({ ctx }) {
-  const { aiRec, aiError, aiLoad, runAI, m, go, cur, setTxKind, setTxLimit } = ctx;
+  const { aiRec, aiError, aiLoad, runAI, m, go, cur, setTxKind, setTxLimit, aiQuestion, setAiQuestion, aiCost, setAiCost, aiEvidence } = ctx;
+  const held = m.figuresOpen || !!m.vatHold;
+  // A brief the model wrote before figures went on hold may carry one the screen
+  // now holds back, so it is not shown; the engine's reading of the hold is.
+  const shown = aiRec && !(held && aiRec.source === "model") ? aiRec : null;
   return (
     <>
-      <PageHead title="AI Advisor" meta="A structured brief from your real numbers, generated on request"/>
+      <PageHead title="AI Advisor" meta="A brief from your real numbers, every point tied to the figures behind it"/>
       <div className="card" style={{ padding:0 }}>
         <div className="ai-top">
           <div className="ai-lbl"><div className="ai-glow"/>Command Ledger Intelligence - Powered by Claude</div>
-          <button className="ai-btn" onClick={runAI} disabled={aiLoad || !m.hasData || m.figuresOpen || !!m.vatHold}>{aiLoad ? "Analyzing..." : "Generate Brief"}</button>
+          <button className="ai-btn" onClick={runAI} disabled={aiLoad || !m.hasData}>{aiLoad ? "Analyzing..." : "Generate Brief"}</button>
         </div>
-        <div className="ai-body" style={{ padding: aiRec && !m.figuresOpen && !m.vatHold ? 0 : undefined }}>
+        <div className="ai-ask">
+          <div>
+            <label className="di-lbl" htmlFor="ai-question">Your question, optional</label>
+            <textarea id="ai-question" className="di" rows={2} maxLength={500} placeholder="For example: can the business carry another salary?"
+              value={aiQuestion} onChange={e => setAiQuestion(e.target.value)}/>
+          </div>
+          <div>
+            <label className="di-lbl" htmlFor="ai-cost">{withSymbol("Monthly cost to test, optional", cur)}</label>
+            <input id="ai-cost" type="number" min="0" className="di" placeholder="e.g. 15000" value={aiCost} onChange={e => setAiCost(e.target.value)}/>
+          </div>
+        </div>
+        {held && (
+          <div className="ai-txt" style={{ padding:"16px 20px 0" }}>
+            {m.figuresOpen ? (
+              <p style={{ margin:0 }}>The AI advisor waits until you confirm your money in: {fmt(m.totUnconfirmedIn, cur)} has not been identified, so profit, runway and risk cannot be judged yet. Generate Brief shows Command Ledger's own reading of what is held. <button className="panel-link" onClick={() => { setTxKind("unconfirmed"); setTxLimit(100); go("transactions"); }}>Review this money<Icon name="arrow" size={14}/></button></p>
+            ) : (
+              <p style={{ margin:0 }}>{m.vatHold.reason === "unanswered" ? "The AI advisor waits until you say whether the business is registered for VAT: until then profit cannot be stated." : "The AI advisor waits until your sales and costs are classified for VAT: as they stand, profit could be a loss or a profit."} Generate Brief shows Command Ledger's own reading of what is held. <button className="panel-link" onClick={() => go(m.vatHold.reason === "unanswered" ? "settings" : "transactions")}>{m.vatHold.reason === "unanswered" ? "Open Settings" : "Open Transactions"}<Icon name="arrow" size={14}/></button></p>
+            )}
+          </div>
+        )}
+        <div className="ai-body" style={{ padding: shown ? 0 : undefined }} aria-live="polite">
           {aiLoad ? (
             <div style={{ display:"flex", alignItems:"center", gap:12, color:C.text3, fontSize:12, fontFamily:"'JetBrains Mono',monospace", padding:"20px" }}>
               <div className="ai-dots"><span/><span/><span/></div>Analyzing your financial position...
             </div>
-          ) : m.figuresOpen ? (
-            <div className="ai-txt" style={{ padding:"20px" }}>
-              <p>Confirm your money in first. {fmt(m.totUnconfirmedIn, cur)} of money in has not been identified, so a brief would rest on figures that cannot be judged yet.</p>
-              <button className="panel-link" style={{ marginTop:8 }} onClick={() => { setTxKind("unconfirmed"); setTxLimit(100); go("transactions"); }}>Review this money<Icon name="arrow" size={14}/></button>
-            </div>
-          ) : m.vatHold ? (
-            <div className="ai-txt" style={{ padding:"20px" }}>
-              <p>{m.vatHold.reason === "unanswered" ? "Answer the VAT question first. Until you say whether the business is registered for VAT, profit cannot be stated, so a brief would rest on a figure nobody knows." : "Classify your sales and costs for VAT first. As they stand, profit could be a loss or a profit, so a brief would rest on a figure nobody knows."}</p>
-              <button className="panel-link" style={{ marginTop:8 }} onClick={() => go(m.vatHold.reason === "unanswered" ? "settings" : "transactions")}>{m.vatHold.reason === "unanswered" ? "Open Settings" : "Open Transactions"}<Icon name="arrow" size={14}/></button>
-            </div>
-          ) : aiRec ? (
-            <AIRecommendation rec={aiRec}/>
+          ) : shown ? (
+            <AdvisorBrief brief={shown} evidence={aiEvidence}/>
           ) : aiError ? (
             <div className="ai-txt" style={{ padding:"20px" }}>{aiError}</div>
           ) : (
-            <div className="ai-txt" style={{ padding:"20px" }}>Click Generate Brief to receive a structured recommendation: what happened, why, the business impact, the risk, the one action to take, and how confident to be in it.</div>
+            <div className="ai-txt" style={{ padding:"20px" }}>Click Generate Brief for what the figures show, what they may mean, why it matters and what to do next. Each point shows the figures it rests on, and says what is estimated, held or missing. Add a question, or a monthly cost to test against your cash and bills.</div>
           )}
         </div>
       </div>
@@ -4174,7 +4149,7 @@ function AdvisorSection({ ctx }) {
           <button className="panel-link" onClick={() => go("transactions")}>Transactions<Icon name="arrow" size={14}/></button>
         </div>
       )}
-      <p className="panel-copy">Sent to Claude (Anthropic) only when you click Generate Brief: your computed metrics, the names of your largest payers and recurring costs, and any notes you left on past directives. Never your transaction list.</p>
+      <p className="panel-copy">Sent to Claude (Anthropic) only when you click Generate Brief: Command Ledger's calculated figures and findings, the names and amounts of your recurring costs, your question, and any notes you left on past directives. Never your transaction list or your clients' names. While figures are held, nothing is sent.</p>
     </>
   );
 }
@@ -4185,14 +4160,14 @@ function AdvisorSection({ ctx }) {
 // downloadable as CSV or printed to PDF from the browser.
 function ReportsSection({ ctx }) {
   const { cur } = ctx;
-  const { m, rows, reportSummary, periodLabel, todayStr, profile, userName, plan, statusLine, go, verificationInfo } = ctx;
+  const { m, rows, reportSummary, reportHold, periodLabel, todayStr, profile, userName, plan, statusLine, go, verificationInfo } = ctx;
   if (!m.hasData) return <><PageHead title="Reports" meta={statusLine}/><EmptyData go={go}/></>;
 
   const monthly = rows || [];
   const plMonthly = profitBasisRows(monthly);
   const totals = profitTotals(profitBasisRows(monthly));
   const downloadCsv = () => {
-    const csv = buildReportCsv({ periodLabel, generatedAt: todayStr, rows: profitBasisRows(monthly), summary: reportSummary, currency: cur, verification: verificationInfo });
+    const csv = buildReportCsv({ periodLabel, generatedAt: todayStr, rows: profitBasisRows(monthly), summary: reportSummary, currency: cur, verification: verificationInfo, profitHold: reportHold });
     const url = URL.createObjectURL(new Blob([csv], { type:"text/csv;charset=utf-8" }));
     const a = document.createElement("a");
     a.href = url; a.download = `command-ledger-summary-${todayStr}.csv`;
@@ -4216,6 +4191,7 @@ function ReportsSection({ ctx }) {
           <div className="page-meta">Command Ledger</div>
         </div>
         {verificationInfo && <p className="panel-copy" style={{ marginTop:10 }}><strong>{verificationInfo.title}.</strong> {verificationInfo.detail}</p>}
+        {reportHold && <p className="panel-copy" style={{ marginTop:10 }}><strong>Profit figures held.</strong> {reportHold.reason}</p>}
         <div className="row row-12" style={{ marginTop:16 }}>
           <div>
             <h2 className="panel-title" style={{ marginBottom:10 }}>Key metrics</h2>
@@ -4231,10 +4207,10 @@ function ReportsSection({ ctx }) {
                 <tbody>
                   {plMonthly.map((r, i) => {
                     const net = (r.revenue || 0) - (r.expenses || 0);
-                    return <tr key={i}><td>{monthLabel(r)}</td><td className="num">{fmt(r.revenue, cur)}</td><td className="num">{fmt(r.expenses, cur)}</td><td className="num">{fmt(net, cur)}</td><td className="num">{r.revenue > 0 ? pc((net / r.revenue) * 100) : "---"}</td></tr>;
+                    return <tr key={i}><td>{monthLabel(r)}</td><td className="num">{fmt(r.revenue, cur)}</td><td className="num">{fmt(r.expenses, cur)}</td><td className="num">{reportHold ? HELD_MARK : fmt(net, cur)}</td><td className="num">{reportHold ? HELD_MARK : r.revenue > 0 ? pc((net / r.revenue) * 100) : "---"}</td></tr>;
                   })}
                 </tbody>
-                <tfoot><tr><th scope="row">{totals.label}</th><td className="num">{fmt(totals.rev, cur)}</td><td className="num">{fmt(totals.exp, cur)}</td><td className="num">{fmt(totals.rev - totals.exp, cur)}</td><td className="num">{totals.rev > 0 ? pc(((totals.rev - totals.exp) / totals.rev) * 100) : "---"}</td></tr></tfoot>
+                <tfoot><tr><th scope="row">{totals.label}</th><td className="num">{fmt(totals.rev, cur)}</td><td className="num">{fmt(totals.exp, cur)}</td><td className="num">{reportHold ? HELD_MARK : fmt(totals.rev - totals.exp, cur)}</td><td className="num">{reportHold ? HELD_MARK : totals.rev > 0 ? pc(((totals.rev - totals.exp) / totals.rev) * 100) : "---"}</td></tr></tfoot>
               </table>
             </div>
           </div>

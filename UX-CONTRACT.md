@@ -64,6 +64,12 @@ a defect, however good it looks. Visual rules live in `DESIGN.md`.
     answered says what is missing instead of yes or no.
 16. **A bill that cannot be checked is not a missed bill.** It says "Cannot
     check yet" and stays a committed cost until the founder ends it.
+17. **Every advisor point shows its evidence.** Each point in an AI brief lists
+    the figures it rests on, as the engine computed them, with their period and
+    status. A figure the engine did not calculate is removed, and the brief says
+    so. Status and risk are the engine's. A reading written by Command Ledger's
+    rules, not the model, is labelled as such. While figures are held the model
+    is not called.
 
 ## Accessibility
 

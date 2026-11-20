@@ -3234,7 +3234,7 @@ export function detectTrends(rows, seasonalPattern = null, currency = "USD") {
       trends.push({
         type: "margin",
         direction: delta > 0 ? "improving" : "declining",
-        message: `Margin ${delta > 0 ? "improved" : "fell"} to ${latest.toFixed(1)}% in the latest complete month, vs a ${avgPrior.toFixed(1)}% average over the prior ${prior.length} month(s).`,
+        message: `Cash margin ${delta > 0 ? "improved" : "fell"} to ${latest.toFixed(1)}% in the latest complete month, vs a ${avgPrior.toFixed(1)}% average over the prior ${prior.length} month(s).`,
       });
     }
   }
@@ -3759,7 +3759,10 @@ export function computeMetrics(rows, manual, mode, context = {}) {
   // Elevated, and Critical only when the business could not last 3 months
   // without it. Burning with no usable balance has no score: less data must
   // never read as safer.
-  const riskUnknown = burnGap ? `${missingWords} ${runMissing.length === 1 ? "is" : "are"} missing, so the last 3 months cannot be judged`
+  // While profit is held for VAT, the score (which reads the 3-month margin) is
+  // held with it: a figure built on a held profit is not a reliable result.
+  const riskUnknown = vatHold ? (vatHold.reason === "unanswered" ? "Answer the VAT question in Settings: the score reads the last 3 months' profit, which cannot be stated until then" : "Classify sales and costs for VAT: unclassified amounts could turn the last 3 months' profit into a loss, or the loss into a profit")
+    : burnGap ? `${missingWords} ${runMissing.length === 1 ? "is" : "are"} missing, so the last 3 months cannot be judged`
     : burning && !runwayKnownNow ? "Enter today's cash balance: the business is using more than it takes in, and how long that lasts is not known" : null;
   const minLabel = (burning && runwayKnownNow && burnMonths < 3) || (clientRunway !== null && clientRunway < 3) || directive?.severity === "critical" ? "Critical"
     : largeClient ? "Elevated" : directive?.severity === "warn" ? "Watch" : null;
@@ -3771,7 +3774,7 @@ export function computeMetrics(rows, manual, mode, context = {}) {
   // here is null (not fabricated) until there's real history behind it.
   const trajectory = hasPeriodMonth && basis.length >= 2 ? computeHistoricalTrajectory(basis) : null;
   const historicalConfidence = hasPeriodMonth ? computeHistoricalConfidence(n) : null;
-  const founderNarrative = hasPeriodMonth ? buildFounderNarrative(trajectory, margin) : null;
+  const founderNarrative = hasPeriodMonth ? buildFounderNarrative(trajectory, figuresOpen || vatHold ? null : margin) : null;
 
   // Completeness: a field being 0 here is indistinguishable from it never
   // having been entered (manual inputs all default to 0), so — consistent
@@ -3808,8 +3811,12 @@ export function computeMetrics(rows, manual, mode, context = {}) {
   const burnHeldReason = burnGap ? runwayMissing : burnOpen ? "money in is not confirmed yet" : burnShort ? "there is less than a month of data" : "no revenue/expense data yet";
   const burnTrusted = hasData && !burnOpen && !burnShort && !burnGap;
   const breakEvenConfidence = metricConfidence(burnTrusted, burnHeldReason, n, lastTxnDate);
+  // Profit-basis figures wait for the VAT answer as profit does (vatHold); the
+  // cash figures beside them (cash break-even, burn, runway) do not.
+  const vatHeld = vatHold ? { shown: false, level: null, reason: vatHold.reason === "unanswered" ? "the VAT question is not answered, so profit cannot be stated" : "unclassified sales and costs could turn the profit into a loss, or the loss into a profit" } : null;
+  const operatingBreakEvenConfidence = vatHeld || breakEvenConfidence;
   const proj90Confidence    = metricConfidence(hasData && !figuresOpen, figuresOpen ? "money in is not confirmed yet" : "no revenue/expense data yet", n, lastTxnDate);
-  const hiringCapacityConfidence = metricConfidence(burnTrusted, burnHeldReason, n, lastTxnDate);
+  const hiringCapacityConfidence = vatHeld || metricConfidence(burnTrusted, burnHeldReason, n, lastTxnDate);
   const ltvcacConfidence    = metricConfidence(hasUnitEconomicsData, "enter both CAC and LTV to calculate", n, lastTxnDate);
   const growthConfidence    = metricConfidence(hasData && !figuresOpen, figuresOpen ? "money in is not confirmed yet" : "no revenue data yet", n, lastTxnDate);
 
@@ -3828,7 +3835,7 @@ export function computeMetrics(rows, manual, mode, context = {}) {
     uncategorised, cogsKnown, mktKnown, findings, directive, clientRunway, revenueFall, riskTrends, riskGrowthScore,
     historyMonths, latestRevenue: latest.profitRevenue ?? latest.revenue,
     revenueHigh, expensesLow, profitRange, marginHigh, vatHold, vatPeriod, vatUnclassified, incomeTaxPaid, taxYear, runPRev, runPExp,
-    runwayConfidence, breakEvenConfidence, proj90Confidence,
+    runwayConfidence, breakEvenConfidence, operatingBreakEvenConfidence, proj90Confidence,
     hiringCapacityConfidence, ltvcacConfidence, growthConfidence,
   };
 }
@@ -4025,18 +4032,21 @@ export function computeHistoricalConfidence(monthsOfHistory) {
 // computed streak above; nothing is invented.
 export function buildFounderNarrative(trajectory, currentMargin) {
   if (!trajectory) {
-    return `Margin is ${pc(currentMargin)} this period. Connect more months of history for trend context: one data point isn't a trend.`;
+    // This one is the period's profit margin: not given while profit is held.
+    return currentMargin === null || currentMargin === undefined
+      ? "Connect more months of history for trend context: one data point isn't a trend."
+      : `Profit margin is ${pc(currentMargin)} this period. Connect more months of history for trend context: one data point isn't a trend.`;
   }
   const parts = [];
 
   if (trajectory.margin.streak.length >= 2) {
     const months = trajectory.margin.streak.length + 1;
     const verb = trajectory.margin.direction === "improving" ? "improved" : trajectory.margin.direction === "declining" ? "declined" : "held steady";
-    parts.push(`Margin has ${verb} for ${months} consecutive months, now at ${pc(trajectory.margin.current)}.`);
+    parts.push(`Cash margin has ${verb} for ${months} consecutive months, now at ${pc(trajectory.margin.current)}.`);
   } else {
     // The trajectory's current margin is the latest complete month's, not
     // the selected period's.
-    parts.push(`Margin was ${pc(trajectory.margin.current)} in the latest complete month.`);
+    parts.push(`Cash margin was ${pc(trajectory.margin.current)} in the latest complete month.`);
   }
 
   if (trajectory.revenue.streak.length >= 2) {
@@ -4205,8 +4215,8 @@ export function computeFindings(input) {
   // There is no "hire now" directive: hiring capacity is shown as a figure, and
   // a specific salary is tested with checkAffordability().
   if (safe(margin) > 40 && safe(conv) > 20) found.push({
-    text: "Scale lead acquisition now. Your funnel is ready.",
-    reason: `Margin at ${pc(margin)} and conversion at ${pc(conv)} are both above threshold. This is a deployment window. Increase lead volume 30%; the economics support it.`,
+    text: "Your funnel is converting well. Review where your leads come from.",
+    reason: `Margin at ${pc(margin)} and conversion at ${pc(conv)} are both above threshold. If you plan to spend more on lead generation, test that specific monthly cost with the affordability check first.`,
     severity: "go", rule: "scale_window", targetMetric: "vel",
   });
   else if (velKnown && safe(vel) < 5 && safe(vel) >= 0) found.push({
@@ -4215,9 +4225,9 @@ export function computeFindings(input) {
     severity: "warn", rule: "stalled_growth", targetMetric: "vel",
   });
   if (found.length === 0 || found.every(f => f.severity === "go")) found.push({
-    text: velKnown ? "Maintain trajectory. Increase lead volume by 20%." : "Keep your records current. There is nothing to act on yet.",
+    text: velKnown ? "Keep your current course. Review how your lead generation is performing." : "Keep your records current. There is nothing to act on yet.",
     reason: velKnown
-      ? "Fundamentals are stable. The highest-ROI move at this position is controlled growth through the same funnel that is already converting."
+      ? "Fundamentals are stable and nothing in the last 3 months needs action. Before spending more on growth, test the specific monthly cost with the affordability check."
       : "Nothing in the figures on file needs action, and growth cannot be measured until there are two complete months side by side.",
     severity: "stable", rule: "stable_foundation", targetMetric: velKnown ? "vel" : null,
   });
@@ -4473,20 +4483,434 @@ export function profitTotals(rows) {
   return { rev, exp, net: toCents(rev - exp), label: partialLeftOut > 0 ? "Total, complete months" : "Total", partialLeftOut };
 }
 
-export function buildReportCsv({ title = "Command Ledger financial summary", periodLabel = "", generatedAt = "", rows = [], summary = [], currency = "USD", verification = null } = {}) {
+// `profitHold` (profitHold(m)): while profit cannot be stated, each month's net
+// and margin, and the total's, are written as held, never as numbers.
+export function buildReportCsv({ title = "Command Ledger financial summary", periodLabel = "", generatedAt = "", rows = [], summary = [], currency = "USD", verification = null, profitHold: hold = null } = {}) {
   // Every amount in the file is in one currency, named in its own row and in
   // each money column, so a spreadsheet total can never mix currencies.
   const unit = currency || "no currency chosen";
   const lines = [[title], ["Period", periodLabel], ["Currency", unit], ["Generated", generatedAt],
-    ...(verification ? [["Data status", `${verification.title}: ${verification.detail}`]] : []), [],
+    ...(verification ? [["Data status", `${verification.title}: ${verification.detail}`]] : []),
+    ...(hold ? [["Profit figures held", hold.reason]] : []), [],
     ["Month", `Revenue (${unit})`, `Expenses (${unit})`, `Net (${unit})`, "Margin %"]];
   (rows || []).forEach(r => {
     const net = toCents((r.revenue || 0) - (r.expenses || 0));
-    lines.push([monthLabel(r), r.revenue || 0, r.expenses || 0, net, r.revenue > 0 ? (net / r.revenue) * 100 : ""]);
+    lines.push([monthLabel(r), r.revenue || 0, r.expenses || 0, hold ? "held" : net, hold ? "held" : r.revenue > 0 ? (net / r.revenue) * 100 : ""]);
   });
   const t = profitTotals(rows);
-  lines.push([t.label, t.rev, t.exp, t.net, t.rev > 0 ? (t.net / t.rev) * 100 : ""]);
+  lines.push([t.label, t.rev, t.exp, hold ? "held" : t.net, hold ? "held" : t.rev > 0 ? (t.net / t.rev) * 100 : ""]);
   lines.push([], ["Metric", "Value"]);
-  (summary || []).forEach(([label, value]) => lines.push([label, value]));
+  // A held figure reads "held" in the file: "---" would be escaped as a formula.
+  (summary || []).forEach(([label, value]) => lines.push([label, typeof value === "string" && value.startsWith(HELD_MARK) ? `held${value.slice(HELD_MARK.length)}` : value]));
   return lines.map(cols => cols.map(csvCell).join(",")).join("\r\n");
+}
+
+// ─── REPORTS: HELD PROFIT FIGURES ───────────────────────────────
+// Why profit cannot be stated, or null. The same two holds the tiles use: much
+// of the money in is unconfirmed (figuresOpen), or the VAT question is
+// unanswered or unclassified amounts could flip the result (vatHold). While one
+// applies, every profit-basis figure (net profit, margin, the reserves, profit
+// after reserves, each month's net and margin, and the tax-year reserve
+// estimate, which is a rate on profit) is held: shown as "---" with the reason,
+// never as a number. Revenue, costs and cash figures are not profit and stand.
+// No formula changes here; this only decides what may be shown.
+export const HELD_MARK = "---";
+export function profitHold(m) {
+  if (!m) return null;
+  if (m.figuresOpen) return { kind: "unconfirmed_money", reason: "Much of the money in is not confirmed, so profit cannot be stated yet. Confirm it under Transactions." };
+  if (m.vatHold?.reason === "unanswered") return { kind: "vat_unanswered", reason: "You have not said whether the business is registered for VAT, so profit cannot be stated yet. Answer under Settings." };
+  if (m.vatHold) return { kind: "vat_unclassified", reason: "Unclassified sales and costs could turn the profit into a loss, or the loss into a profit. Classify them under Transactions." };
+  return null;
+}
+
+// The Reports page's key metrics, and the summary block of its CSV. One list,
+// so the page and the file cannot disagree. `m` is computeMetrics() output.
+export function buildReportSummary({ m, currency, cashBalance = null, vatInfo = null, mode = "safe", concentration = null }) {
+  const money = v => fmt(v, currency);
+  const hold = profitHold(m);
+  const held = v => (hold ? HELD_MARK : v);
+  const cashToday = m.cashToday;
+  const riskHeld = m.figuresOpen || m.burnOpen || m.risk?.score === null || m.risk?.score === undefined;
+  return [
+    [m.latest?.month ? `Latest month revenue, ${monthLabel(m.latest)}` : "Latest month revenue", money(m.latest?.revenue)],
+    ...(hold ? [["Profit figures held", hold.reason]] : []),
+    ["Profit margin", held(pc(m.margin))],
+    ["Net profit", held(money(m.totPro))],
+    ["Profit after reserves", held(money(m.free))],
+    ["Cash balance", cashBalance ? `${money(cashBalance.amount)} on ${cashBalance.on}` : "Not entered"],
+    ...(cashToday?.usable && (cashToday.recorded || cashToday.estimated) ? [["Estimated cash today", money(cashToday.amount)]] : []),
+    ["Runway", m.cashFlowPositive ? "No burn" : m.runwayConfidence?.shown ? `${safe(m.burnMonths).toFixed(1)} months` : "Not enough data"],
+    ...(m.totFinIn > 0 ? [["Loans and owner money in", money(m.totFinIn)]] : []),
+    ...(m.totFinOut > 0 ? [["Loan repayments and owner withdrawals", money(m.totFinOut)]] : []),
+    ["Operating break-even, monthly revenue (last 3 months)", m.vatHold ? HELD_MARK : (m.operatingBreakEvenConfidence || m.breakEvenConfidence)?.shown && m.breakEven > 0 ? money(m.breakEven) : "Not enough data"],
+    ["Cash break-even, monthly money in from customers (last 3 months)", m.breakEvenConfidence?.shown && m.cashBreakEven > 0 ? money(m.cashBreakEven) : "Not enough data"],
+    ["Tax reserve and tax paid", hold ? `${HELD_MARK} The tax-year reserve estimate is a rate on profit, which is held.` : taxYearNote(m.taxYear, currency, m.tr)],
+    ...(m.incomeTaxPaid !== 0 && m.incomeTaxPaid !== undefined ? [["Income tax you marked as paid, in this period (not a cost)", money(m.incomeTaxPaid)]] : []),
+    ...(vatInfo?.registered === true && m.vatPeriod ? [["VAT in this period, estimates from payment dates (not a VAT201)", `collected in sales ${money(m.vatPeriod.collected)}, claimable in costs ${money(m.vatPeriod.claimable)}, paid to SARS ${money(m.vatPeriod.paid)}`]] : []),
+    ...(m.profitRange?.atLeast && !hold ? [["Profit is a lowest figure", `It could be up to ${money(m.profitRange.high - m.profitRange.low)} higher once every customer and supplier has a VAT class`]] : []),
+    ...(m.toDate ? [[`Not counted in profit yet, ${m.toDate.label}`, `${money(m.toDate.revenue)} in, ${money(m.toDate.expenses)} out`]] : []),
+    ["90-day revenue projection", m.proj90Confidence?.shown && m.proj90 > 0 ? money(m.proj90) : "Not enough data"],
+    ["Hiring capacity", m.vatHold ? HELD_MARK : m.hiringCapacityConfidence?.shown ? (m.hiringCapacity > 0 ? `${money(m.hiringCapacity)}/month` : "None from profit") : "Not enough data"],
+    ["Risk score", m.vatHold ? HELD_MARK : riskHeld ? "Not known yet" : `${m.risk.score.toFixed(0)}/100 (${m.risk.label})`],
+    ["Growth score", m.growthConfidence?.shown ? `${m.growth.score.toFixed(0)}/100 (${m.growth.label})` : "Not enough data"],
+    ["Largest client share", concentration?.shown ? pc(concentration.largestPct) : "Not enough data"],
+    ["Data confidence", m.dataConfidence ? `${m.dataConfidence.charAt(0).toUpperCase()}${m.dataConfidence.slice(1)}` : "Not known"],
+    ...(m.totUnconfirmedIn > 0 ? [["Money in not yet confirmed, left out of revenue", money(m.totUnconfirmedIn)]] : []),
+    ["Reserve mode", mode === "safe" ? "Safe (30% tax, 20% safety)" : "Growth (25% tax, 10% safety)"],
+  ];
+}
+
+// ─── ADVISOR EVIDENCE (Project 3) ───────────────────────────────
+// What the AI advisor is given: the engine's own figures, each with its label,
+// period, unit, status and reason, plus the engine's ordered findings. The
+// advisor interprets these; it never receives raw transactions and never works
+// out a figure itself. Every value here is one the dashboard already computes,
+// formatted the way the dashboard shows it (`display`), so the server can check
+// that every figure the advisor writes is one of these.
+//   status "available"   measured, with a confidence level where one exists
+//          "estimate"    worked out, not measured (cash today, a lowest figure)
+//          "held"        the engine holds it back until something is answered
+//          "unavailable" there is nothing to measure it from
+// A held or unavailable item has no value: missing is never zero.
+// The founder's question is passed as data, never as an instruction.
+
+// Cost categories that rose in the latest complete month against the average of
+// up to 3 complete neighbouring months before it: by 20% or more and by at
+// least the currency's material move. A description of the months on file, not
+// a judgement: it is evidence for the advisor and decides nothing else.
+export const COST_RISE_PCT = 20;
+const COST_CATEGORIES = [["payroll", "Payroll"], ["rent", "Rent"], ["marketing", "Marketing"], ["software", "Software"], ["cogs", "Cost of sales"]];
+export function costCategoryMovement(rows, currency = "USD") {
+  const tail = consecutiveTail((rows || []).filter(r => !r.partial && r.period_month));
+  if (tail.length < 2) return [];
+  const latest = tail[tail.length - 1];
+  const before = tail.slice(-4, -1);
+  const material = CURRENCY_BY_CODE[currency]?.materialMove ?? CURRENCY_BY_CODE.USD.materialMove;
+  return COST_CATEGORIES.map(([key, label]) => {
+    const now = toCents(latest[key] || 0);
+    const average = toCents(sumCents(before, key) / before.length);
+    const change = toCents(now - average);
+    const pct = average > 0 ? (change / average) * 100 : null;
+    return { key, label, month: latest.month, monthKey: String(latest.period_month).slice(0, 7), latest: now, average, change, pct, months: before.length };
+  }).filter(c => c.change >= material && (c.pct === null ? c.latest > 0 : c.pct >= COST_RISE_PCT));
+}
+
+// Which evidence each engine finding rests on, so the advisor and the screen can
+// show the figures behind it.
+const EVIDENCE_FOR_RULE = {
+  negative_free_cash: ["window_result", "window_revenue", "window_costs", "runway", "cash_today", "cash_balance"],
+  near_break_even: ["window_result", "window_revenue", "break_even_operating", "runway"],
+  low_runway: ["runway", "net_burn", "cash_today", "cash_balance"],
+  runway_below_six: ["runway", "net_burn", "cash_today", "cash_balance"],
+  burning_no_balance: ["net_burn", "cash_balance"],
+  revenue_fall: ["revenue_fall_latest", "revenue_fall_average", "revenue_fall_pct"],
+  client_concentration: ["client_share", "client_runway", "paying_clients"],
+  poor_unit_economics: ["ltv_cac"],
+  weak_conversion: ["conversion"],
+  scale_window: ["period_margin", "conversion"],
+  stalled_growth: ["revenue_change", "latest_revenue"],
+  stable_foundation: ["window_result", "window_margin", "runway"],
+  unconfirmed_money_in: ["unconfirmed_in", "result_if_none_is_revenue", "result_if_all_is_revenue"],
+  vat_answers_needed: ["vat_status"],
+};
+
+const advisorText = (v, n = 400) => (v === null || v === undefined ? null : String(v).slice(0, n));
+
+export function buildAdvisorEvidence(input) {
+  const {
+    m, currency = "USD", today, mode = "safe", periodLabel = "", window = null, verification = null,
+    cashBalance = null, concentration = null, obligations = [], uncheckedBills = [], forwardRunway = null, showForwardRunway = false,
+    affordability = null, question = null, directives = [], sarsQuestionCount = 0, vat = null, history = [], excludedByCurrency = [],
+  } = input;
+  const money = v => fmt(v, currency);
+  const items = [];
+  const add = (id, label, o) => {
+    const status = o.status || "available";
+    const shown = status === "available" || status === "estimate";
+    const value = shown && o.value !== null && o.value !== undefined && Number.isFinite(Number(o.value)) ? toCents(Number(o.value)) : null;
+    const unit = o.unit || "money";
+    const display = !shown ? "Not available"
+      : o.display !== undefined ? o.display
+      : value === null ? "Not available"
+      : unit === "money" ? money(value)
+      : unit === "percent" ? pc(value)
+      : unit === "months" ? `${safe(value).toFixed(1)} months`
+      : unit === "ratio" ? `${safe(value).toFixed(1)}x`
+      : unit === "score" ? `${Math.round(value)}/100`
+      : String(value);
+    items.push({
+      id, label, value, unit, display, period: o.period || null, status,
+      confidence: shown ? o.confidence || null : null,
+      reason: advisorText(o.reason || null), definition: advisorText(o.definition || null),
+    });
+  };
+  const conf = c => (c?.shown ? c.level : null);
+  const heldOr = (c, fallback) => (c && !c.shown ? c.reason : fallback);
+
+  // The months every judgement reads (D1), and what each held.
+  const winMonths = window?.months || [];
+  const windowLabel = winMonths.length ? `${longMonth(winMonths[0].key)} to ${longMonth(winMonths[winMonths.length - 1].key)}` : "the last 3 complete calendar months";
+  const STATUS_WORDS = { complete: "complete", quiet: "confirmed quiet (no transactions)", gap: "missing", partial: "only partly covered", overlap: "may be counted twice", none: "before your data starts" };
+  const perMonthWindow = `a month, averaged over ${m.runMonths === 1 ? "the latest complete month" : `the last ${m.runMonths || 3} complete months`} (${windowLabel})`;
+  const latestLabel = m.latest?.month ? monthLabel(m.latest) : "the latest month";
+  const periodWords = `${periodLabel || "the selected period"}, complete months only`;
+  const profitHeld = m.figuresOpen ? "money in is not confirmed yet"
+    : m.vatHold ? (m.vatHold.reason === "unanswered" ? "whether the business is registered for VAT has not been answered" : "unclassified sales and costs could turn the profit into a loss or the loss into a profit")
+    : null;
+  const burnHeld = m.burnGap ? `${(m.runMissing || []).map(longMonth).join(", ")} missing from the last 3 months`
+    : m.burnOpen ? "money in is not confirmed yet" : m.burnShort ? "less than 28 days of data" : null;
+
+  // Revenue and growth.
+  add("latest_revenue", "Revenue, latest month", { value: m.latest?.revenue, period: latestLabel });
+  add("revenue_change", "Revenue change against the month before", m.velKnown
+    ? { value: m.vel, unit: "percent", display: `${m.vel >= 0 ? "+" : ""}${pc(m.vel)}`, period: latestLabel }
+    : { status: "unavailable", unit: "percent", reason: "there is no complete neighbouring month before the latest to compare with" });
+  add("growth_score", "Growth score", m.growthConfidence?.shown
+    ? { value: m.growth?.score, unit: "score", display: `${Math.round(m.growth?.score || 0)}/100 (${m.growth?.label})`, period: "latest block of complete months against the block before",
+        confidence: conf(m.growthConfidence), definition: "50 is flat. Measured between the average of the latest block of complete months and the block before, only when the last three changes all moved the same way." }
+    : { status: "unavailable", unit: "score", reason: heldOr(m.growthConfidence, "no revenue data yet") });
+  add("projection_90", "90-day revenue projection", m.proj90Confidence?.shown && m.proj90 > 0
+    ? { value: m.proj90, period: "the next 90 days", status: "estimate", confidence: conf(m.proj90Confidence),
+        definition: "A projection from the latest block's average and measured growth. Not a forecast of cash, and never guaranteed." }
+    : { status: "unavailable", reason: heldOr(m.proj90Confidence, "not enough data") });
+  if (m.revenueFall) {
+    const f = m.revenueFall;
+    const before = `the ${f.months === 1 ? "month" : `${f.months} months`} before ${f.month}`;
+    add("revenue_fall_latest", `Revenue in ${f.month}`, { value: f.latest, period: f.month });
+    add("revenue_fall_average", `Average revenue of ${before}`, { value: f.average, period: before });
+    add("revenue_fall_pct", `How far ${f.month} fell below that average`, { value: f.pct, unit: "percent", display: `${f.pct.toFixed(0)}%`, period: f.month });
+  }
+  if (m.seasonalPattern) {
+    const s = m.seasonalPattern;
+    add("seasonal_pattern", `Seasonal pattern for ${s.month}`, { value: s.avgDeltaPct, unit: "percent",
+      display: `${s.avgDeltaPct >= 0 ? "+" : ""}${s.avgDeltaPct.toFixed(1)}% against the average month, ${s.occurrences} years running`, period: "13 months or more of history" });
+  }
+
+  // Profit for the selected period (complete months), and its reserves.
+  const atLeast = !profitHeld && m.profitRange?.atLeast;
+  const profitOpts = (value, extra = {}) => profitHeld ? { status: "held", reason: profitHeld, ...(extra.unit ? { unit: extra.unit } : {}) }
+    : { value, period: periodWords, ...extra,
+        ...(atLeast ? { status: "estimate", reason: `the lowest it could be: up to ${money(m.profitRange.high - m.profitRange.low)} higher once every sale and cost has a VAT class` } : {}) };
+  add("period_revenue", "Revenue, selected period", profitHeld ? { status: "held", reason: profitHeld } : { value: m.totRev, period: periodWords });
+  add("period_costs", "Costs, selected period", profitHeld ? { status: "held", reason: profitHeld } : { value: m.totExp, period: periodWords });
+  add("period_profit", "Net profit before income tax, selected period", profitOpts(m.totPro));
+  add("period_margin", "Profit margin, selected period", profitOpts(m.margin, { unit: "percent" }));
+  add("profit_after_reserves", "Profit after reserves", profitOpts(m.free, {
+    definition: `Command Ledger's own measure, not an accounting term: profit before income tax for the period's complete months, less a ${Math.round(m.tr * 100)}% tax reserve and a ${Math.round(m.sr * 100)}% safety reserve (${mode === "growth" ? "Growth" : "Safe"} mode). A profit figure: not cash, not a bank balance and not money available to spend.` }));
+  if (m.toDate) {
+    const p = `${m.toDate.label}, month not finished`, r = "not counted in profit or margin until the month ends";
+    add("month_in_progress_in", `Money in so far, ${m.toDate.label}`, { value: m.toDate.revenue, period: p, reason: r });
+    add("month_in_progress_out", `Money out so far, ${m.toDate.label}`, { value: m.toDate.expenses, period: p, reason: r });
+  }
+
+  // The last 3 complete calendar months: what every judgement reads.
+  const windowOpts = (value, extra = {}) => burnHeld ? { status: "held", reason: burnHeld, ...(extra.unit ? { unit: extra.unit } : {}) } : { value, period: perMonthWindow, ...extra };
+  // While sales or costs have no VAT class, every profit-basis figure is the
+  // lowest it could be, the last 3 months' as well as the period's.
+  const lowest = atLeast ? { status: "estimate", reason: "the lowest it could be while some sales or costs have no VAT class" } : {};
+  add("window_revenue", "Revenue, monthly average", windowOpts(m.runRev, { definition: "Cash basis: money in from customers as it arrived, less refunds paid." }));
+  add("window_costs", "Costs, monthly average", windowOpts(m.runExp, { definition: "Cash basis: operating money out as it left, less refunds received." }));
+  if (m.runFinOut > 0) add("window_financing_out", "Loan repayments and owner withdrawals, monthly average", windowOpts(m.runFinOut, { definition: "Not a cost, so not in profit, but it leaves the bank, so it counts in burn and runway." }));
+  // The 3-month result and margin are profit: held with profit under VAT.
+  const vatWindowHold = m.vatHold ? { status: "held", reason: profitHeld } : null;
+  add("window_result", "Monthly result (revenue less costs)", vatWindowHold || windowOpts(m.runProfit, { definition: "Profit basis: revenue less costs, a month, before income tax.", ...lowest }));
+  add("window_margin", "Margin, last 3 complete months", vatWindowHold ? { ...vatWindowHold, unit: "percent" } : windowOpts(m.runMargin, { unit: "percent", ...lowest }));
+
+  // Cash.
+  add("cash_balance", "Saved cash balance", cashBalance
+    ? { value: cashBalance.amount, period: `on ${cashBalance.on}`, reason: cashBalance.source === "upload" ? "the closing balance of an uploaded bank file: one account only" : "entered by hand in Command Ledger" }
+    : { status: "unavailable", reason: "no cash balance entered, and no uploaded file had a balance column" });
+  const ct = m.cashToday;
+  if (ct && (ct.recorded || ct.estimated || !ct.usable)) {
+    add("cash_today", "Estimated cash today", ct.usable
+      ? { value: ct.amount, period: `on ${today}`, status: "estimate", reason: cashTodayNote(ct, currency), definition: "Worked out from the saved balance and what is recorded since. An estimate, never a bank balance." }
+      : { status: "unavailable", reason: ct.reason === "too_old" ? `the latest data is ${ct.gapDays} days old` : "at the current burn the last balance may have run out: today's balance is needed" });
+  }
+  add("net_burn", "Net burn", m.cashFlowPositive
+    ? { value: 0, display: "No burn: revenue covers costs, loan repayments and owner withdrawals", period: perMonthWindow }
+    : windowOpts(m.netBurn, { definition: "Costs plus loan repayments and owner withdrawals, less revenue, a month." }));
+  add("runway", "Runway", m.cashFlowPositive
+    ? { value: null, display: "No burn", period: "from estimated cash today at the current burn", reason: "revenue covers what leaves the bank, so cash is not running down" }
+    : m.runwayConfidence?.shown
+      ? { value: m.burnMonths, unit: "months", period: "from estimated cash today at the current burn", confidence: conf(m.runwayConfidence), reason: m.runwayConfidence.reason,
+          definition: "Estimated cash today divided by net burn over the last 3 complete calendar months." }
+      : { status: "held", unit: "months", reason: m.runwayConfidence?.reason || "not enough data" });
+  if (showForwardRunway && forwardRunway?.crossesZero) {
+    add("bills_runway", "When cash runs out with bills on their due dates", { value: forwardRunway.monthsUntilCross, unit: "months",
+      display: `${forwardRunway.crossDate}, ${safe(forwardRunway.monthsUntilCross).toFixed(1)} months from today`, period: "next 12 months", status: "estimate",
+      definition: "Cash today run forward with each known bill on its own date, instead of a flat monthly burn." });
+  }
+  const opConf = m.operatingBreakEvenConfidence || m.breakEvenConfidence;
+  add("break_even_operating", "Operating break-even, monthly revenue", opConf?.shown
+    ? { value: m.breakEven, period: perMonthWindow, confidence: conf(opConf), definition: "The monthly revenue at which there is no operating loss." }
+    : { status: "held", reason: heldOr(opConf, "not enough data") });
+  add("break_even_cash", "Cash break-even, monthly money in", m.breakEvenConfidence?.shown
+    ? { value: m.cashBreakEven, period: perMonthWindow, confidence: conf(m.breakEvenConfidence),
+        definition: "The money in from customers needed for the bank balance to stop falling: costs plus loan repayments and owner withdrawals." }
+    : { status: "held", reason: heldOr(m.breakEvenConfidence, "not enough data") });
+  if (opConf?.shown) {
+    const opGap = toCents(m.runRev - m.breakEven);
+    add("operating_gap", opGap >= 0 ? "Revenue above operating break-even" : "Revenue below operating break-even", { value: Math.abs(opGap), period: perMonthWindow });
+  }
+  if (m.breakEvenConfidence?.shown) {
+    const cashGap = toCents(m.cashIn - m.cashBreakEven);
+    add("cash_gap", cashGap >= 0 ? "Money in above cash break-even" : "Money in below cash break-even", { value: Math.abs(cashGap), period: perMonthWindow });
+  }
+  add("hiring_capacity", "Hiring capacity", m.hiringCapacityConfidence?.shown
+    ? { value: m.hiringCapacity, display: m.hiringCapacity > 0 ? `${money(m.hiringCapacity)} a month` : "None", period: perMonthWindow, confidence: conf(m.hiringCapacityConfidence),
+        definition: "The largest fully-loaded monthly cost the last 3 complete months' profit covers, after loan repayments, owner withdrawals and the safety share. Not a recommendation to hire; a specific cost is tested by the affordability check.", ...lowest }
+    : { status: "held", reason: heldOr(m.hiringCapacityConfidence, "not enough data") });
+
+  // Risk, as the dashboard shows it.
+  const riskHeld = m.figuresOpen || m.burnOpen || m.risk?.score === null || m.risk?.score === undefined;
+  add("risk_score", "Risk score", riskHeld
+    ? { status: "held", unit: "score", reason: m.figuresOpen || m.burnOpen ? "money in is not confirmed yet" : m.risk?.unknown || "not enough data" }
+    : { value: m.risk.score, unit: "score", display: `${Math.round(m.risk.score)}/100 (${m.risk.label})`, period: "last 3 complete calendar months",
+        definition: "Command Ledger's composite of runway, margin and trend; never milder than the most serious finding." });
+
+  // Customers: measured over the last 12 complete months on every view (D7).
+  if (concentration?.shown) {
+    const p = "last 12 complete months";
+    add("client_share", "Largest client's share of revenue", { value: concentration.largestPct, unit: "percent", period: p, confidence: concentration.confidenceLevel === "high" ? "high" : "moderate" });
+    add("top3_share", "Top 3 clients' share of revenue", { value: concentration.top3Pct, unit: "percent", period: p });
+    add("paying_clients", "Distinct paying clients", { value: concentration.distinctPayers, unit: "count", period: p });
+    if (concentration.aggregatorPct > 0.5) add("processor_share", "Revenue through payment processors (customers not named)", { value: concentration.aggregatorPct, unit: "percent", period: p });
+  } else {
+    add("client_share", "Largest client's share of revenue", { status: "unavailable", unit: "percent", reason: concentration?.reason || "payer names could not be read reliably" });
+  }
+  if (m.clientRunway !== null && m.clientRunway !== undefined) {
+    add("client_runway", "Runway without the largest client", m.clientRunway === Infinity
+      ? { value: null, display: "Costs would still be covered without that client", period: "at today's costs" }
+      : { value: m.clientRunway, unit: "months", period: "at today's costs" });
+  }
+
+  // Data quality.
+  add("unconfirmed_in", "Money in nobody has identified", { value: m.totUnconfirmedIn || 0, period: "selected period",
+    reason: "in no figure: not revenue, not a loan, not owner money, until it is identified" });
+  if (m.openRange) {
+    const p = m.burnOpen ? "last 3 complete months, total" : "selected period";
+    add("result_if_none_is_revenue", "Result if none of that money is revenue", { value: m.openRange.low, status: "estimate", period: p });
+    add("result_if_all_is_revenue", "Result if all of that money is revenue", { value: m.openRange.high, status: "estimate", period: p });
+  }
+  add("uncategorised_costs", "Costs not placed in a category", { value: m.uncategorised || 0, period: periodWords,
+    reason: m.uncategorised > 0 ? "while any cost is uncategorised, cost of sales and marketing shares are not known (not zero)" : null });
+  costCategoryMovement(history, currency).forEach(c => {
+    const before = `the ${c.months === 1 ? "month" : `${c.months} months`} before ${c.month}`;
+    add(`cost_rise_${c.key}`, `${c.label} in ${c.month}`, { value: c.latest, period: c.month });
+    add(`cost_rise_${c.key}_before`, `${c.label}, average of ${before}`, { value: c.average, period: before });
+    add(`cost_rise_${c.key}_change`, `${c.label}: increase in ${c.month}`, { value: c.change, period: c.month, ...(c.pct === null ? {} : { reason: `${c.pct.toFixed(0)}% above that average` }) });
+  });
+  // Costs by category over the selected period's complete months, and the two
+  // shares the unit economics panel shows. A share is not known (not zero) while
+  // any cost is uncategorised.
+  const periodRows = (history || []).filter(r => !r.partial);
+  COST_CATEGORIES.forEach(([key, label]) => {
+    const total = sumCents(periodRows, key);
+    if (total > 0) add(`period_${key}`, `${label}, selected period`, { value: total, period: periodWords });
+  });
+  add("cogs_share", "Cost of sales as a share of revenue", profitHeld ? { status: "held", unit: "percent", reason: profitHeld }
+    : m.cogsKnown ? { value: m.cogsRatio, unit: "percent", period: periodWords } : { status: "unavailable", unit: "percent", reason: "some costs are not categorised, so this is not known" });
+  add("marketing_share", "Marketing as a share of revenue", profitHeld ? { status: "held", unit: "percent", reason: profitHeld }
+    : m.mktKnown ? { value: m.mktRatio, unit: "percent", period: periodWords } : { status: "unavailable", unit: "percent", reason: "some costs are not categorised, so this is not known" });
+  // Money that moved but is neither revenue nor a cost, over the selected period.
+  const kept = [["financing_in", "Loans received and money the owner put in", m.totFinIn, "not revenue"],
+    ["financing_out", "Loan repayments and money the owner took out", m.totFinOut, "not a cost, so not in profit, but counted in burn and runway"],
+    ["transfers_in", "Transfers in from the business's own accounts", m.totTrIn, "counted in nothing"],
+    ["transfers_out", "Transfers out to the business's own accounts", m.totTrOut, "counted in nothing"],
+    ["refunds_paid", "Refunds paid to customers", m.totRefOut, "already taken off revenue"],
+    ["refunds_received", "Refunds received from suppliers", m.totRefIn, "already taken off costs"]];
+  kept.forEach(([id, label, v, reason]) => { if (v > 0) add(id, label, { value: v, period: "selected period", reason }); });
+  // The engine's own trend sentences and its account of the longer history,
+  // passed as written: every figure in them is the engine's.
+  (m.trends || []).slice(0, 6).forEach((t, i) => add(`trend_${i + 1}`, `Trend: ${t.type}`, { value: null, unit: "text", display: advisorText(t.message, 300), period: "latest complete month against the months before it" }));
+  if (m.founderNarrative) add("history_narrative", "Longer history", { value: null, unit: "text", display: advisorText(m.founderNarrative, 400), period: "every complete month on file" });
+  if (m.hasUnitEconomicsData && m.ltvcacConfidence?.shown) add("ltv_cac", "LTV:CAC", { value: m.ltvcac, unit: "ratio", period: "as entered by hand", confidence: conf(m.ltvcacConfidence) });
+  if (m.hasConversionData) add("conversion", "Lead conversion", { value: m.conv, unit: "percent", period: "as entered by hand" });
+
+  // Tax and VAT: the app's estimates from bank data, never a SARS calculation.
+  add("tax_year", "Tax year to date", m.taxYear?.available
+    ? { value: null, display: taxYearNote(m.taxYear, currency, m.tr), status: "estimate", period: "from the first month of the tax year to the latest complete month", definition: "An estimate from bank data, not a SARS calculation." }
+    : { status: "unavailable", reason: m.taxYear?.reason || "not worked out" });
+  const vatApplies = !!vat?.applies;
+  add("vat_status", "VAT registration", !vatApplies ? { value: null, display: "Not asked: VAT applies to rand businesses only" }
+    : vat.registered === null || vat.registered === undefined ? { value: null, display: "Not answered: profit figures wait for it", reason: "whether the business is registered for VAT has not been answered" }
+    : vat.registered ? { value: null, display: `Registered${vat.from ? ` from ${vat.from}` : ""}` } : { value: null, display: "Not registered" });
+  if (vatApplies && vat.registered === true && m.vatPeriod) {
+    const est = "estimated from payment dates, not a VAT201 return";
+    add("vat_collected", "VAT in sales", { value: m.vatPeriod.collected, status: "estimate", period: periodWords, reason: est });
+    add("vat_claimable", "VAT claimable in costs", { value: m.vatPeriod.claimable, status: "estimate", period: periodWords, reason: est });
+    add("vat_paid", "VAT paid to SARS", { value: m.vatPeriod.paid, period: periodWords, reason: "payments marked as VAT" });
+  }
+  if (m.incomeTaxPaid) add("income_tax_paid", "Income tax marked as paid", { value: m.incomeTaxPaid, period: "selected period", reason: "not a cost; the tax reserve provides for it; still counted in burn" });
+  if (sarsQuestionCount > 0) add("sars_unanswered", "SARS payments not yet answered", { value: sarsQuestionCount, unit: "count", reason: "each stays a cost until it is answered" });
+
+  // The engine's own judgement, most serious first. The advisor explains these;
+  // it does not replace them.
+  const have = new Set(items.map(i => i.id));
+  const findings = (m.findings || []).map((f, i) => ({
+    id: `F${i + 1}`, rule: f.rule, severity: f.severity, text: advisorText(f.text), reason: advisorText(f.reason, 600),
+    evidence: (EVIDENCE_FOR_RULE[f.rule] || []).filter(id => have.has(id)),
+  }));
+
+  // What holds conclusions back.
+  const holds = [];
+  if (m.vatHold) holds.push({ id: "vat", says: profitHeld });
+  if (m.figuresOpen) holds.push({ id: "unconfirmed_money", says: `${money(m.openRange?.unidentified ?? m.totUnconfirmedIn)} of money in is not identified: profit, runway and risk cannot be judged until it is` });
+  if (m.burnGap) holds.push({ id: "missing_months", says: `${burnHeld}: burn, runway, hiring capacity, break-even and the risk score wait for those statements` });
+  else if (m.burnOpen && !m.figuresOpen) holds.push({ id: "unconfirmed_money", says: "money in over the last 3 months is not confirmed: burn and runway wait for it" });
+  if (m.burnShort) holds.push({ id: "short_history", says: "less than 28 days of data: burn cannot be measured yet" });
+  if (ct && !ct.usable) holds.push({ id: "cash_today", says: "today's cash balance is needed before runway can be stated" });
+
+  // Bills: committed costs, and due dates nothing can confirm were paid.
+  const bills = (obligations || []).slice(0, 10).map(o => {
+    const unchecked = (uncheckedBills || []).find(u => (u.id && u.id === o.id) || u.normalized_key === o.normalized_key);
+    return { label: advisorText(o.label, 80), cadence: o.cadence, amount: money(o.typical_amount), nextExpected: o.next_expected || null,
+      status: unchecked ? "cannot check yet: no statement is confirmed to cover the due date, so it is not called missed" : "on schedule" };
+  });
+
+  const result = affordability?.result || null;
+  const moneyOrNull = v => (v === undefined || v === null ? null : money(v));
+  return {
+    contract: 2,
+    currency,
+    asOf: today,
+    selectedPeriod: periodLabel || null,
+    window: {
+      label: windowLabel,
+      months: winMonths.map(w => ({ month: longMonth(w.key), status: STATUS_WORDS[w.status] || w.status })),
+      note: "Every judgement, the risk score, runway, break-even and hiring capacity read these months, whatever period is selected.",
+    },
+    dataQuality: {
+      verification: verification ? { status: verification.status, notReconciledFiles: verification.notReconciledFiles ?? null, totalFiles: verification.totalFiles ?? null } : null,
+      partialMonths: m.partialMonths || 0,
+      otherCurrencyRows: (excludedByCurrency || []).reduce((s, e) => s + (e.count || 0), 0),
+      dataMonths: m.n || 0,
+    },
+    holds,
+    items,
+    findings,
+    risk: riskHeld ? { label: null, held: items.find(i => i.id === "risk_score")?.reason || "not scored" } : { label: m.risk.label, score: Math.round(m.risk.score) },
+    affordability: affordability ? {
+      monthlyCost: money(affordability.monthlyCost),
+      status: result?.status || "held",
+      reason: result?.reason || null,
+      message: advisorText(result?.message, 600),
+      floor: moneyOrNull(result?.floor),
+      lowestBalance: moneyOrNull(result?.lowest),
+      afterTwelfthPayment: moneyOrNull(result?.afterTwelfth),
+      definition: "12 monthly payments tested against cash today, the last 3 complete months and known bills on their dates. Affordable only if cash never falls below the safety floor: one month of everything that left the bank in those months plus this cost.",
+    } : null,
+    bills,
+    decisions: (directives || []).slice(0, 3).map(d => ({
+      directive: advisorText(d.directive_text, 200), issuedOn: d.issued_at ? String(d.issued_at).slice(0, 10) : null,
+      founderResponse: d.action_taken || "no response yet", founderNote: advisorText(d.founder_note, 300),
+      outcome: advisorText(describeDirectiveOutcome(d, d.currency || currency)?.message, 300),
+    })),
+    question: question && String(question).trim() ? advisorText(String(question).trim(), 500) : null,
+    notProvided: [
+      "Individual transactions and their descriptions (only totals are sent)",
+      "Any bank, accounting system or SARS record: Command Ledger has no connection to them",
+      ...(affordability ? [] : ["An affordability check: no specific cost was tested"]),
+    ],
+  };
 }

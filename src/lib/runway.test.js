@@ -586,7 +586,12 @@ describe("How the app uses it", () => {
   });
 
   it("tells the advisor what runway is measured from", () => {
-    expect(app).toMatch(/cashToday:/);
+    // Project 3: estimated cash today reaches the advisor as an evidence item
+    // with its working (buildAdvisorEvidence); the legacy brief still reads it.
+    const fin = readFileSync(new URL("./financials.js", import.meta.url), "utf8");
+    expect(app).toMatch(/buildAdvisorEvidence\(\{/);
+    expect(fin).toMatch(/add\("cash_today", "Estimated cash today"/);
+    expect(fin).toMatch(/reason: cashTodayNote\(ct, currency\)/);
     expect(brief).toMatch(/cashToday/);
     expect(brief).not.toMatch(/smoothed/);
   });

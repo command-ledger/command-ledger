@@ -626,21 +626,27 @@ describe("D9 AI wording never claims bank confirmation", () => {
 describe("D10 every AI brief carries the app's own statement on where its figures come from", () => {
   const STATEMENT = "These figures come from your uploaded statements. Command Ledger has no bank connection, so no bank or other institution has independently confirmed them.";
   const app = readFileSync(new URL("../App.jsx", import.meta.url), "utf8");
-  const start = app.indexOf("function AIRecommendation");
+  // The brief renderer (Project 3): from its constants to the end of AdvisorBrief.
+  const start = app.indexOf("const BRIEF_STATUS");
   const source = app.slice(start, app.indexOf("// ─── METRIC CONFIDENCE", start));
-  const render = async rec => {
+  const render = async (rec, evidence = null) => {
     const esbuild = await import("esbuild"), R = await import("react"), S = await import("react-dom/server");
     const React = R.default || R;
     const code = (esbuild.default || esbuild).transformSync(source, { loader: "jsx", jsx: "transform" }).code;
-    const AIRecommendation = new Function("React", "C", "RISK_CHIP_COLOR", `${code}\nreturn AIRecommendation;`)(React, { text3: "#888", platinum: "#ccc" }, {});
-    return (S.default || S).renderToStaticMarkup(React.createElement(AIRecommendation, { rec }));
+    const SeverityTag = ({ label }) => React.createElement("span", null, label);
+    const AdvisorBrief = new Function("React", "C", "RISK_CHIP_COLOR", "SeverityTag", "capitalize", `${code}\nreturn AdvisorBrief;`)(
+      React, { text3: "#888", platinum: "#ccc" }, {}, SeverityTag, s => (s ? s[0].toUpperCase() + s.slice(1) : ""));
+    return (S.default || S).renderToStaticMarkup(React.createElement(AdvisorBrief, { brief: rec, evidence }));
   };
-  const brief = { whatHappened: "Your balance is confirmed by Absa.", whyItHappened: "Cash fell.", businessImpact: "Less room.", recommendedAction: "Cut costs.",
-    expectedOutcome: "Longer runway.", riskLevel: "Watch", confidenceScore: 70, confidenceReason: "6 months of data" };
+  // A brief as the contract returns it; its text is written as if by a model.
+  const toBrief = text => ({ contract: 2, source: "model", model: "claude-opus-5-5", status: "action_needed", risk: { label: "Watch" }, summary: text.summary,
+    findings: [{ title: "Cash", observation: text.observation, evidence: [], interpretation: "Cash fell.", hypothesis: null, impact: "Less room.", nextStep: "Cut costs.", confidence: "moderate", engineFinding: null }],
+    answer: null, limitations: [], checks: { removed: [], adjusted: 0, fallbackReason: null } });
+  const brief = { summary: "Your balance is confirmed by Absa.", observation: "Cash fell over June." };
 
   for (const status of ["verified", "not_reconciled"]) {
     it(`shows it under a brief that says "confirmed by Absa", files ${status}`, async () => {
-      const html = await render(guardVerificationClaims(brief, status));
+      const html = await render(toBrief(guardVerificationClaims(brief, status)));
       expect(html).toContain("confirmed by Absa");
       expect(html).toContain(STATEMENT);
       expect(html.indexOf(STATEMENT)).toBeGreaterThan(html.indexOf("confirmed by Absa"));
@@ -648,15 +654,17 @@ describe("D10 every AI brief carries the app's own statement on where its figure
   }
 
   it("shows it whatever the brief contains, even nothing", async () => {
-    expect(await render({})).toContain(STATEMENT);
-    expect(await render({ riskLevel: "Critical", confidenceReason: "These figures are confirmed by your bank." })).toContain(STATEMENT);
+    const empty = { contract: 2, source: "engine", model: null, status: "held", risk: {}, summary: "", findings: [], answer: null, limitations: [], checks: {} };
+    expect(await render(empty)).toContain(STATEMENT);
+    expect(await render({ ...empty, source: "model", summary: "These figures are confirmed by your bank." })).toContain(STATEMENT);
   });
 
   it("is written by the app, and every brief on screen goes through it", () => {
     expect(source).toContain(STATEMENT);
     expect(app.split(STATEMENT).length - 1).toBe(1);
-    expect(app.match(/<AIRecommendation\b/g)).toHaveLength(1);
-    expect(app.replace(source, "").match(/whatHappened|recommendedAction/g)).toBeNull();
+    expect(app.match(/<AdvisorBrief\b/g)).toHaveLength(1);
+    expect(app.match(/function AIRecommendation|<AIRecommendation\b/g)).toBeNull();
+    expect(app.replace(source, "").match(/\.observation\b|\.nextStep\b|\.hypothesis\b/g)).toBeNull();
   });
 });
 
@@ -818,7 +826,7 @@ describe("The upload path in App.jsx", () => {
   it("shows the warning on every workspace page, and in the report", () => {
     expect(app).toMatch(/<VerificationNotice info=\{verificationInfo\}/);
     expect(app).toMatch(/buildReportCsv\(\{[^}]*verification: verificationInfo/);
-    expect(app).toMatch(/dataVerification: verification/);
+    expect(app).toMatch(/buildAdvisorEvidence\(\{[^}]*\bverification\b/);
   });
 
   it("has no session-only figures for an unsaved file", () => {
@@ -899,21 +907,30 @@ describe("What the live upload found", () => {
   const advisor = app.slice(app.indexOf("function AdvisorSection"), app.indexOf("function ReportsSection"));
   const settings = app.slice(app.indexOf("function SettingsSection"), app.indexOf('<Panel title="Plan and billing">'));
 
-  it("sends the advisor nothing while figures are on hold", () => {
+  // Project 3: the model is still never sent anything while figures are on hold
+  // (unconfirmed money in, or the VAT question): the browser gives the engine's
+  // own reading of the hold instead, and the server refuses to call the model
+  // for the same holds (advisor.test.js, adviseFromEvidence).
+  it("sends the model nothing while figures are on hold", () => {
     expect(app.match(/functions\.invoke\("analyze-finances"/g)).toHaveLength(1);
-    expect(app).toMatch(/const runAI = async \(\) => \{\s*(?:\/\/[^\n]*\s*)*if \(figuresOpen \|\| m\.vatHold\) return;/); // and while profit waits for the VAT answers
+    const run = app.slice(app.indexOf("const runAI = async () => {"), app.indexOf("// ── Presentation helpers"));
+    const hold = run.indexOf("if (checked.evidence.holds.some(h => MODEL_HOLDS.has(h.id))) {");
+    expect(hold).toBeGreaterThan(-1);
+    expect(run.slice(hold, run.indexOf("} else {", hold))).toMatch(/^[^]*setAiRec\(engineBrief\(checked\.evidence/);
+    expect(run.indexOf('functions.invoke("analyze-finances"')).toBeGreaterThan(run.indexOf("} else {", hold));
   });
 
-  it("closes the advisor button while figures are on hold, and says why", () => {
-    expect(advisor).toMatch(/disabled=\{aiLoad \|\| !m\.hasData \|\| m\.figuresOpen \|\| !!m\.vatHold\}/);
-    expect(advisor).toMatch(/Confirm your money in first/);
+  it("says why the AI advisor waits while figures are on hold, and hides a brief written before the hold", () => {
+    expect(advisor).toMatch(/The AI advisor waits until you confirm your money in/);
     expect(advisor).toMatch(/fmt\(m\.totUnconfirmedIn, cur\)/);
+    expect(advisor).toMatch(/const shown = aiRec && !\(held && aiRec\.source === "model"\) \? aiRec : null;/);
+    expect(advisor).toMatch(/<AdvisorBrief brief=\{shown\}/);
   });
 
   it("does not leave an older brief on screen once figures go on hold", () => {
     const hold = advisor.indexOf("m.figuresOpen ? (");
     expect(hold).toBeGreaterThan(-1);
-    expect(hold).toBeLessThan(advisor.indexOf("aiRec ? ("));
+    expect(hold).toBeLessThan(advisor.indexOf("shown ? ("));
   });
 
   it("puts the dropdown back and says so when the currency prompt is declined", () => {

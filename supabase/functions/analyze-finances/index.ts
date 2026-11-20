@@ -5,6 +5,7 @@ declare module "https://deno.land/std@0.168.0/http/server.ts" {
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts"
 import { createClient } from "jsr:@supabase/supabase-js@2"
 import { guardVerificationClaims, verificationPromptLine, VERIFICATION_RULE } from "../_shared/verification-brief.ts"
+import { adviseFromEvidence, sanitizeEvidence, ADVISOR_CONTRACT } from "../_shared/advisor-contract.ts"
 
 declare const Deno: {
   env: {
@@ -96,6 +97,27 @@ serve(async (req: Request) => {
     }
 
     const body = await req.json()
+
+    // The evidence contract (Project 3): the browser sends the engine's figures
+    // with their periods, statuses and findings; the reply is checked in
+    // _shared/advisor-contract.ts before it is returned, and replaced by the
+    // engine's own reading, labelled, when it fails. Status and risk are the
+    // engine's. Older browsers still send the legacy body handled below.
+    if (body?.contract === ADVISOR_CONTRACT) {
+      const checked = sanitizeEvidence(body.evidence)
+      if (!checked.ok) {
+        return new Response(JSON.stringify({ error: checked.error }), { headers: { ...corsHeaders, "Content-Type": "application/json" }, status: 400 })
+      }
+      const { brief, call } = await adviseFromEvidence({ evidence: checked.evidence, fetchImpl: fetch, credentials: { apiKey: ANTHROPIC_API_KEY } })
+      if (call && !call.ok) console.warn("Advisor model call failed", { kind: call.kind, status: call.status ?? null })
+      if (brief.source === "model" && (brief.checks.removed.length > 0 || brief.checks.adjusted > 0)) {
+        console.warn("Advisor reply adjusted by checks", { removed: brief.checks.removed.map(r => r.reason), adjusted: brief.checks.adjusted })
+      }
+      if (brief.source === "engine" && brief.checks.fallbackReason && call?.ok) {
+        console.warn("Advisor reply replaced by the engine's reading", { reason: brief.checks.fallbackReason, removed: brief.checks.removed.map(r => r.reason) })
+      }
+      return new Response(JSON.stringify({ brief }), { headers: { ...corsHeaders, "Content-Type": "application/json" }, status: 200 })
+    }
 
     const {
       monthlyRevenue, totalRevenue, totalExpenses, netProfit,

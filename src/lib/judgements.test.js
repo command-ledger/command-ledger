@@ -461,3 +461,26 @@ describe("growth and the projection do not reward volatility", () => {
     expect(m.proj90).toBe(10000);
   });
 });
+
+// Founder's decision of 20 November 2026: Command Ledger recommends no extra
+// spending without affordability evidence. The calm-state directive said
+// "Increase lead volume by 20%" and the scale window "Increase lead volume 30%";
+// both now ask the founder to review lead generation and to test any growth
+// cost with the affordability check. Rule names are kept for the decision log.
+describe("no finding recommends extra spending the affordability check has not tested", () => {
+  const calm = { currency: "ZAR", months: 6, runwayKnown: true, cashFlowPositive: true, runProfit: 30000, runRev: 120000, runMonths: 3, velKnown: true, vel: 6 };
+  it("stable foundation: review lead generation; any growth cost goes through the check", async () => {
+    const { computeFindings } = await import("./financials.js");
+    const [f] = computeFindings(calm);
+    expect(f).toMatchObject({ rule: "stable_foundation", severity: "stable", text: "Keep your current course. Review how your lead generation is performing." });
+    expect(f.reason).toMatch(/test the specific monthly cost with the affordability check/);
+    expect(`${f.text} ${f.reason}`).not.toMatch(/increase lead volume|\d+%/i);
+  });
+  it("scale window: no instruction to spend; the same test first", async () => {
+    const { computeFindings } = await import("./financials.js");
+    const f = computeFindings({ ...calm, margin: 45, conv: 25 }).find(x => x.rule === "scale_window");
+    expect(f).toMatchObject({ severity: "go", text: "Your funnel is converting well. Review where your leads come from." });
+    expect(f.reason).toMatch(/test that specific monthly cost with the affordability check first/);
+    expect(f.reason).not.toMatch(/increase lead volume|deployment window/i);
+  });
+});
