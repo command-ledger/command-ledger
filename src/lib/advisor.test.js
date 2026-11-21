@@ -301,6 +301,33 @@ describe("found in the real-model run: negation and the name of a figure", () =>
   });
 });
 
+// Found in the first live brief, 21 November 2026 (written by hand from it).
+describe("found in the first live brief", () => {
+  const calm = () => clean(built.healthy.evidence);
+  const point = over => finding({ title: "Stable", observation: "The monthly result is R 32 000.", evidence: ["window_result"], engineFinding: "F1",
+    hypothesis: null, interpretation: "The business pays its way.", impact: "Room to plan.", nextStep: "Keep records current.", ...over });
+  it("'test whether you can afford it' asks a question and stands; 'you can afford it' is still removed", () => {
+    const asks = validateAdvisorReply(reply({ summary: "Stable." }, [point({ nextStep: "Before any new cost, test whether you can afford it with the affordability check." })]), calm());
+    expect(asks.checks.removed).toEqual([]);
+    const claims = validateAdvisorReply(reply({ summary: "Stable." }, [point({ nextStep: "You can afford a new hire." })]), calm());
+    expect(claims.source).toBe("engine");
+  });
+  it("an answered VAT question is not called open, in a point or in the limitations", () => {
+    const ev = calm();
+    expect(item(ev, "vat_status").display).toBe("Not registered");
+    const b = validateAdvisorReply(reply({ summary: "Stable.", limitations: ["The VAT registration question is still awaiting your response.", "Only totals were provided."] },
+      [point(), point({ title: "VAT", interpretation: "The VAT question has not been answered yet." })]), ev);
+    expect(b.findings).toHaveLength(1);
+    expect(b.checks.removed[0].reason).toMatch(/VAT question is unanswered, but it has been answered/);
+    expect(b.limitations).toEqual(["Only totals were provided."]);
+  });
+  it("past directives reach the model marked as possibly resolved", () => {
+    const ev = JSON.parse(JSON.stringify(built.healthy.evidence));
+    ev.decisions = [{ directive: "Tell us whether the business is registered for VAT.", issuedOn: "2026-11-21", founderResponse: "nothing recorded in the decision log", founderNote: null, outcome: null }];
+    expect(clean(ev).decisions[0].status).toMatch(/may already be resolved/);
+  });
+});
+
 describe("the reply as a whole", () => {
   it("is replaced by the engine's reading when it passes over the most serious finding", () => {
     const ev = clean(built.profit_cash_constrained.evidence);

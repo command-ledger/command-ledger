@@ -4903,7 +4903,10 @@ export function buildAdvisorEvidence(input) {
     bills,
     decisions: (directives || []).slice(0, 3).map(d => ({
       directive: advisorText(d.directive_text, 200), issuedOn: d.issued_at ? String(d.issued_at).slice(0, 10) : null,
-      founderResponse: d.action_taken || "no response yet", founderNote: advisorText(d.founder_note, 300),
+      founderResponse: d.action_taken || "nothing recorded in the decision log", founderNote: advisorText(d.founder_note, 300),
+      // A past directive may already be resolved (an answered VAT question once
+      // read as still open): the current position is in the items and findings.
+      status: "past directive: it may already be resolved; the current position is in items and findings",
       outcome: advisorText(describeDirectiveOutcome(d, d.currency || currency)?.message, 300),
     })),
     question: question && String(question).trim() ? advisorText(String(question).trim(), 500) : null,

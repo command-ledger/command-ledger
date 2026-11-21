@@ -995,3 +995,33 @@ describe("E. Duplicates", () => {
     expect(check(rows("Date,Description,Amount,Balance", "2026-05-02,Client payment,500.00,1500.00", "2026-05-03,Rent,-200.00,1300.00")).reconciliationStatus).toBe("verified");
   });
 });
+
+// Found live on 20 November 2026: the founder uploaded a file, saw it reviewed,
+// moved to the Dashboard and lost it. Save waited at the foot of a long review,
+// greyed out with no reason (the file stated no currency and no account was
+// named), and leaving the page discarded the file silently. These read the
+// source, as the checks above do, because the wiring is the rule.
+describe("an unsaved file cannot be lost without warning", () => {
+  const app = readFileSync(new URL("../App.jsx", import.meta.url), "utf8");
+  const review = app.slice(app.indexOf("function ImportReview"), app.indexOf("// ─── DATA UPLOAD"));
+  it("the review says it is not saved, and takes the founder to Save", () => {
+    expect(review).toMatch(/<strong>Not saved yet\.<\/strong> Check the review, name the bank account, then click Save this import\. Leaving this page discards the file\./);
+    expect(review).toMatch(/onClick=\{goToSave\}>Go to Save/);
+  });
+  it("a greyed-out Save always says what it waits for", () => {
+    expect(review).toMatch(/askCurrency \? "choose this file's currency above\."/);
+    expect(review).toMatch(/!label \? "type the name of the bank account this file is from/);
+    expect(review).toMatch(/!match \? "checking for duplicates\.\.\."/);
+    expect(review).toMatch(/Nothing is saved yet\. To save, \$\{saveBlock\}/);
+  });
+  it("the save bar stays in view while the review is scrolled", () => {
+    expect(app).toMatch(/\.import-review-actions\{[^}]*position:sticky;bottom:0;/);
+  });
+  it("leaving the page or signing out with an unsaved file asks first, and the browser warns on close", () => {
+    expect(app).toMatch(/const pending = !!\(review && review\.report\?\.canSave\);/);
+    expect(app).toMatch(/onPending=\{ctx\.setPendingImport\}/);
+    expect(app).toMatch(/if \(id !== "transactions" && !leaveUnsaved\(\)\) return;/);
+    expect(app).toMatch(/const logout = \(\) => \{ if \(!leaveUnsaved\(\)\) return;/);
+    expect(app).toMatch(/window\.addEventListener\("beforeunload", warn\)/);
+  });
+});

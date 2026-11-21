@@ -614,7 +614,7 @@ a{color:inherit;}
 .import-review-sub{font-size:14.5px;font-weight:600;color:var(--text);margin:4px 0 6px;}
 .import-review-file{word-break:break-word;}
 .import-review-list{margin:8px 0 0;padding-left:18px;font-size:13.5px;color:var(--text-2);line-height:1.6;}
-.import-review-actions{display:flex;gap:10px;flex-wrap:wrap;}
+.import-review-actions{display:flex;gap:10px;flex-wrap:wrap;align-items:center;position:sticky;bottom:0;z-index:2;background:var(--panel);padding:12px 0;border-top:1px solid var(--line);}
 .batch-meta{font-family:var(--f-num);font-size:12px;color:var(--text-3);margin-top:3px;line-height:1.5;}
 .input-grid-4{grid-template-columns:repeat(4,minmax(0,1fr));}
 .details-summary{cursor:pointer;font-size:14.5px;color:var(--text-2);line-height:1.5;}
@@ -1177,6 +1177,20 @@ function ImportReview({ review, accounts, onCompare, onCurrency, onSave, onCance
   const stillOpen = report.unconfirmedIn - (rest ? restTotal : 0) - report.largestMoneyIn.filter(g => g.needsDecision && choiceOf(g)).reduce((s, g) => s + g.total, 0);
   const decisions = [...decided.map(g => ({ description: g.description, kind: choiceOf(g) })), ...(rest ? report.otherUnconfirmed.map(g => ({ description: g.description, kind: rest })) : [])];
   const ready = report.canSave && !askCurrency && !!label && !!match && !busy;
+  // Why Save is not available yet, in the founder's words. A greyed-out button
+  // with no reason once read as "there is no save button", and files were lost.
+  const saveBlock = !report.canSave ? null
+    : askCurrency ? "choose this file's currency above."
+    : !label ? "type the name of the bank account this file is from, for example Business cheque."
+    : matchErr ? "your saved transactions could not be checked for duplicates. Try again."
+    : !match ? "checking for duplicates..."
+    : null;
+  const accountRef = useRef(null);
+  const saveRef = useRef(null);
+  const goToSave = () => {
+    if (!label && accountRef.current) { accountRef.current.scrollIntoView({ block: "center" }); accountRef.current.focus(); }
+    else saveRef.current?.scrollIntoView({ block: "center" });
+  };
 
   return (
     <div className="import-review">
@@ -1184,6 +1198,13 @@ function ImportReview({ review, accounts, onCompare, onCurrency, onSave, onCance
         <h3 className="panel-title" ref={headRef} tabIndex={-1}>Review this file before saving</h3>
         <SeverityTag level={tag.level} label={accepted ? tag.label : "Rejected"}/>
       </div>
+
+      {report.canSave && (
+        <div className="d-alert warn" role="status" style={{ justifyContent:"space-between", alignItems:"center", flexWrap:"wrap" }}>
+          <span><strong>Not saved yet.</strong> Check the review, name the bank account, then click Save this import. Leaving this page discards the file.</span>
+          <button type="button" className="panel-link" onClick={goToSave}>Go to Save<Icon name="arrow" size={14}/></button>
+        </div>
+      )}
 
       {!accepted && (
         <div className="d-alert crit" role="alert" style={{ flexDirection:"column", gap:6 }}>
@@ -1312,7 +1333,7 @@ function ImportReview({ review, accounts, onCompare, onCurrency, onSave, onCance
       {report.canSave && (
         <div className="input-group" style={{ marginBottom:0 }}>
           <label className="di-lbl" htmlFor="review-account">Which bank account is this file from?</label>
-          <input id="review-account" className="di" list="review-accounts" maxLength={120} placeholder="For example, Business cheque" value={account} onChange={e => setAccount(e.target.value)}/>
+          <input id="review-account" ref={accountRef} className="di" list="review-accounts" maxLength={120} placeholder="For example, Business cheque" value={account} onChange={e => setAccount(e.target.value)}/>
           <datalist id="review-accounts">{accounts.map(a => <option key={a} value={a}/>)}</datalist>
           <p className="panel-copy" style={{ marginTop:6 }}>The same fee on two accounts is two fees, so duplicates are matched within one account.</p>
         </div>
@@ -1330,19 +1351,19 @@ function ImportReview({ review, accounts, onCompare, onCurrency, onSave, onCance
 
       <div className="import-review-actions">
         {report.canSave && (
-          <button className="btn btn-primary btn-md" disabled={!ready} onClick={() => onSave({ report, accountLabel: label, decisions, source: review.source, note })}>
+          <button ref={saveRef} className="btn btn-primary btn-md" disabled={!ready} onClick={() => onSave({ report, accountLabel: label, decisions, source: review.source, note })}>
             {busy ? "Saving..." : "Save this import"}
           </button>
         )}
         <button className="btn btn-outline btn-md" disabled={busy} onClick={onCancel}>{report.canSave ? "Cancel" : "Choose another file"}</button>
+        {report.canSave && <span className="panel-copy" role="status" style={{ margin:0 }}>{saveBlock ? `Nothing is saved yet. To save, ${saveBlock}` : "Nothing is saved yet. Ready to save."}</span>}
       </div>
-      {report.canSave && <p className="panel-copy">Nothing has been saved yet.</p>}
     </div>
   );
 }
 
 // ─── DATA UPLOAD ──────────────────────────────────────────────
-function DataUpload({ hasData, currency, rules, accounts, onCompare, onSave, busy }) {
+function DataUpload({ hasData, currency, rules, accounts, onCompare, onSave, busy, onPending }) {
   const [drag,    setDrag]    = useState(false);
   const [parsing, setParsing] = useState(false);
   const [err,     setErr]     = useState("");
@@ -1358,6 +1379,10 @@ function DataUpload({ hasData, currency, rules, accounts, onCompare, onSave, bus
   // The file on the review screen. Nothing is stored until it is confirmed.
   const [review,  setReview]  = useState(null);
   const fileRef = useRef(null);
+  // A file on the review screen is not saved: the Dashboard asks before leaving.
+  const pending = !!(review && review.report?.canSave);
+  useEffect(() => { onPending?.(pending); }, [pending, onPending]);
+  useEffect(() => () => onPending?.(false), [onPending]);
 
   const inspect = (text, source, code, note, otherSheets, askCurrency = false) => {
     const report = verifyImport(text, { currency: code, fileName: source, rules, otherSheets });
@@ -2500,10 +2525,25 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
 
   // ── Shell behaviour ──
   const closeDrawer = useCallback(() => setDrawerOpen(false), []);
-  const go = useCallback(id => { setDrawerOpen(false); setMobileSearchOpen(false); navigate(id); }, [navigate]);
+  // A file still on the review screen is unsaved; leaving discards it, so ask.
+  const [pendingImport, setPendingImport] = useState(false);
+  const pendingRef = useRef(false);
+  useEffect(() => { pendingRef.current = pendingImport; }, [pendingImport]);
+  const leaveUnsaved = () => !pendingRef.current || window.confirm("This file is not saved yet. Leave and discard it? Nothing from it will be kept.");
+  useEffect(() => {
+    if (!pendingImport) return;
+    const warn = e => { e.preventDefault(); e.returnValue = ""; };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [pendingImport]);
+  const go = useCallback(id => {
+    if (id !== "transactions" && !leaveUnsaved()) return;
+    setDrawerOpen(false); setMobileSearchOpen(false); navigate(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [navigate]);
   const showTransactions = useCallback(q => { setTxQuery(q); setTxLimit(100); go("transactions"); }, [go]);
   const closeMobileSearch = useCallback(() => setMobileSearchOpen(false), []);
-  const logout = () => { window.history.replaceState(null, "", "/"); onLogout(); };
+  const logout = () => { if (!leaveUnsaved()) return; window.history.replaceState(null, "", "/"); onLogout(); };
 
   // The drawer: Escape closes it and returns focus to the menu button, the
   // first link takes focus when it opens, and the page behind stops scrolling.
@@ -3163,7 +3203,7 @@ function Dashboard({ user, profile, onLogout, onUpgrade, onBuyDiagnostic, onProf
     vatInfo, saveTaxSettings, sarsQuestions,
     txQuery, setTxQuery, txDirection, setTxDirection, txKind, setTxKind, txLimit, setTxLimit,
     ruleIndex, saveKindRule, clearKindRule, cashBalance, saveCashBalance,
-    aiRec, aiError, aiLoad, runAI, reportSummary, reportHold, aiQuestion, setAiQuestion, aiCost, setAiCost, aiEvidence,
+    aiRec, aiError, aiLoad, runAI, reportSummary, reportHold, setPendingImport, aiQuestion, setAiQuestion, aiCost, setAiCost, aiEvidence,
     tr, sr, taxV, safV, hasConversionData, activeCac, activeLtv, cogsRatio, mktRatio,
     seasonalPattern, historicalConfidence, founderNarrative, growth, growthConfidence, risk, trends,
   };
@@ -3764,7 +3804,7 @@ function TransactionsSection({ ctx }) {
 
       <div className="row row-21">
         <Panel title="Upload a file or sync a sheet">
-          <DataUpload hasData={m.hasData} currency={cur} rules={ruleIndex} accounts={accounts} onCompare={compareFile} onSave={saveImport} busy={uploadBusy}/>
+          <DataUpload hasData={m.hasData} currency={cur} rules={ruleIndex} accounts={accounts} onCompare={compareFile} onSave={saveImport} busy={uploadBusy} onPending={ctx.setPendingImport}/>
           {uploadBusy && (
             <div className="busy-line"><span className="spinner"/>Saving to your transaction history...</div>
           )}
